@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -42,7 +43,7 @@ func newRequestLog(path string) (*requestLog, error) {
 	if path == "" {
 		return &requestLog{}, nil
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -136,4 +137,14 @@ func summarize(path string, out io.Writer) error {
 		fmt.Fprintf(out, "| %s | `%s` | %d | %s | %s | | | |\n", method, tpl, a.calls, strings.Join(st, ", "), strings.Join(hs, ", "))
 	}
 	return sc.Err()
+}
+
+// passwordLiteral matches `PASSWORD '...'` (also `PASSWORD = '...'`, and escape strings such as E-prefixed literals) so that role
+// passwords sent from the Database Roles page or the SQL editor do not end up in the request log.
+var passwordLiteral = regexp.MustCompile(`(?i)(\bpassword\s*(?:=\s*)?)(?:e'(?:[^'\\]|\\.|'')*'|'(?:[^']|'')*')`)
+
+// redactSQL replaces password literals in a statement with '***'. It runs before the statement is
+// truncated for the log, so a literal cannot be cut in half and leak its first characters.
+func redactSQL(sql string) string {
+	return passwordLiteral.ReplaceAllString(sql, "${1}'***'")
 }
