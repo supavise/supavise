@@ -98,7 +98,11 @@ new function stays callable through `rpc`, on hosted too. Objects that exist kee
   The leader's Engine drives every project, through the plane router for one homed on another node (`apply_data_api` on the
   peer plane path, see `internal/placement`); a follower's Engine, whose registry is read-only, does nothing. `internal/app`
   runs it after the projects start, skips it while a node upgrade runs in any phase, `rolling_back` included, as long as
-  its process is alive (an upgrade that fails rolls the node back to a release that does not know the change), and repeats it:
+  its process is alive (an upgrade that fails rolls the node back to a release that does not know the change), skips it for a
+  day after an upgrade ended in phase `failed` (the node stays on the new release and the operator chooses between fixing
+  forward and restoring the system cluster for `supavise rollback`; a revoke made meanwhile would outlast that rollback, since
+  the project databases are not part of the restore; the marker's modification time dates the failure, a later upgrade replaces
+  the marker, and the hold ends by itself after a day), and repeats it:
   after 5 minutes, then 15 minutes, then every hour while a project stays undone, and every hour otherwise. A create whose
   home node is on an older release goes on without the revoke (a warning) and is converged later; a create that needs the
   schema `api` or an exposed list fails with `ErrPeerBehind`.
