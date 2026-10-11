@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // API is the [api] config section: settings of the Management API server
 // (internal/api). Everything has a working default.
@@ -27,10 +30,25 @@ type API struct {
 	// the remote MCP endpoint (api.<domain>/mcp). All of them then answer 404, and Studio is given
 	// no MCP URL. Personal access tokens and dashboard sessions are not affected.
 	DisableOAuth bool `toml:"disable_oauth"`
+	// AuditRetentionDays is how long the audit log keeps a request that changed something, in days
+	// (Studio's organization and account Audit Logs). Zero means 90.
+	AuditRetentionDays int `toml:"audit_retention_days"`
 	// AdminEmails is a comma-separated allowlist of dashboard users (matched on the
 	// session's email, case-insensitively) who may use the API even without the
 	// app_metadata.supavise_admin claim that supavise sets on the users it creates.
 	AdminEmails string `toml:"admin_emails"`
+}
+
+// DefaultAuditRetentionDays is what AuditRetentionDays zero means.
+const DefaultAuditRetentionDays = 90
+
+// AuditRetention is how long the audit log keeps a row.
+func (a API) AuditRetention() time.Duration {
+	days := a.AuditRetentionDays
+	if days <= 0 {
+		days = DefaultAuditRetentionDays
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 // Admins returns AdminEmails split, trimmed and lower-cased, empty entries removed.
