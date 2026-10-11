@@ -10,7 +10,9 @@
 #    supavise restores the parent's latest base backup plus WAL (internal/backup) and says so.
 #
 # After them, tests/linux/branching/runs.sh drives the Management API of a node on real clusters:
-# the action runs of branch operations, the notify_url envelope and its signature.
+# the action runs of branch operations, the notify_url envelope and its signature; and
+# tests/linux/branching/lifecycle.sh does the same for the lifecycle: the scheduled delete, the idle pause
+# and the wake on a request or a connection, the owner's pause, and the delete through the project routes.
 #
 # Both runs also run the full branching scenario (schema-only and with_data branches,
 # isolation in both directions, merge, push, reset, delete, expiry), a clone of a parent under
@@ -103,4 +105,11 @@ run "ext4 on the runner root" "$ext4" base-backup
 # shellcheck source=branching/runs.sh
 source tests/linux/branching/runs.sh
 branching_runs_check
+
+# 4. The lifecycle of branches over HTTP and psql (tests/linux/branching/lifecycle.sh): the scheduled delete
+#    pauses a branch, an idle branch pauses and wakes on a request through the proxy or a connection, a
+#    branch the owner paused stays paused, a delete through the project routes purges the archive.
+# shellcheck source=branching/lifecycle.sh
+source tests/linux/branching/lifecycle.sh
+branching_lifecycle_check
 echo "branching-xfs: done"

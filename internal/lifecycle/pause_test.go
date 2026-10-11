@@ -3,9 +3,12 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/supavise/supavise/internal/registry"
 )
@@ -219,4 +222,48 @@ func TestDeleteAndResetRemoveTheBucketObjects(t *testing.T) {
 			t.Fatalf("the bucket was asked %d times", len(fo.refs))
 		}
 	})
+}
+
+// A branch asleep for idleness has a listener on its database port; a resume waits for it to go before
+// it starts Postgres, so the two never fight for the port. A port nothing listens on costs nothing.
+func TestResumeWaitsForTheWakeGateToLetGoOfThePort(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	p := h.create(t)
+	if err := h.e.PauseWith(ctx, p.Ref, PauseOptions{Reason: registry.PauseIdle}); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := h.reg.GetProject(ctx, p.Ref)
+	port := h.cfg.PortsFor(p.Ref, cur.Seq).Postgres
+
+	start := time.Now()
+	if err := h.e.Resume(ctx, p.Ref); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("a resume with nothing on the port took %v", d)
+	}
+
+	if err := h.e.PauseWith(ctx, p.Ref, PauseOptions{Reason: registry.PauseIdle}); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Skipf("port %d is in use on this machine: %v", port, err)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		ln.Close()
+	}()
+	start = time.Now()
+	if err := h.e.Resume(ctx, p.Ref); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d < 250*time.Millisecond || d > 2500*time.Millisecond {
+		t.Fatalf("the resume took %v with a listener that goes after 300 ms", d)
+	}
+	if c, err := net.DialTimeout("tcp", ln.Addr().String(), 100*time.Millisecond); err == nil {
+		c.Close()
+		t.Fatal("the resume returned while the port was still held")
+	}
 }

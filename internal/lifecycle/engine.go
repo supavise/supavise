@@ -689,6 +689,7 @@ func (e *Engine) resume(ctx context.Context, ref string, checkNode bool) error {
 	if err != nil {
 		return err
 	}
+	e.awaitDatabasePort(ctx, p)
 	if err := e.plane.Start(ctx, p, keys); err != nil {
 		cctx, cancel := cleanupCtx(ctx)
 		defer cancel()
@@ -948,6 +949,7 @@ func (e *Engine) finalBackup(ctx context.Context, p *registry.Project, prev regi
 	}
 	if prev == registry.StatusInactive {
 		// Paused: the cluster is down. Start it alone for the backup, then stop it again.
+		e.awaitDatabasePort(ctx, p)
 		if err := e.plane.StartDatabase(ctx, p, keys); err != nil {
 			return err
 		}
