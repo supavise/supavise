@@ -12,4 +12,4 @@
 // Types only: handlers live in internal/api and use these for every response.
 package gen
 
-//go:generate sh -c "d=$(mktemp -d) && for n in v1 v2 platform; do go run ./cmd/schemaonly specs/$n.json $d/$n.json && go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -config $n.cfg.yaml $d/$n.json || exit 1; done; rm -rf $d"
+//go:generate sh -c "d=$(mktemp -d) && for n in v1 v2 platform; do go run ./cmd/schemaonly specs/${DOLLAR}n.json ${DOLLAR}d/${DOLLAR}n.json && go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -config ${DOLLAR}n.cfg.yaml ${DOLLAR}d/${DOLLAR}n.json || exit 1; done; rm -rf ${DOLLAR}d"

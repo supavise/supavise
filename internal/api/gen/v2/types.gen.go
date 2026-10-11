@@ -4587,6 +4587,9 @@ type V2ProjectConfigResponseOutput struct {
 
 				// PostgresSettings Postgres parameter overrides. Empty when the project runs entirely on defaults.
 				PostgresSettings struct {
+					AutovacuumMaxWorkers *int    `json:"autovacuum_max_workers,omitempty"`
+					AutovacuumWorkMem    *string `json:"autovacuum_work_mem,omitempty"`
+
 					// CheckpointTimeout Default unit: s
 					CheckpointTimeout  *string `json:"checkpoint_timeout,omitempty"`
 					CronLogStatement   *bool   `json:"cron_log_statement,omitempty"`
@@ -4622,6 +4625,8 @@ type V2ProjectConfigResponseOutput struct {
 					MaxWalSenders                 *int                                                                                       `json:"max_wal_senders,omitempty"`
 					MaxWalSize                    *string                                                                                    `json:"max_wal_size,omitempty"`
 					MaxWorkerProcesses            *int                                                                                       `json:"max_worker_processes,omitempty"`
+					PgNetBatchSize                *int                                                                                       `json:"pg_net_batch_size,omitempty"`
+					PgStatStatementsMax           *int                                                                                       `json:"pg_stat_statements_max,omitempty"`
 					SessionReplicationRole        *V2ProjectConfigResponseOutputDataAttributesDatabasePostgresSettingsSessionReplicationRole `json:"session_replication_role,omitempty"`
 					SharedBuffers                 *string                                                                                    `json:"shared_buffers,omitempty"`
 
