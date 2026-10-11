@@ -28,7 +28,9 @@ project's PostgreSQL, GoTrue and PostgREST as units of a `units.Supervisor`.
      cluster's own credentials).
 3. GoTrue (`bin/auth migrate`, then `bin/auth`) and PostgREST, each health-checked with a
    real request (`/health`, `/`).
-4. `fleet.Fleet.EnsureTenant` (skipped while the fleet is empty), `PutRoute` for
+4. The Data API step (`dataapi.go`, below): the revoke of the default privileges, the schema `api` when asked for, and
+   the recorded decision. A failure here is `INIT_FAILED` like any other stage.
+5. `fleet.Fleet.EnsureTenant` (skipped while the fleet is empty), `PutRoute` for
    `<ref>.api.<domain>`, the nightly backup timer (`Options.Timers`, systemd backend only), status `ACTIVE_HEALTHY`.
 
 Any failure after the row exists stops and removes units and data, removes tenants and
@@ -52,6 +54,43 @@ A saved `max_worker_processes` overrides the 16 (applied at the next restart); t
 save refuses a value below 10 (`cron.max_running_jobs` plus two slots for pg_cron's launcher and pg_net's
 worker). A value of 4 to 9 saved before that rule stays in force, and a job that cannot get a worker
 then fails to start.
+
+## Data API defaults
+
+Hosted Supabase no longer grants new tables to the Data API roles: since 2026-05-30 a new project revokes the default
+privileges of `public` for `postgres`, and it applies that to the projects it already runs on 2026-10-30
+(<https://supabase.com/changelog/45329-breaking-change-tables-not-exposed-to-data-and-graphql-api-automatically>). `dataapi.go`
+does the same. `RevokeDefaultPrivilegesSQL` revokes select, insert, update and delete on tables and usage and select on
+sequences (the changelog's two statements), and execute on functions (Studio's own switch for the same setting,
+`buildDefaultPrivilegesSql('revoke')` in pg-meta; the changelog is silent on functions, and revoking them is the safe side for
+a migration that must also run on hosted). Objects that exist keep their grants.
+
+- **Create.** `CreateRequest.DataAPI` (`DataAPIOptions`) is the choice; its zero value is hosted's default (revoke), so a caller
+  that says nothing gets it. After the cluster is up, `PostgresPlane.ApplyDataAPI` (the optional capability `DataAPIPlane`, part
+  of `FullPlane`) runs the statements as `supabase_admin` in one transaction, on a primary only (`ErrNotPrimary` in recovery),
+  and the Engine records the decision in `supavise.project_data_api` (`registry.DataAPIStore`, migration 1400): `granted` or
+  `revoked`, with its source (`create`, `upgrade`, `copy`). `ExposeNewTables` keeps the grants. `APISchema` also creates the
+  schema `api` (owner `postgres`, usage for the three roles; the dialog "Switch the default API schema" of Studio does the same).
+  `ExposedSchemas` is saved as the project's PostgREST `db_schema` (through `Settings` when it is a `SettingsWriter`, which
+  `*projectconfig.Manager` is) once the schemas exist, and PostgREST restarts on it (`ConfigPlane.ReconfigureService`):
+  PostgREST first starts on the default schemas because it will not start on one that is missing, and `ApplyDataAPI` fails
+  the create when a listed schema does not exist (`DataAPISetup.MustExist`). `ParseExposedSchemas` maps the create body's
+  list: omitted keeps the default, `[]` (the Data API off) exposes `graphql_public` only, because PostgREST falls back to
+  `public` for an empty list and a node cannot switch it off.
+- **Seeded creates.** A restore as new and a data branch hold the source's database, default privileges included, so no SQL runs.
+  `DataAPIOptions.CopyFrom` names the source and its row is copied (`copy`); `CopyChoice` is the decision a backup manifest
+  remembers for a source that no longer exists. With neither, the new project has no row and is converged like an existing one.
+  A schema-only branch is a fresh create: `internal/branching` passes `ExposeNewTables` from the parent's row before the
+  migrations replay.
+- **Existing projects.** `Engine.ConvergeDataAPI` lists the running projects without a row and applies the revoke once
+  (`convergeLocked`, source `upgrade`, event `project.data_api_defaults_revoked`); a failure is the event
+  `project.data_api_defaults_failed`, records nothing and is tried again. A project with a row is never touched again, so a
+  user who rolled the revoke back with SQL keeps the rollback across restarts and upgrades. A paused project is done by `resume`.
+  The leader's Engine drives every project, through the plane router for one homed on another node (`apply_data_api` on the
+  peer plane path, see `internal/placement`); a follower's Engine, whose registry is read-only, does nothing. `internal/app`
+  runs it after the projects start, skips it while a forward node upgrade runs (an upgrade that fails rolls the node back to a
+  release that does not know the change), and repeats it: every 5 minutes while a project failed, every hour otherwise.
+- **The row is a record of what Supavise did, not of the database.** SQL a user runs changes the database and leaves the row alone.
 
 ## Other operations
 
