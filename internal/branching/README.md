@@ -44,10 +44,14 @@ One file per operation, so that a change to one operation stays in one file:
 | `service.go` | `Service`, `Deps`, reading (`List`, `Get`, `Resolve`) and the helpers the operations share |
 | `ops.go` | `ActionInput`, the in-process operation table (`begin`, `end`, `checkIdle`, `WaitIdle`) and the detached run wrapper `spawn` |
 | `create.go` | `Create` and `doCreate` |
-| `merge.go`, `push.go`, `reset.go` | `Merge` and `Diff`, `Push`, `Reset` |
+| `merge.go`, `push.go`, `reset.go` | `Merge` (history flow and the recorded-diff flow of Studio's merge page), `Push`, `Reset` |
+| `diff.go` | `Diff` and `DiffWith` (`GET .../diff`) over the schema base |
+| `baseline.go` | the baseline of a parent without a migration history, and the schema base of a branch (`getBase`, `putBase`, `recordBase`) |
+| `carry.go` | what is carried between a branch and its parent besides schema: Edge Functions (`FunctionCarrier`), their base digests and the create-body secrets |
+| `schemadiff/` | the schema engine: reads a database into a `Snapshot`, plans the DDL between two, merges and syncs snapshots |
 | `update.go` | `Update` (PATCH of a branch) |
 | `delete.go` | `Delete`, `Restore`, `DisableBranching` and `removeBranch` |
-| `migrations.go` | the migration history (`Migration`, `Compare`, `Apply`) and `replay` into a schema-only branch |
+| `migrations.go` | the migration history (`Migration`, `Compare`, `Apply`), `SchemaDatabase` (snapshots and history written without running it) and `replay` into a schema-only branch |
 | `sweep.go`, `notify.go` | the expiry sweeper and the `notify_url` call |
 
 ## Data model
@@ -67,6 +71,11 @@ their parent (`preview_branch_refs`); they open by ref like any project (`parent
 is set on their `/platform/projects/{ref}`). `GET /v1/projects/{ref}/branches` returns the
 default branch (the project itself, `name: main`, `is_default: true`, a stable UUID derived
 from the ref) first, as on hosted; called with a branch's ref it returns the whole family.
+
+Migration `1510` adds `supavise.branch_schema_base` (the schema a branch and its parent last agreed on: a gzip
+of the JSON of a `schemadiff.Snapshot`, its fingerprint and what took it: `create`, `push`, `merge` or `reset`)
+and `1511` adds `supavise.branch_function_base` (the digest of each Edge Function both sides last had). Both are
+keyed by the branch and removed with it; `registry.BranchContentStore` reads and writes them.
 
 A parent cannot be deleted while it has branches: `Engine.DeleteWith` refuses before it stops
 anything, and the foreign key backs that up. A create and a delete hold different lifecycle locks, so
@@ -194,8 +203,24 @@ parent's are refused with 400, as is an unknown `desired_instance_size`
 transaction, or outside one when a statement refuses to run in a transaction block), then the seed. The Management API has no seed field, so the seed is stored per parent (`supavise branches seed set
 <parent-ref> --file seed.sql`, sealed like a project secret under `branch_seed`) or given for one branch
 with `--seed-file`. A failing migration or seed leaves the branch in `MIGRATIONS_FAILED` for inspection.
-Objects the parent got outside the migration history (the SQL editor, `execute_sql`) are not in a
-schema-only branch: use `with_data`.
+
+**A parent without a migration history** (everything was built in the SQL editor, the Table Editor or
+`execute_sql`) gets a **baseline**, as on hosted: the first branch reads the parent's schema (tables, columns,
+constraints, indexes, policies, triggers, functions, views, types, sequences, extensions, grants, default
+privileges and comments of the user schemas, plus the policies and triggers users added to the tables of the
+managed schemas, such as a policy on `storage.objects` or a trigger on `auth.users`), writes it as one migration
+named `remote_schema`, records it as the **first migration of the parent's history without running it there**
+(under the apply lock, only while the history is empty, with the event `branch.baseline_recorded`) and runs it on
+the branch. The parent now has a history, so a merge has a common ancestor, and the next branch replays it: the
+schema is dumped only while the history is empty (hosted does not dump when migrations exist), and a parent that
+has a history plus changes made outside it gives a branch the history only (those changes show up as the parent's
+drift, which a push brings in). The branch applies the parent's Data API default-privilege choice when its project
+is created and the baseline after it, so the baseline's own `ALTER DEFAULT PRIVILEGES` statements win. Custom
+roles are not captured: a grant, a default privilege or a policy that names a role the branch lacks is left out and
+the run log says which. What the engine does not model (aggregates, operators, casts, rules, event triggers,
+publications, foreign tables and servers, range types, collations, extended statistics, inherited tables, column
+privileges) is named in the run log and is not in the baseline. A parent that has only what a new project has gets
+no baseline.
 
 > **A `with_data` branch is a copy of production.** Whoever can run SQL in it can read all of the parent's
 > data. Supavise replaces the credentials it knows about and cuts the branch off from the outside (below), but
@@ -219,19 +244,21 @@ by itself (Studio sends `branch_name` together with `git_branch`, which is ignor
 
 | | Schema-only | With data |
 |---|---|---|
-| Database schema and migration history | the parent's `supabase_migrations` history, replayed, then the seed | everything in the parent's database |
+| Database schema and migration history | the parent's `supabase_migrations` history, replayed, then the seed; the parent's schema as a baseline when it has no history (above) | everything in the parent's database |
 | Rows | none, except what the migrations and the seed insert | all of them (auth users and identities included; their sessions and one-time tokens are removed) |
 | Storage buckets | those the migrations create | the parent's buckets, with their settings and policies |
 | Storage objects | none | none: the rows of `storage.objects` (and `storage.prefixes`, `storage.s3_multipart_uploads*`) are removed from the clone; the files stay with the parent. Exception: when a table of yours has a foreign key into one of them, the rows stay (below) |
-| Edge Functions | none | none |
-| Function secrets | none | none |
+| Edge Functions | every function deployed on the parent (code, `verify_jwt`, entrypoint, import map, static files), with the parent's version, update time and content digest | the same |
+| Function secrets | none; the `secrets` of the create body are stored for the branch | the same |
+| Saved settings (Auth providers, SMTP, MFA, hooks, PostgREST, Storage and Realtime limits, non-sizing Postgres settings) | the parent's, minus what identifies, addresses or sizes it (below) | the same |
 | API keys, JWT secret, database password | the branch's own | the branch's own (the parent's are replaced everywhere Supavise finds them) |
 | Default privileges of `public` for the Data API roles | the parent's recorded choice, applied before the migrations replay (revoked unless the parent keeps the grants) | the parent's, in the copied database; a clone copies the parent's recorded choice, a branch made from a base backup takes the choice the backup recorded (none: the first pass revokes) |
 
-Hosted Supabase copies neither Storage objects nor Edge Functions into a branch, and neither does Supavise: a branch has its own Storage tenant and functions, so nothing is shared and nothing is copied half way.
+Hosted Supabase copies a project's Edge Functions and configuration into a branch and never its Storage objects or data (unless the branch is created with data), and so does Supavise: a branch has its own Storage tenant and functions, so nothing is shared.
 
 - **Storage objects are not copied.** A clone would carry the rows without the files, so every listed object would answer 404. Isolation empties the object metadata tables and leaves the buckets (`branch.isolated` event, `storage_rows_deleted`; user triggers do not fire), in a database that has Storage's own tables. If a table outside Storage has a foreign key into them, the wipe is skipped in that database (changing your tables is not isolation's job) and the branch lists the parent's objects, which answer 404 until you remove or re-upload them; the event names the constraints (`storage_wipe_skipped`).
-- **Edge Functions and function secrets are not copied.** Deploy to the branch's ref (`supabase functions deploy --project-ref <branch ref>`, `supabase secrets set --project-ref <branch ref>`). Create, `reset` and `push` never read the parent's deployments, and `merge` does not carry functions to the parent (the result names the ones that differ). A reset leaves the branch's functions and secrets alone; files the branch uploaded stay in its Storage backend, unreferenced.
+- **Edge Functions are copied, function secrets are not.** At create, the deploy step copies every function row and its files from the parent's store entry to the branch's (`FunctionCarrier.Copy`, implemented over the API's store in `internal/api/branches_functions.go`): a new id, and the parent's version, `updated_at` and content digest (`ezbr_sha256`, which Studio's merge page compares to tell equal functions from changed ones). The Edge Functions syncer serves them at once (the carrier tells it) and the digests become the branch's *function base* (`branch_function_base`). Secrets are per branch, as on hosted: nothing is copied from the parent, and the create body's `secrets` are the branch's only ones. A reset keeps the branch's functions, secrets and settings (they are rows in the API's store and `project_settings`, which a `KeepRecord` delete leaves alone) and tells the syncer to serve them again; files the branch uploaded stay in its Storage backend, unreferenced.
+- **Settings are copied.** The engine gives the new project the parent's saved settings (`projectconfig.Manager.CopyForBranch`, called from `lifecycle.Engine.copyInitialSettings` before the units first start) in both modes. Never copied: the JWT secret, the API keys and the database password (a branch always has its own; they are not settings); the host-bound settings `site_url`, `uri_allow_list` and `saml_external_url`, and the WebAuthn relying party (`webauthn_rp_id`, `webauthn_rp_origins`) with the three switches that need it (`passkey_enabled`, `mfa_web_authn_enroll_enabled`, `mfa_web_authn_verify_enabled`); the custom hostname and vanity subdomain (not settings); sizing (`db_max_pool_size`, PostgREST's `db_pool`, Realtime's pools, `suspend`, the whole Pooler service and the nine Postgres settings the compute class puts on the command line, `projectconfig.SizingSettings`). SMTP and OAuth/SMS secrets, hook secrets and the captcha secret are copied (sealing binds a value to no project), but a branch with data cannot reach the outside while its egress is denied. A clone's inherited `postgresql.auto.conf` loses the same sizing lines (`dropSizing`), so a micro branch never inherits a larger parent's `shared_buffers`. Push and merge do not move settings (hosted ignores API and Auth configuration on merge). A golden test lists the exclusions and fails for a new setting that looks like an address.
 - **Clone method** (`clone_method`, the cheapest available): `clonefile` on APFS, `reflink` on XFS with `reflink=1`, btrfs, bcachefs and OpenZFS 2.2+ with block cloning, else `base-backup` (restore of the parent's latest base backup plus all archived WAL; `[branching] clone = "backup"` forces it). The copy-on-write methods keep time and disk flat as the database grows; the restore grows with it. `detectClone` tries to clone the parent's `PG_VERSION` into the new directory, so it tests the exact pair of paths and names the filesystem and reason when a clone is impossible. ZFS without block cloning takes the base-backup path. With neither a clone nor a backup backend the create fails before anything exists.
 - **How the clone is taken:** `pg_backup_start` on a superuser session that stays open, a file-by-file clone of PGDATA (`pg_control` last), `pg_backup_stop`, `backup_label`, then the WAL segments up to the end-of-backup record; the branch starts as a crash recovery and needs no archive. A recycled segment retries the whole procedure (three attempts), a file that cannot be cloned is byte-copied, tablespaces are refused.
 - **Service credentials are rotated.** The clone's roles carry the parent's passwords, so once the cluster is up the service seals new passwords for the six service roles, sets them over the private socket as SCRAM verifiers and calls `Manager.RotateKeys` (new JWT secret and API keys, GoTrue and PostgREST restart, fleet tenants updated). Until the rotation finishes only the six role passwords are the parent's: the JWT secret and API keys are replaced before the project is created, so the parent's service key never works on the branch. The parent's database password does not open the branch, and the parent's temporary CLI login roles (`cli_login_*`, `supavise_cli_ro_*`) are set `NOLOGIN` with no password. The pgsodium root key cannot change (Vault secrets are encrypted with it), so the branch shares it with its parent: whoever holds the parent's root key can decrypt the branch's copy of the parent's Vault secrets.
@@ -302,21 +329,85 @@ Schema-only branches copy nothing and are not checked.
 
 ### Merge, push, reset
 
-* **Merge** applies the branch's migrations that the parent lacks to the parent, in one transaction under a
-  session advisory lock (`lock_timeout` 30 s, so DDL on a busy parent fails instead of queueing traffic behind
-  it). Versions and divergence are checked again under the lock (a version another merge applied meanwhile is refused with `409`), and a statement that cannot run in a transaction block makes it fall back to one transaction per migration (the result says so). It **refuses on divergence**: the parent has migrations the
-  branch lacks, a version exists on both sides with different content, or a branch migration is older than the
-  parent's latest. `?force=true` (our extension) merges anyway and skips the versions that differ in content.
-  `migration_version` merges up to and including that version. The branch is kept.
-* **Push** (the rebase) applies the parent's migrations that the branch lacks to the branch. A version that
-  differs in content stops it unless forced.
-* **Reset** recreates the branch from the parent: the old cluster is removed (no final backup, archive
-  purged: **a persistent branch loses its WAL and base backups on reset**, because the recreated cluster
-  reuses the ref; take a backup first if you may want them) and a new one is created over the same registry
-  row, with the same ref, id, name and settings. What can fail without touching the branch is checked first (the parent runs, a with_data branch can still get its data, the parent's credentials can be read). A later failure leaves the branch registered as `MIGRATIONS_FAILED` with `INIT_FAILED` project status under the same id, so it can be reset again or deleted. A schema-only branch keeps its credentials and accepts `migration_version` (the parent's history up
-  to it); a branch with data gets new credentials as at creation. Its lifetime is kept, with at least 15
-  minutes left, and the branch stays resolvable (its `status` is `CREATING_PROJECT` meanwhile).
-* **Diff** (`GET /v1/branches/{id}/diff`, `text/plain`) is the SQL a merge would apply.
+* **Merge** (into the parent only). Two flows end here.
+  *History* (the CLI and the MCP server: `db push`, `apply_migration`): the branch's migrations that the parent lacks run on the
+  parent in one transaction under a session advisory lock (`lock_timeout` 30 s, so DDL on a busy parent fails instead of queueing
+  traffic behind it). Versions and divergence are checked again under the lock (a version another merge applied meanwhile is
+  refused with `409`), and a statement that cannot run in a transaction block makes it fall back to one transaction per migration
+  (the result says so). It **refuses on divergence**: the parent has migrations the branch lacks, a version exists on both sides
+  with different content, or a branch migration is older than the parent's latest. `?force=true` (our extension) merges anyway and
+  skips the versions that differ in content. `migration_version` merges up to and including that version. Changes the branch made
+  outside migrations (the Table Editor, the SQL editor) are not merged by this flow, as on hosted.
+  *Recorded diff* (Studio's merge page): Studio reads `GET .../diff`, records it with `PUT /v1/projects/{branch}/database/migrations`
+  as `branch_merge_<time>` **without running it**, then calls merge. When the branch has such a migration the parent lacks, the
+  merge (1) fails if the diff holds a change the engine cannot express, (2) computes the diff again and compares its hash with the
+  recorded one, failing with "production or branch changed since the diff was recorded; refresh" when they differ, (3) fails when
+  production and the branch changed the same schema object differently, (4) runs **only that migration** on the parent, in one
+  transaction, and (5) records the branch's other migrations in the parent's history **without running them**, so the histories
+  converge and no statement runs twice (the diff already holds what they did). The same divergence rules as the history flow apply
+  to the parent's own migrations. `force` skips (2) and (3).
+  Either way the branch's Edge Functions are deployed to the parent: a function the branch created, or changed since it was made
+  (its digest differs from the base), is copied over the parent's; a function only the parent changed is left alone; one **both
+  changed** fails the merge before anything runs, naming the slugs (`force` deploys the branch's version); nothing is ever deleted
+  from the parent. The merge ends by moving the schema base to where the two sides now agree. A merge that finds nothing says
+  "nothing to merge". The branch is kept.
+* **Push** (the rebase, `POST .../push`, Studio's "Update branch") brings the parent into the branch: its migrations the branch lacks
+  (a version that differs in content stops it unless forced); then the parent's **schema changes that were never migrations** (the
+  objects the parent added, changed or removed since the schema base, that the branch did not change itself) in one transaction,
+  recorded in the branch's history as `branch_push_<time>` (a reset replays it; a merge leaves it out, because the parent has the
+  changes); then the parent's Edge Functions that are new or changed (same slug: the parent's overwrites the branch's, unless only
+  the branch changed it; branch-only functions stay; the run log says what was overwritten). It refuses, unless forced, when the
+  parent and the branch changed the same schema object differently (`force` takes the parent's version). It never reseeds and
+  never touches data, and it moves the schema base. `migration_version` stops the migrations at that version and skips the rest.
+  A branch with no base (made by v0.3.x) only gets migrations and functions.
+* **Reset** recreates the database from the branch's **own** recorded migration history, not from the parent's: the migrations the
+  branch added itself survive, and so do those it got from the parent; tables, rows and any change made outside migrations do not.
+  `migration_version` replays up to that version (it may be a version only the branch has) and `0` gives an empty database (no seed).
+  The branch's history and the version are read and checked **before anything is removed**: an unknown version is refused with `400`
+  and the branch is untouched. The old cluster is then removed (no final backup, archive purged: **a persistent branch loses its
+  WAL and base backups on reset**, because the recreated cluster reuses the ref; take a backup first if you may want them) and a
+  new one is created over the same registry row, with the same ref, id, name, Edge Functions, function secrets and saved settings. What can
+  fail without touching the branch is checked first (the parent runs, a with_data branch can still get its data, the parent's
+  credentials can be read). A later failure leaves the branch registered as `MIGRATIONS_FAILED` with `INIT_FAILED` project status under
+  the same id, so it can be reset again or deleted. A schema-only branch keeps its credentials, its compute class and its schema
+  base; a branch with data gets new credentials as at creation and a new base. Its lifetime is kept, with at least 15 minutes left, and
+  the branch stays resolvable (its `status` is `CREATING_PROJECT` meanwhile). A branch whose cluster cannot be read, or that recorded
+  no history, is reset from the parent's history as a new branch is.
+* **Diff** (`GET /v1/branches/{id}/diff`, `text/plain`) is **what the branch changed in its schema**, as SQL: the statements that would
+  take the parent to the branch's schema where the branch moved away from its schema base. It is **empty** when nothing changed
+  (Studio shows "No changes detected"), accepts `included_schemas` (comma separated; default: the user schemas and the policies and
+  triggers on managed tables) and `pgdelta` (true or false: both give the same answer, there is one engine). A change the engine
+  cannot express is a comment line `-- supavise:unsupported <what>`; a merge of such a diff fails and says what.
+
+### The schema engine
+
+`schemadiff` reads the catalog of a database into a `Snapshot` (objects with an identity, a canonical definition from `pg_get_*`, and the
+objects each needs, from `pg_depend`) and plans the DDL between two snapshots: what is gone is dropped in reverse dependency order, then
+what is new or changed is created or altered in dependency order, with the usual Migra/pg-delta behavior for the cases a plain
+`ALTER` cannot do (a changed index, constraint, trigger or materialized view is dropped and created; a view whose columns only grow is
+`CREATE OR REPLACE`d; a function with another result type is dropped and created; enum values can only be added; a column's default
+is dropped and set again around a type change). Renames are not detected (a rename is a drop and a create, as in Migra: review a
+diff that drops a table). It is used four ways: the **baseline** (the diff from an empty database), the **diff** of a branch (its
+base to its schema), the **three-way merge** of a push (`Merge3`: what the parent changed since the base, minus what the branch
+changed itself) and the **base** that moves with `Sync` (to where both sides agree) after a push or a merge. Properties tests
+check: applying a plan to the source database makes it read like the target, for tables, columns, constraints, indexes, policies,
+functions, triggers, views, materialized views, types, sequences, partitions, generated columns, identity columns, grants,
+default privileges and comments (`schemadiff/integration_test.go`, a real Postgres).
+
+Not modeled, and named in the output instead of dropped: aggregates, operators, casts, rules, event triggers, publications, foreign
+tables and servers, range types, collations, extended statistics, inherited tables, column-level privileges. Objects a user creates
+*inside* a managed schema (a function in `auth`, a table in `storage`) are not read either; policies and triggers on the managed
+tables are. Known limits of a plan: it does not drop and recreate the dependents of an object it changes (a view over a column
+whose type changes makes the transaction fail and roll back, loudly), and a new enum value cannot be used by another statement of
+the same transaction.
+
+**Why not pg-delta.** The spike (v0.4.0) ran `@supabase/pg-delta` 1.0.0-alpha.58 (Node 20 or later) against two real databases: its
+plan between live databases is good, and it has `snapshot` and `drift` commands, but `plan` takes two *live* databases, so the
+three-way model (a stored base against a live branch) would need a Node program on its library API, which is alpha with breaking
+changes between releases. Node is on a node only inside the Studio artifact, so pg-delta would be a new artifact class with its own
+fetch, checksum, manifest and upgrade path, and the engine would depend on Studio being installed. The Go engine runs in the daemon,
+stores its snapshots in the registry, is tested against a real Postgres on a development machine, and fails loudly (never falls back
+to a list of migrations) when it cannot read or express something.
 
 ### Delete, expiry
 
@@ -342,14 +433,19 @@ IETF-reserved (192.0.0.0/24, 240.0.0.0/4) and NAT64 (64:ff9b::/96) addresses at 
 
 Limits:
 
-* No command copies a parent's functions or objects into a branch, and `merge` moves migrations only.
+* A merge moves migrations (or the recorded schema diff) and Edge Functions, never data, settings, Storage objects or function secrets.
+* The schema engine covers the object classes listed in "The schema engine"; the rest is named in the output, not carried.
+* A branch made by v0.3.x has no schema base, so its diff compares it with the parent as it is (additions and changes only) until a
+  merge sets one. In a cluster, a v0.3.x server that runs an operation on a branch does not keep the base or the function base up
+  to date (the next diff may list changes that already crossed, and Studio's merge then fails with an "already exists" and rolls
+  back): upgrade both servers before using Studio's merge page.
 * Re-encrypting `vault.secrets` under a key of the branch's own is not done (the pgsodium root key is shared).
 * Paused cron jobs and disabled foreign servers are turned back on by hand (the SQL above); no `supavise` command does it.
 * Egress is blocked only under systemd, covers the branch's Postgres unit only, and blocks WAL archiving to an
   `s3://` backend.
 * No idle sleep: an unused branch costs its idle memory (about 130 MB with GoTrue and PostgREST).
-* The `deploy` step does not copy Edge Functions on its own: it is the place where functions are deployed, and a
-  step with nothing to do is `EXITED`.
+* The `deploy` step is where a create copies the parent's Edge Functions and stores the create body's secrets, where a push copies
+  the parent's changed ones and a merge deploys the branch's; a step with nothing to do is `EXITED`.
 * In a cluster, an operation a v0.3.x server runs leaves no action run (Studio's polls get 404 for it); the
   branch's status and `branch_detail` still follow it.
 * `GET /v1/branches/{id}` reports the pooler (`pooler.<domain>`, session port, user `postgres.<ref>`) as the
@@ -400,5 +496,10 @@ systemd: the denied unit cannot reach a non-loopback host while the parent can, 
 the clone runs, `tests/linux/branching/runs.sh` starts `TestServe` (the Management API over real clusters) and
 checks the action runs over HTTP: seven steps, logs, the owner rule, `FUNCTIONS_DEPLOYED`, a forced divergence
 as a `DEAD` migrate step, and the `notify_url` envelope and its signature at a python receiver. The
+`tests/linux/branching/content.sh` (sourced by `branching-xfs.sh`) checks the content of a branch over the Management API: a parent
+built only with `execute_sql` (a table, a policy on `storage.objects`, a trigger on `auth.users`, an extension), reset, the dashboard
+merge flow over `curl`, and parent drift; `functions-smoke.sh` and `settings-smoke.sh` check Edge Functions and saved settings on a
+branch. `internal/branching/content_pg_test.go` and `schemadiff/integration_test.go` run the same flows over real databases on the
+Postgres of `SUPAVISE_TEST_DATABASE_URL`. The
 integration tests in `internal/branching` run real clusters and are skipped unless `SUPAVISE_TEST_UNPACKED`
 points at the unpacked artifacts directory.
