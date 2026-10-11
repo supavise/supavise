@@ -51,6 +51,9 @@ func (s *Service) requiredDisk(size int64) int64 {
 // is skipped with a warning rather than blocking every create on a filesystem that does not
 // report it.
 func (s *Service) checkDisk(parentRef string, credit int64) error {
+	if err := s.checkParentHere(parentRef); err != nil {
+		return err
+	}
 	dir := s.cfg.Paths().ProjectService(parentRef, config.SvcPostgres)
 	size := dataSize(filepath.Join(dir, "data"))
 	// The parent's directory exists on a running node; the nearest ancestor that does is on
