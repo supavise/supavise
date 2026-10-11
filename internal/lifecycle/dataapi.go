@@ -72,6 +72,9 @@ type DataAPIOptions struct {
 	// runs; only the registry row is copied. Without a row to copy the new project is converged like
 	// an existing one at its first pass.
 	CopyFrom string
+	// CopyChoice is the decision to record for a seeded create when CopyFrom has none (the source is
+	// deleted; a backup manifest remembers it). Empty records nothing.
+	CopyChoice registry.DefaultPrivileges
 }
 
 // DataAPISetup is what DataAPIPlane.ApplyDataAPI runs in a project's database.
@@ -161,17 +164,23 @@ func (e *Engine) dataAPIAtCreate(ctx context.Context, p *registry.Project, req C
 	store := registry.DataAPIOf(e.reg)
 	o := req.DataAPI
 	if req.Seed != nil {
-		if store == nil || o.CopyFrom == "" {
+		if store == nil {
 			return nil
 		}
-		src, err := store.GetDataAPI(ctx, o.CopyFrom)
-		if err != nil {
-			if errors.Is(err, registry.ErrNotFound) {
-				return nil
+		choice := o.CopyChoice
+		if o.CopyFrom != "" {
+			src, err := store.GetDataAPI(ctx, o.CopyFrom)
+			switch {
+			case err == nil:
+				choice = src.DefaultPrivileges
+			case !errors.Is(err, registry.ErrNotFound):
+				return fmt.Errorf("read the choice of %s: %w", o.CopyFrom, err)
 			}
-			return fmt.Errorf("read the choice of %s: %w", o.CopyFrom, err)
 		}
-		return store.PutDataAPI(ctx, registry.DataAPI{Ref: p.Ref, DefaultPrivileges: src.DefaultPrivileges, Source: registry.DataAPICopy})
+		if choice != registry.PrivilegesGranted && choice != registry.PrivilegesRevoked {
+			return nil // nothing to copy: the first pass decides, as for a project from before
+		}
+		return store.PutDataAPI(ctx, registry.DataAPI{Ref: p.Ref, DefaultPrivileges: choice, Source: registry.DataAPICopy})
 	}
 	choice := registry.PrivilegesRevoked
 	if o.ExposeNewTables {
