@@ -264,3 +264,51 @@ func TestTheNumberOfAColumnIsNotWhatItIs(t *testing.T) {
 		t.Fatalf("columns that differ only in their number: %v", Changed(a, b))
 	}
 }
+
+// A collation or a publication that both sides came to have is not a change of either, and must not
+// be listed (and refused) as one after a merge.
+func TestSyncMovesTheUnmodeledObjectsTheSameWay(t *testing.T) {
+	base := snap(tbl("public", "t", "id"))
+	base.Unmodeled = []string{"collation public.kept", "publication gone_on_both", "foreign server only_base"}
+	branch := snap(tbl("public", "t", "id"))
+	branch.Unmodeled = []string{"collation public.kept", "collation public.both_new", "aggregate public.branch_only(integer)", "foreign server only_base"}
+	parent := snap(tbl("public", "t", "id"))
+	parent.Unmodeled = []string{"collation public.kept", "collation public.both_new", "operator public.parent_only"}
+
+	got := Sync(base, branch, parent).Unmodeled
+	// kept: all three have it. both_new: both sides have it now. gone_on_both: both lack it now.
+	// branch_only and parent_only: one side only, so they stay a change of that side (not in the base).
+	// only_base: the sides differ (branch has it, parent lacks it), so the base keeps what it had.
+	want := []string{"collation public.both_new", "collation public.kept", "foreign server only_base"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unmodeled after Sync = %v, want %v", got, want)
+	}
+	// So the diff of the branch against the new base names only the branch's own object.
+	r := Diff(Sync(base, branch, parent), branch, Options{})
+	if got := unsupportedOf(r.SQL()); len(got) != 1 || !strings.Contains(got[0], "aggregate public.branch_only") {
+		t.Fatalf("diff after Sync lists %v", got)
+	}
+}
+
+func TestStockObjectsOfAProjectAreNotUnmodeledObjects(t *testing.T) {
+	for _, c := range []struct {
+		kind, name string
+		stock      bool
+	}{
+		{"event trigger", "pgrst_ddl_watch", true},
+		{"event trigger", "pgrst_drop_watch", true},
+		{"event trigger", "issue_pg_net_access", true},
+		{"event trigger", "issue_graphql_placeholder", true},
+		{"event trigger", "graphql_watch_ddl", true},
+		{"event trigger", "grant_pg_net_access", true},
+		{"event trigger", "audit_ddl", false},
+		{"publication", "supabase_realtime", true},
+		{"publication", "supabase_realtime_messages_publication", true},
+		{"publication", "my_pub", false},
+		{"collation", "pgrst_x", false},
+	} {
+		if got := stockUnmodeled(c.kind, c.name); got != c.stock {
+			t.Errorf("stockUnmodeled(%q, %q) = %v, want %v", c.kind, c.name, got, c.stock)
+		}
+	}
+}

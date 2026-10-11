@@ -198,7 +198,7 @@ func Sync(base, a, b *Snapshot) *Snapshot {
 	for k := range ci {
 		keys[k] = struct{}{}
 	}
-	out := &Snapshot{Version: FormatVersion, PG: a.PG, Schemas: a.Schemas, Unmodeled: base.Unmodeled}
+	out := &Snapshot{Version: FormatVersion, PG: a.PG, Schemas: a.Schemas, Unmodeled: syncUnmodeled(base.Unmodeled, a.Unmodeled, b.Unmodeled)}
 	if len(base.Schemas) > 0 {
 		out.Schemas = base.Schemas
 	}
@@ -213,5 +213,38 @@ func Sync(base, a, b *Snapshot) *Snapshot {
 		}
 	}
 	out.Sort()
+	return out
+}
+
+// syncUnmodeled moves the names of the objects the engine does not model the way Sync moves the objects
+// it does: a name both sides have, or both lack, is the base's now; where they differ the base keeps
+// what it had. Without it a collation or a publication that both sides came to have would be listed
+// as a change of the branch, and refused as one, for ever.
+func syncUnmodeled(base, a, b []string) []string {
+	in := func(list []string) map[string]bool {
+		m := make(map[string]bool, len(list))
+		for _, x := range list {
+			m[x] = true
+		}
+		return m
+	}
+	bm, am, cm := in(base), in(a), in(b)
+	names := map[string]struct{}{}
+	for _, l := range [][]string{base, a, b} {
+		for _, x := range l {
+			names[x] = struct{}{}
+		}
+	}
+	var out []string
+	for x := range names {
+		keep := bm[x]
+		if am[x] == cm[x] {
+			keep = am[x]
+		}
+		if keep {
+			out = append(out, x)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
