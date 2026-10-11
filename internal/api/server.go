@@ -213,6 +213,8 @@ type Server struct {
 	// audit is the audit log; auditPruned is when a Prune last ran, in Unix nanoseconds (audit.go).
 	audit       AuditStore
 	auditPruned atomic.Int64
+	// auditRefusedBy counts the refused requests each user added in the current minute (auditRefusedPerMinute).
+	auditRefusedBy auditThrottle
 
 	// clones are the restores to a new project this process is running (clone.go).
 	clones cloneTracker
@@ -729,6 +731,26 @@ func newRequestID() string {
 	return hex.EncodeToString(b)
 }
 
+// maxRequestID is the longest X-Request-Id the API keeps; the proxy bounds the header the same way.
+const maxRequestID = 128
+
+// validRequestID reports whether a client's X-Request-Id is short and made of letters, digits, '-', '_' and
+// '.'. Anything else is replaced by a generated id: the id is echoed in the response, written to the log and
+// stored in the audit log, so its size and bytes are not the client's to choose.
+func validRequestID(id string) bool {
+	if id == "" || len(id) > maxRequestID {
+		return false
+	}
+	for _, c := range id {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // middleware adds the request id, CORS, panic recovery and debug logging.
 func (s *Server) middleware(next http.Handler) http.Handler {
 	allowed := map[string]bool{}
@@ -738,7 +760,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 	allowed[s.cfg.DashboardURL()] = true
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-Id")
-		if id == "" {
+		if !validRequestID(id) {
 			id = newRequestID()
 		}
 		w.Header().Set("X-Request-Id", id)
