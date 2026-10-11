@@ -284,6 +284,9 @@ func (s *Service) restoreAsNew(ctx context.Context, plan *RestorePlan, src *secr
 	req := lifecycle.CreateRequest{
 		Name: "restore of " + plan.Source, Region: "local", Ref: plan.TargetRef,
 		DBPassword: k.DBPassword, Seed: s.Seeder(plan), Keys: &k,
+		// The restored cluster holds the default privileges of the backup; the new project takes the
+		// decision recorded for the source, if it still has one.
+		DataAPI: lifecycle.DataAPIOptions{CopyFrom: plan.Source},
 	}
 	if mp := plan.Manifest.Project; mp != nil {
 		req.Name = mp.Name + " (restored)"

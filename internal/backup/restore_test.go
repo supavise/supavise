@@ -307,6 +307,10 @@ func TestRestoreAsNewProjectKeysAndRequest(t *testing.T) {
 	if req.Ref != testRef2 || req.Seed == nil || req.Keys == nil || req.DBPassword != src.DBPassword {
 		t.Fatalf("CreateRequest = %+v", req)
 	}
+	// The restored cluster holds the source's default privileges; the new project takes the source's recorded decision.
+	if req.DataAPI.CopyFrom != testRef {
+		t.Errorf("DataAPI.CopyFrom = %q, want the source %s", req.DataAPI.CopyFrom, testRef)
+	}
 	k := req.Keys
 	// What lives inside the restored cluster is reused.
 	if k.DBPassword != src.DBPassword || k.AdminPassword != src.AdminPassword || k.PGSodiumRootKey != src.PGSodiumRootKey ||
