@@ -45,6 +45,7 @@ func (s *Service) Update(ctx context.Context, idOrRef string, in UpdateInput) (*
 		return nil, err
 	}
 	nb := *p.Branch
+	setStatus := false
 	if in.Name != nil && *in.Name != nb.Name {
 		if err := ValidName(*in.Name); err != nil {
 			return nil, err
@@ -87,8 +88,16 @@ func (s *Service) Update(ctx context.Context, idOrRef string, in UpdateInput) (*
 			return nil, conflict("branch %s is busy with %s; its status follows the operation", b.Name, op)
 		}
 		nb.State, nb.Detail = *in.State, "status set to "+string(*in.State)+" through the API"
+		setStatus = true
 	}
-	if err := s.reg.UpdateBranch(ctx, b.Ref, &nb); err != nil {
+	// Without a status in the request only the settings are written: nb carries the status read
+	// above, and an operation that finished meanwhile (Studio patches request_review the moment a
+	// merge run reads SUCCESS) must keep the status it set.
+	write := s.reg.UpdateBranchSettings
+	if setStatus {
+		write = s.reg.UpdateBranch
+	}
+	if err := write(ctx, b.Ref, &nb); err != nil {
 		if errors.Is(err, registry.ErrConflict) {
 			return nil, conflict("project %s already has a branch named %q", b.ParentRef, nb.Name)
 		}

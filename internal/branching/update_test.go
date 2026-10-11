@@ -131,3 +131,23 @@ func TestDefaultBranchTracksAGitBranch(t *testing.T) {
 		t.Fatalf("unknown project: %v", err)
 	}
 }
+
+// Studio patches request_review the moment a merge run reads SUCCESS, which can be before the
+// branch's status moves on. The patch writes the settings, not the status it read.
+func TestUpdateKeepsTheStatusAnOperationSetMeanwhile(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	b := h.create("feat", nil)
+	h.svc.setState(ctx, b.Ref, registry.BranchRunningMigration, "merging", nil)
+	h.svc.reg = &hookRegistry{Registry: h.reg, beforeUpdate: func() {
+		// The operation ends between the read and the write of the PATCH.
+		h.svc.setState(ctx, b.Ref, registry.BranchFunctionsDeployed, "done", nil)
+	}}
+	got, err := h.svc.Update(ctx, b.Ref, UpdateInput{RequestReview: ptr(false), Persistent: ptr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != registry.BranchFunctionsDeployed || got.Detail != "done" || !got.Persistent || got.ReviewRequestedAt != nil {
+		t.Fatalf("branch after the patch = %s %q persistent=%v review=%v", got.State, got.Detail, got.Persistent, got.ReviewRequestedAt)
+	}
+}
