@@ -41,6 +41,11 @@ type Memory struct {
 	// advisorRules are the advisor rules (advisors_mem.go), by project ref.
 	advisorRules map[string][]AdvisorException
 
+	// schemaBases and functionBases are what a branch was last in step with its parent in, by branch
+	// ref (branch_content_mem.go).
+	schemaBases   map[string]BranchSchemaBase
+	functionBases map[string]map[string]string
+
 	// branchRuns are the action runs of branches by id, in creation order (branch_runs_mem.go),
 	// and defaultGit the Git branch each default branch tracks, by project ref.
 	branchRuns []*BranchRun
