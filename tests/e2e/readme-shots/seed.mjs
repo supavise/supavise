@@ -90,6 +90,9 @@ async function seedStorefront(p) {
     values ${PRODUCTS.map(([sku, name, cat, price, stock]) => `(${q(sku)}, ${q(name)}, ${q(cat)}, ${price}, ${stock})`).join(',\n')};
     alter table public.products enable row level security;
     create policy "Anyone can read active products" on public.products for select to anon, authenticated using (is_active);
+    -- New tables are not reachable through the Data API until they are granted, as on hosted Supabase.
+    grant select on public.products to anon, authenticated;
+    grant all on public.products to service_role;
   `)
   await sql(p.ref, `notify pgrst, 'reload schema';`)
 }
@@ -113,11 +116,13 @@ await seedSmall(analytics, `
   select (array['/','/pricing','/docs','/blog/launch','/changelog'])[1 + (g % 5)], (array['google','news.ycombinator.com','twitter','direct'])[1 + (g % 4)],
          (array['US','DE','GB','CA','JP','BR'])[1 + (g % 6)], now() - (g * interval '37 minutes')
   from generate_series(1, 200) g;
-  alter table public.page_views enable row level security;`)
+  alter table public.page_views enable row level security;
+  grant all on public.page_views to service_role;`)
 await seedSmall(sandbox, `
   create table public.agent_runs (id bigint generated always as identity primary key, task text not null, status text not null, started_at timestamptz not null default now());
   insert into public.agent_runs (task, status) values ('Add a coupon_code column to orders', 'succeeded'), ('Backfill product slugs', 'succeeded'), ('Draft RLS for order_items', 'running');
-  alter table public.agent_runs enable row level security;`)
+  alter table public.agent_runs enable row level security;
+  grant all on public.agent_runs to service_role;`)
 
 writeFileSync(join(DIR, 'seed.json'), JSON.stringify({
   org: E.org,
