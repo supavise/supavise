@@ -128,7 +128,9 @@ about. `runs.go` is the recorder; the tables are `supavise.branch_runs` and `sup
 * **PATCH `/actions/{id}/status`** sets the status of steps for a CI system that runs them itself (`UpdateRunStatusBody`).
   A run this process is working on refuses it (`409`). The run's status follows the steps. `REMOVING` and
   `RESTARTING` are container words this node's steps never have and are refused.
-* **For code outside the package** (the GitHub runner): `Service.Recorder(ctx, runID)` returns a `*Run` with
+* **For code outside the package** (the GitHub runner): `Service.StartRun(ctx, op, branchRef, ownerRef, parentRef)`
+  records a run the caller drives itself (all seven steps `CREATED`; the service leaves the branch's status and
+  `notify_url` to the caller), and `Service.Recorder(ctx, runID)` returns a `*Run` for a run that exists, with
   `Step(name).Start/Finish/Fail/Skip`, `Phase`, `Log`/`Logf` and `Finish(err)`; `Create` returns the run it started
   in `Branch.RunID` (the run row exists before `Create` returns), and `Service.LatestRun(ctx, ref)` finds the newest run
   listed under a ref later. All of them are no-ops on a nil
