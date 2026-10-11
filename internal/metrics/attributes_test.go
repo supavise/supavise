@@ -140,6 +140,17 @@ func TestAssembleForAReplica(t *testing.T) {
 	}
 }
 
+// A replica that has not reported its lag yet still has the lag as the one metric collected for it.
+func TestAssembleForAReplicaWithoutLagSamples(t *testing.T) {
+	res := Assemble([]string{LagAttribute, "cpu_usage"}, nil, NotCollectedForReplicas)
+	if msg, ok := res.Errors[LagAttribute]; ok || res.Errors["cpu_usage"] != NotCollectedForReplicas {
+		t.Fatalf("errors = %v (lag error %q)", res.Errors, msg)
+	}
+	if _, ok := res.Series[LagAttribute]; !ok || len(res.Rows) != 0 {
+		t.Fatalf("%+v", res)
+	}
+}
+
 func TestFormatValue(t *testing.T) {
 	for _, c := range []struct {
 		attr string
