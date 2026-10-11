@@ -106,6 +106,7 @@ Hosted Supabase gives every branch its own Postgres instance, which is what AI a
 - **With data**: a copy-on-write clone of the parent's data directory (`pg_backup_start`, reflink copy, `pg_backup_stop`) when the data disk is XFS, btrfs or OpenZFS 2.2+ with block cloning (macOS APFS uses clonefile), so creation time and disk use do not grow with the database; otherwise a restore from the parent's latest base backup plus WAL.
 - **Merge** applies the branch's new migrations to the parent; **reset** recreates the branch from the parent; **push** (rebase) applies the parent's new migrations to the branch.
 - **Expiry**: branches carry an optional TTL and are deleted when it lapses; with idle sleep (section 9), an unused branch would cost only disk.
+- **Action runs**: a create, merge, push and reset is a recorded run with the seven steps of the Management API (`clone`, `pull`, `health`, `configure`, `migrate`, `seed`, `deploy`; `PAUSED` is skipped, `DEAD` failed), a text log and an owner: the parent for a merge, the branch for the others, and the other ref answers 404. The run is stored with its steps before the call returns, ends before the branch's status changes, and the status ends `FUNCTIONS_DEPLOYED` or fails as `MIGRATIONS_FAILED` or `FUNCTIONS_FAILED`. The `notify_url` call sends the envelope hosted documents, signed with Standard Webhooks headers (`internal/branching/README.md`, "Action runs").
 
 ## 10. What was cut from earlier drafts and why
 

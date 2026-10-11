@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -406,6 +407,38 @@ func (s *Service) ListRuns(ctx context.Context, ownerRef string, offset, limit i
 		return nil, 0, err
 	}
 	return st.ListBranchRuns(ctx, ownerRef, offset, limit)
+}
+
+// BranchRuns returns the runs of a branch, newest first: the ones listed under the branch (its
+// create, push and reset) and the merges of it that are listed under its parent. limit bounds
+// how many it returns.
+func (s *Service) BranchRuns(ctx context.Context, b *Branch, limit int) ([]registry.BranchRun, error) {
+	st, err := s.runsOrErr()
+	if err != nil {
+		return nil, err
+	}
+	own, _, err := st.ListBranchRuns(ctx, b.Ref, 0, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := own
+	if !b.IsDefault && b.ParentRef != b.Ref {
+		// The parent owns the merges of all its branches: take this branch's from the newest.
+		merges, _, err := st.ListBranchRuns(ctx, b.ParentRef, 0, 200)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range merges {
+			if m.BranchRef == b.Ref {
+				out = append(out, m)
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // GetRun returns the run with this id if it is listed under ownerRef: a run answers under the ref

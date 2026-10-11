@@ -365,7 +365,42 @@ func (s *Server) createBranchFrom(r *http.Request, ref string, q branchCreate) (
 	if err != nil {
 		return nil, s.branchProjectErr(err)
 	}
+	if len(q.Secrets) > 0 && !b.IsDefault {
+		if err := s.storeBranchSecrets(r.Context(), b.Ref, q.Secrets); err != nil {
+			return nil, err
+		}
+	}
 	return b, nil
+}
+
+// storeBranchSecrets writes the secrets map of a create body as the branch's Edge Function
+// secrets. Secrets are per branch: nothing is copied from the parent. The branch's project row
+// exists a moment after Create returns on a node that is slow to start it, so the write waits
+// for it. (The map also reaches the service in CreateInput.Secrets.)
+func (s *Server) storeBranchSecrets(ctx context.Context, ref string, in map[string]string) error {
+	sealed := make(map[string][]byte, len(in))
+	for name, v := range in {
+		b, err := s.sec.Seal([]byte(v))
+		if err != nil {
+			return err
+		}
+		sealed[name] = b
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		err := s.store.PutFunctionSecrets(ctx, ref, sealed)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return errf(http.StatusInternalServerError, "The branch was created but its secrets could not be stored (set them with: supabase secrets set --project-ref %s): %v", ref, err)
+		}
+		select {
+		case <-time.After(250 * time.Millisecond):
+		case <-ctx.Done():
+		}
+	}
+	return s.functionsChanged(ctx, ref)
 }
 
 func (s *Server) disableBranching(w http.ResponseWriter, r *http.Request) error {
