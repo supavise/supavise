@@ -6,19 +6,21 @@ import (
 	"fmt"
 
 	"github.com/supavise/supavise/internal/lifecycle"
+	"github.com/supavise/supavise/internal/registry"
 )
 
 // DeleteOptions tune Delete.
 type DeleteOptions struct {
-	// Schedule is the soft delete of DELETE /v1/branches/{id}?force=false: the branch is
-	// removed after [branching] soft_delete_grace_minutes, and Restore cancels it.
+	// Schedule is the soft delete of DELETE /v1/branches/{id}?force=false: the branch is paused, so
+	// that the dashboard offers Restore, and removed after [branching] soft_delete_grace_minutes
+	// unless Restore cancels it.
 	Schedule bool
 }
 
 // Delete removes a branch: its fleet tenants, units, data and registry row. A branch that
 // is not persistent gets no final backup and its WAL archive is removed; a persistent one
 // keeps the final base backup the lifecycle takes (when a backup backend is configured).
-// With Schedule it only marks the branch for deletion and returns it.
+// With Schedule it only marks the branch for deletion, pauses it and returns it.
 func (s *Service) Delete(ctx context.Context, idOrRef string, o DeleteOptions) (*Branch, error) {
 	b, err := s.resolveBranch(ctx, idOrRef, "delete")
 	if err != nil {
@@ -31,21 +33,45 @@ func (s *Service) Delete(ctx context.Context, idOrRef string, o DeleteOptions) (
 		return nil, conflict("branch %s is busy with %s", b.Name, op)
 	}
 	if o.Schedule {
-		p, err := s.project(ctx, b.Ref)
-		if err != nil {
-			return nil, err
-		}
-		nb := *p.Branch
-		at := s.now().Add(s.cfg.Branching.SoftDeleteGrace()).UTC()
-		nb.DeletionScheduledAt = &at
-		if err := s.reg.UpdateBranch(ctx, b.Ref, &nb); err != nil {
-			return nil, err
-		}
-		s.event(ctx, b.Ref, "branch.deletion_scheduled", map[string]any{"at": at})
-		return s.Resolve(ctx, b.Ref)
+		return s.scheduleDelete(ctx, b)
 	}
 	// A request that gives up must not leave a half-deleted branch.
 	return b, s.deleteNow(context.WithoutCancel(ctx), b, "api")
+}
+
+// scheduleDelete marks b for deletion after the grace period and pauses it. The pause is what makes
+// preview_project_status INACTIVE, the one state in which Studio enables Restore; it is the owner's
+// pause, so a request does not wake the branch while it waits to go. A branch that is already paused
+// stays paused, and one the node paused for idleness becomes the owner's.
+func (s *Service) scheduleDelete(ctx context.Context, b *Branch) (*Branch, error) {
+	p, err := s.project(ctx, b.Ref)
+	if err != nil {
+		return nil, err
+	}
+	// An idle pause wakes on a request; this one must not.
+	if st := registry.BranchLifecycleOf(s.reg); st != nil && p.Status == registry.StatusInactive {
+		if pz, err := st.GetPause(ctx, b.Ref); err == nil && pz.Reason != "" {
+			if err := st.SetPause(ctx, b.Ref, "", s.now().UTC()); err != nil {
+				s.log.Warn("could not make the pause of a branch scheduled for deletion the owner's", "ref", b.Ref, "err", err)
+			}
+		}
+	}
+	nb := *p.Branch
+	at := s.now().Add(s.cfg.Branching.SoftDeleteGrace()).UTC()
+	nb.DeletionScheduledAt = &at
+	if err := s.reg.UpdateBranch(ctx, b.Ref, &nb); err != nil {
+		return nil, err
+	}
+	s.event(ctx, b.Ref, "branch.deletion_scheduled", map[string]any{"at": at})
+	if p.Status.Running() {
+		// The deletion stands whether or not the pause works: the sweeper removes the branch at the
+		// deadline either way, and a branch that keeps running until then is only less convenient.
+		if err := s.eng.Pause(context.WithoutCancel(ctx), b.Ref); err != nil {
+			s.log.Warn("could not pause a branch scheduled for deletion; it runs until it is deleted", "ref", b.Ref, "err", err)
+			s.event(ctx, b.Ref, "branch.deletion_pause_failed", map[string]any{"error": err.Error()})
+		}
+	}
+	return s.Resolve(ctx, b.Ref)
 }
 
 func (s *Service) deleteNow(ctx context.Context, b *Branch, by string) error {
@@ -77,7 +103,9 @@ type removeOptions struct {
 // the archive.
 func (s *Service) removeBranch(ctx context.Context, b *Branch, o removeOptions) error {
 	keepBackup := b.Persistent && o.final
-	if err := s.eng.DeleteWith(ctx, b.Ref, lifecycle.DeleteOptions{SkipFinalBackup: !keepBackup, KeepRecord: o.keepRecord}); err != nil {
+	// A reset (the only caller that keeps the record) starts the branch with no objects, so the
+	// files of the old cluster, in the bucket or on disk, go with it.
+	if err := s.eng.DeleteWith(ctx, b.Ref, lifecycle.DeleteOptions{SkipFinalBackup: !keepBackup, KeepRecord: o.keepRecord, PurgeObjects: o.keepRecord}); err != nil {
 		return err
 	}
 	if !keepBackup {
@@ -90,25 +118,34 @@ func (s *Service) removeBranch(ctx context.Context, b *Branch, o removeOptions) 
 	return nil
 }
 
-// Restore cancels a scheduled deletion.
+// Restore cancels a scheduled deletion and starts the branch again if it is paused, which is what
+// the dashboard's Restore button asks for. A branch that is neither scheduled nor paused has nothing
+// to restore (409).
 func (s *Service) Restore(ctx context.Context, idOrRef string) (*Branch, error) {
 	b, err := s.resolveBranch(ctx, idOrRef, "restore")
 	if err != nil {
 		return nil, err
 	}
-	if b.DeletionScheduledAt == nil {
-		return nil, conflict("branch %s is not scheduled for deletion", b.Name)
+	if b.DeletionScheduledAt == nil && b.ProjectStatus != registry.StatusInactive {
+		return nil, conflict("branch %s is not scheduled for deletion or paused", b.Name)
 	}
-	p, err := s.project(ctx, b.Ref)
-	if err != nil {
-		return nil, err
+	if b.DeletionScheduledAt != nil {
+		p, err := s.project(ctx, b.Ref)
+		if err != nil {
+			return nil, err
+		}
+		nb := *p.Branch
+		nb.DeletionScheduledAt = nil
+		if err := s.reg.UpdateBranch(ctx, b.Ref, &nb); err != nil {
+			return nil, err
+		}
+		s.event(ctx, b.Ref, "branch.deletion_cancelled", nil)
 	}
-	nb := *p.Branch
-	nb.DeletionScheduledAt = nil
-	if err := s.reg.UpdateBranch(ctx, b.Ref, &nb); err != nil {
-		return nil, err
+	if b.ProjectStatus == registry.StatusInactive {
+		if err := s.eng.Resume(context.WithoutCancel(ctx), b.Ref); err != nil {
+			return nil, fmt.Errorf("the deletion is cancelled, but branch %s did not start again (resume it with `supavise projects resume %s`): %w", b.Name, b.Ref, err)
+		}
 	}
-	s.event(ctx, b.Ref, "branch.deletion_cancelled", nil)
 	return s.Resolve(ctx, b.Ref)
 }
 

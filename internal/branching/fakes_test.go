@@ -30,8 +30,16 @@ type fakeEngine struct {
 	skipped map[string]bool // ref -> SkipFinalBackup of the last delete
 	// keptRecord marks refs whose last delete kept the registry row.
 	keptRecord map[string]bool
-	rotated    []string
-	paused     map[string]int
+	// purged marks refs whose last delete also asked for their Storage objects to go.
+	purged  map[string]bool
+	rotated []string
+	paused  map[string]int
+	resumed map[string]int
+	// pauseErr and resumeErr fail PauseWith and Resume; resumeWait holds a Resume until it closes.
+	pauseErr, resumeErr error
+	resumeWait          chan struct{}
+	// onResume runs when Resume starts the project, standing for its services coming up.
+	onResume func(ref string)
 
 	createErr error
 	// keysFailAfter, when > 0, makes Keys(parentRef) fail after that many successful calls.
@@ -100,6 +108,10 @@ func (f *fakeEngine) DeleteWith(ctx context.Context, ref string, o lifecycle.Del
 	f.deletes = append(f.deletes, ref)
 	f.skipped[ref] = o.SkipFinalBackup
 	f.keptRecord[ref] = o.KeepRecord
+	if f.purged == nil {
+		f.purged = map[string]bool{}
+	}
+	f.purged[ref] = o.PurgeObjects
 	f.mu.Unlock()
 	if o.KeepRecord {
 		return f.reg.SetProjectStatus(ctx, ref, registry.StatusInitFailed)
@@ -110,16 +122,56 @@ func (f *fakeEngine) DeleteWith(ctx context.Context, ref string, o lifecycle.Del
 func (f *fakeEngine) Delete(ctx context.Context, ref string) error {
 	return f.DeleteWith(ctx, ref, lifecycle.DeleteOptions{})
 }
-func (f *fakeEngine) Pause(_ context.Context, ref string) error {
+func (f *fakeEngine) Pause(ctx context.Context, ref string) error {
+	return f.PauseWith(ctx, ref, lifecycle.PauseOptions{})
+}
+
+// PauseWith records the pause the way the Engine does and stops the project in the registry.
+func (f *fakeEngine) PauseWith(ctx context.Context, ref string, o lifecycle.PauseOptions) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.paused == nil {
 		f.paused = map[string]int{}
 	}
 	f.paused[ref]++
-	return nil
+	err := f.pauseErr
+	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if st := registry.BranchLifecycleOf(f.reg); st != nil {
+		if err := st.SetPause(ctx, ref, o.Reason, time.Now()); err != nil {
+			return err
+		}
+	}
+	return f.reg.SetProjectStatus(ctx, ref, registry.StatusInactive)
 }
-func (f *fakeEngine) Resume(context.Context, string) error { return nil }
+
+func (f *fakeEngine) Resume(ctx context.Context, ref string) error {
+	f.mu.Lock()
+	if f.resumed == nil {
+		f.resumed = map[string]int{}
+	}
+	f.resumed[ref]++
+	err, wait := f.resumeErr, f.resumeWait
+	f.mu.Unlock()
+	if wait != nil {
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if f.onResume != nil {
+		f.onResume(ref)
+	}
+	if st := registry.BranchLifecycleOf(f.reg); st != nil {
+		_ = st.ClearPause(ctx, ref)
+	}
+	return f.reg.SetProjectStatus(ctx, ref, registry.StatusActiveHealthy)
+}
 func (f *fakeEngine) RotateKeys(_ context.Context, ref string) (*secrets.ProjectKeys, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

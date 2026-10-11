@@ -40,6 +40,7 @@ func (s *Service) purgeArchive(ctx context.Context, ref string) error {
 type SweepResult struct {
 	Expired []string          // refs of branches deleted because their expiry or scheduled deletion lapsed
 	Stale   []string          // refs whose interrupted operation was marked failed
+	Warned  []string          // refs of branches with a hostname that were warned about their expiry
 	Failed  map[string]string // ref -> error, for branches that could not be deleted
 }
 
@@ -79,6 +80,9 @@ func (s *Service) Sweep(ctx context.Context, dryRun bool) (*SweepResult, error) 
 		lapsed := (!b.Persistent && b.ExpiresAt != nil && !b.ExpiresAt.After(now)) ||
 			(b.DeletionScheduledAt != nil && !b.DeletionScheduledAt.After(now))
 		if !lapsed {
+			if !dryRun && s.warnExpiring(ctx, b, now) {
+				res.Warned = append(res.Warned, p.Ref)
+			}
 			continue
 		}
 		if dryRun {

@@ -163,9 +163,15 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	}
 	// Branches: the Management API's branch endpoints and the expiry sweeper (internal/branching).
 	store := api.NewPGStore(pg.Pool()) // explicit: the API's state must survive restarts
+	// The proxy counts the requests it serves to each project's API; the Management API reads the
+	// counts for the dashboard's request charts, and the branching service for the idle pause of
+	// branches. The collector drops the counts of a project it finds deleted (a delete through the API
+	// does it at once).
+	requests := reqstats.New()
 	bsvc, err := branching.New(branching.Deps{
 		Cfg: cfg, Registry: node.Registry, Secrets: node.Secrets, Engine: node.Engine,
 		Backup: backups(node), Functions: api.FunctionDigests(store), Log: log.With("component", "branching"),
+		Activity: requests, NodeID: node.Engine.NodeID(),
 	})
 	if err != nil {
 		return err
@@ -198,10 +204,6 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	// and resource-warning routes and the alert checker answer from (metrics.go). The node's id comes
 	// from the cluster membership once the wire has one, so it is read through the variable.
 	var wire *Wire
-	// The proxy counts the requests it serves to each project's API; the Management API reads the
-	// counts for the dashboard's request charts. The collector drops the counts of a project it finds
-	// deleted (a delete through the API does it at once).
-	requests := reqstats.New()
 	mx := newMetrics(cfg, node, log.With("component", "metrics"), func() string { return selfOf(wire) }, requests.Forget)
 	apiDeps := api.Deps{
 		Requests: requests,
@@ -247,6 +249,9 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 		FunctionsEnabled: cfg.Functions.Enabled,
 		Stats:            requests,
 		Logger:           log.With("component", "proxy"),
+	}
+	if boot.Role != cluster.RoleFollower { // waking a branch writes the registry, which a follower only reads
+		popts.IdleWaker = bsvc
 	}
 	wire = newWire(cfg, log, node, o, &apiDeps, &popts)
 	defer wire.stop()
@@ -359,6 +364,17 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	if boot.Role != cluster.RoleFollower { // the sweeper deletes branches: the leader's registry only
 		g.Go(func() error {
 			_ = bsvc.Run(gctx) // expiry sweeper; returns when the daemon stops
+			return nil
+		})
+		g.Go(func() error {
+			// Pauses the branches nobody uses and keeps the listeners that wake them on a database
+			// connection. It starts once the projects are up: a branch that has not started yet is not idle.
+			select {
+			case <-projectsUp:
+			case <-gctx.Done():
+				return nil
+			}
+			_ = bsvc.RunIdle(gctx)
 			return nil
 		})
 	}
