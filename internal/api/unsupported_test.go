@@ -113,7 +113,8 @@ func TestProfileHidesWhatCannotWork(t *testing.T) {
 	// a JWKS (PostgREST, Storage and Realtime take one), hosted offers it to every project, and the page
 	// is not unbuildable, so its "Add provider" answers with the reason (unsupported.go) instead of vanishing.
 	// The organization's SSO page works against sso_routes.go (one provider per organization, as Studio's page
-	// assumes), so it is not hidden.
+	// assumes), so it is not hidden. That is read from the page's source; a browser run has yet to confirm it
+	// (identity.go).
 	for _, keep := range []string{"logs:all", "reports:all", "authentication:third_party_auth", "organization:show_sso_settings"} {
 		if have[keep] {
 			t.Errorf("disabled_features hides %s", keep)

@@ -29,6 +29,11 @@ var disabledFeatures = []string{
 	// services behind them (icebergCatalog and vectorBuckets stay off, internal/fleet/storage.go), so
 	// the pages would offer buckets that cannot work. Logs and Reports stay: they say what is missing.
 	"storage:analytics", "storage:vectors",
+	// Not listed, on purpose: organization:show_sso_settings. The organization's SSO page is shown. Its four
+	// calls match sso_routes.go and the page's source at the pinned commit, but no browser run has loaded
+	// it: Studio renders "unknown interface" for a page whose key is disabled, so only a run with the key
+	// enabled can settle it. If the crawl finds a dead end, put the key back here and in the hide list of
+	// unsupported_test.go.
 }
 
 // featureRestoreToNewProject is the key that hides Database > Backups > Restore to new project. It stays in
