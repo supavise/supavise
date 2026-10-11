@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/supavise/supavise/internal/app"
+	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/functions"
 	"github.com/supavise/supavise/internal/lifecycle"
@@ -215,7 +217,7 @@ their roles. The publishable and secret keys (sb_...) and every password are new
 			// relay; serve the sockets nobody answers while the daemon is down.
 			_, stopRelay := app.StartWALRelay(cmd.Context(), n.Cfg, newLogger(n.Cfg), true, a[0])
 			defer stopRelay()
-			if err := deleteProject(cmd.Context(), n, a[0], pSkipBackup); err != nil {
+			if err := deleteProjectOrBranch(cmd.Context(), n, a[0], pSkipBackup); err != nil {
 				return err
 			}
 			// The Edge Functions tree lives in the runtime's state directory, not in the
@@ -229,7 +231,10 @@ their roles. The publishable and secret keys (sb_...) and every password are new
 	del.Long = `Takes a final base backup (unless --skip-final-backup), removes the project's read replicas, its
 tenants and units, and deletes its data. The replicas go first: this command marks them for removal and the
 leader's daemon removes them on their nodes. While one is still there the command stops and names it; run it
-again when ` + "`supavise replicas ls`" + ` no longer lists it.`
+again when ` + "`supavise replicas ls`" + ` no longer lists it.
+
+A branch is deleted the way ` + "`supavise branches delete`" + ` deletes it: a branch that is not persistent takes no final
+backup and leaves nothing in the archive, and the parent records branch.deleted.`
 	del.Flags().BoolVar(&pSkipBackup, "skip-final-backup", false, "delete without the final base backup (the data is gone)")
 
 	rotate := projectCmd("rotate-keys <ref>", "Issue a new JWT secret and API keys and restart GoTrue and PostgREST", cobra.ExactArgs(1),
@@ -292,4 +297,20 @@ again when ` + "`supavise replicas ls`" + ` no longer lists it.`
 
 	projectsCmd.AddCommand(create, list, get, pause, resume, del, rotate, health)
 	rootCmd.AddCommand(projectsCmd)
+}
+
+// deleteProjectOrBranch deletes a project, or a branch through the branch service, which keeps the rules of
+// branches: no final backup and no archive for one that is not persistent, and the parent's
+// branch.deleted event. Deleting a branch as a project would leave its WAL and base backups behind.
+func deleteProjectOrBranch(ctx context.Context, n *lifecycle.Node, ref string, skipFinalBackup bool) error {
+	if p, err := n.Registry.GetProject(ctx, ref); err == nil && p.Branch != nil {
+		svc, err := newBranching(ctx, n.Cfg, n)
+		if err != nil {
+			return err
+		}
+		defer svc.Drain(context.Background())
+		_, err = svc.Delete(ctx, ref, branching.DeleteOptions{SkipFinalBackup: skipFinalBackup})
+		return err
+	}
+	return deleteProject(ctx, n, ref, skipFinalBackup)
 }

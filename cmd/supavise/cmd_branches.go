@@ -209,11 +209,7 @@ CLI and MCP server.`,
 		t := newTable(cmd.OutOrStdout())
 		fmt.Fprintln(t, "NAME\tREF\tSTATUS\tPROJECT\tDATA\tPERSISTENT\tEXPIRES")
 		for _, b := range bs {
-			exp := "-"
-			if b.ExpiresAt != nil {
-				exp = time.Until(*b.ExpiresAt).Round(time.Minute).String()
-			}
-			fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%v\t%s\n", b.Name, b.Ref, b.State, b.ProjectStatus, orDash(b.CloneMethod), b.Persistent, exp)
+			fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%v\t%s\n", b.Name, b.Ref, b.State, projectColumn(ctx, svc, &b), orDash(b.CloneMethod), b.Persistent, expiryColumn(&b, time.Now()))
 		}
 		return t.Flush()
 	})
@@ -508,4 +504,37 @@ CLI and MCP server.`,
 
 	cmd.AddCommand(list, create, get, del, restore, merge, reset, push, diff, runs, logs, notifySecret, sweep, seed)
 	rootCmd.AddCommand(cmd)
+}
+
+// expiryColumn is the EXPIRES column of the list: when a lifetime ends, or, for a branch whose deletion is
+// scheduled, when that happens and that it can be restored.
+func expiryColumn(b *branching.Branch, now time.Time) string {
+	until := func(t time.Time) string {
+		if t.Before(now) {
+			return "now"
+		}
+		return t.Sub(now).Round(time.Minute).String()
+	}
+	switch {
+	case b.DeletionScheduledAt != nil:
+		return "deleted in " + until(*b.DeletionScheduledAt) + " (restore cancels)"
+	case b.Persistent || b.ExpiresAt == nil:
+		return "-"
+	}
+	return until(*b.ExpiresAt)
+}
+
+// projectColumn is the PROJECT column of the list: the project's status, and who paused it when it is
+// paused (a pause the node made for idleness wakes on the next request; an owner's waits for a resume).
+func projectColumn(ctx context.Context, svc *branching.Service, b *branching.Branch) string {
+	if b.ProjectStatus != registry.StatusInactive || b.IsDefault {
+		return string(b.ProjectStatus)
+	}
+	switch svc.PauseReason(ctx, b.Ref) {
+	case registry.PauseIdle:
+		return string(b.ProjectStatus) + " (idle: wakes on a request)"
+	case "owner":
+		return string(b.ProjectStatus) + " (paused)"
+	}
+	return string(b.ProjectStatus)
 }
