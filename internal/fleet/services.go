@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -98,6 +99,13 @@ func (m *Manager) spec(svc string, c *creds, follower bool) (units.Spec, error) 
 		s.Env = env // the server runs the multi-tenant migrations itself at start
 	case config.SvcStudio:
 		s.Env = studioEnv(cfg, c.dashboardSSO)
+		// A provider that cannot be rendered (an unreadable key file) must not keep the dashboard
+		// down: Studio starts without AI, which it then reports truthfully, and the log says why.
+		ai, err := studioAIEnv(m.studioAI())
+		if err != nil {
+			m.log.Warn("Studio starts without its AI provider", "error", err)
+		}
+		maps.Copy(s.Env, ai)
 	case config.SvcEdgeRuntime:
 		return edgeRuntimeSpec(cfg, s)
 	default:

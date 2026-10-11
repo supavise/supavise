@@ -174,7 +174,8 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	// that when it starts: the API re-renders its unit when the first provider appears or the
 	// last one goes (fleet.Manager.RefreshStudio).
 	fm, err := fleet.NewManager(fleet.Deps{Cfg: cfg, Log: log.With("component", "fleet"), Registry: node.Registry,
-		Secrets: node.Secrets, Supervisor: node.Supervisor, Artifacts: node.Artifacts})
+		Secrets: node.Secrets, Supervisor: node.Supervisor, Artifacts: node.Artifacts,
+		StudioAI: liveStudioAI(cfg, o.ConfigPath, log.With("component", "fleet"))})
 	if err != nil {
 		return err
 	}
