@@ -97,6 +97,23 @@ Two things to know about the server. Its documentation search, `search_docs`, ca
 
 To turn OAuth sign-in off, set `disable_oauth = true` in the `[api]` section of `/etc/supavise/config.toml` and restart `supavise.service`: the MCP URL, the sign-in endpoints and the OAuth Apps page then stop working, and Studio is no longer given the URL. Personal access tokens and the dashboard keep working. [Design, section 13](design.md#13-oauth-sign-in-and-the-remote-mcp-endpoint) describes how it works.
 
+## Check a project with the advisors
+
+The advisors list problems in a project's schema and settings. Studio shows them under **Advisors**, on the **Security Advisor** and **Performance Advisor** pages, and in the advisor panel of the project home. The Supabase CLI and an MCP client read the same lists:
+
+```bash
+supabase --profile ./supavise-profile.yaml db advisors --linked --type security --level warn
+```
+
+In an MCP client, ask for `get_advisors` with `type` `security` or `performance`. Every role that can see the project can read the advisors.
+
+Supavise runs the checks when you ask, in the project's own database, as Studio's self-hosted mode does. Table, view, function, policy, index and storage checks cover the schemas that the project's Data API exposes (the PostgREST setting `db_schema`), so a table in a schema that is not exposed is not reported as open to the internet. It also reports four findings from the Auth settings: leaked password protection off, fewer than two MFA methods, an email OTP that lives longer than an hour, and an Auth connection pool set in connections and not in percent.
+
+- **How fresh.** The result is kept for 10 seconds. A migration, or a statement that creates, alters or drops something, clears it, whether it came from the CLI, an MCP client or Studio's SQL editor. A change over a direct database connection shows within 10 seconds.
+- **Time limit.** The checks stop after 30 seconds. If the dashboard answers "took longer than 30 seconds", run them again when the database is less busy.
+- **Rules.** If you turn on the **Disable Advisor rules** feature preview in Studio, you can disable a check for the whole project. Owners and Administrators change the rules; everyone reads them. A disabled check leaves the dashboard, the CLI and MCP lists.
+- **What is missing.** Hosted Supabase also reports health checks (error rates of the API, Auth, Storage and Edge Functions, and infrastructure alerts). Supavise keeps no logs or metrics for them, so the checks answer "unavailable", which Studio and the MCP server leave out. The compliance checks (SSL enforcement, network restrictions, point-in-time recovery, password policy, backup admin) and the Postgres security-patch check are not reported.
+
 ## Back up and restore
 
 Backups start on their own. Every project archives its write-ahead log (WAL) continuously and takes a nightly base backup, and the same nightly run copies its Storage files and Edge Functions.
@@ -177,6 +194,7 @@ By default every move is yours to start. `[failover] mode = "project"` or `"serv
 | Management API and `supabase link` | Not available | Yes: the parts that Studio, the Supabase CLI and the MCP server call | Yes |
 | Remote MCP server with OAuth sign-in | Not available | Yes, at `api.<domain>/mcp`, one organization per sign-in | Yes |
 | Branching | Not available | Yes, schema-only or with data | Yes |
+| Security and Performance Advisors | Studio's page for its one project; nothing for the CLI or an MCP client | Yes: Studio, `supabase db advisors` and the MCP server, without the health checks | Yes |
 | Point-in-time restore | Not included; you set up backups yourself | Yes, in the dashboard (in place) or with `supavise backups restore` on the server | Yes |
 | Edge Functions | Yes | Yes, on by default | Yes |
 | Team roles and SSO | One shared dashboard login | Owner, Administrator, Developer and Read-only roles; SAML SSO | Yes |
