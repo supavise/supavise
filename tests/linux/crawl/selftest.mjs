@@ -1,7 +1,7 @@
 // The logic of lib.mjs and the shape of the files next to it: `node --test tests/linux/crawl/selftest.mjs`.
 // It needs no variables, no browser and no node: run it after changing anything in this directory.
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -325,4 +325,41 @@ test('crawl.mjs passes a clean stand-in', { skip: !chrome && 'set CRAWL_STANDIN_
   assert.equal(r.code, 0, r.stderr)
   assert.deepEqual(r.report.failures, [])
   assert.equal(r.report.allowlist.unseen.stubs.length, 0)
+})
+
+// ---- changes.sh ---------------------------------------------------------------------------------------------
+test('changes.sh tells which parts a push touched, and runs on main whatever it touched', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'crawl-changes-'))
+  const git = (...a) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { encoding: 'utf8' }).trim()
+  const put = (f, c) => {
+    const p = join(dir, f)
+    mkdirSync(join(p, '..'), { recursive: true })
+    writeFileSync(p, c)
+    git('add', f)
+  }
+  git('init', '-q', '-b', 'main')
+  put('README.md', 'a')
+  git('commit', '-q', '-m', 'base')
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+  const run = (env) => {
+    const out = execFileSync('bash', [join(HERE, 'changes.sh'), 'studio=^(studio/|internal/versions/)', 'api=^internal/(api|proxy)/'], { cwd: dir, env: { ...process.env, GITHUB_EVENT_NAME: 'push', ...env }, encoding: 'utf8' })
+    return Object.fromEntries(out.trim().split('\n').map((l) => l.split('=')))
+  }
+  // the first push of a branch: against the merge base with main
+  git('checkout', '-q', '-b', 'ws/x')
+  put('internal/api/x.go', 'package api')
+  git('commit', '-q', '-m', 'api')
+  assert.deepEqual(run({ GITHUB_REF: 'refs/heads/ws/x', EVENT_BEFORE: '0'.repeat(40) }), { studio: 'false', api: 'true', always: 'false', run: 'true' })
+  // a later push: the files since the old commit
+  const before = git('rev-parse', 'HEAD')
+  put('docs/a.md', 'x')
+  git('commit', '-q', '-m', 'docs')
+  assert.deepEqual(run({ GITHUB_REF: 'refs/heads/ws/x', EVENT_BEFORE: before }), { studio: 'false', api: 'false', always: 'false', run: 'false' })
+  put('studio/PATCHSET', '4')
+  git('commit', '-q', '-m', 'studio')
+  assert.deepEqual(run({ GITHUB_REF: 'refs/heads/ws/x', EVENT_BEFORE: before }), { studio: 'true', api: 'false', always: 'false', run: 'true' })
+  // main, a manual run and a schedule always run (the release gate needs a run on the tagged commit)
+  assert.deepEqual(run({ GITHUB_REF: 'refs/heads/main', EVENT_BEFORE: git('rev-parse', 'HEAD') }), { studio: 'false', api: 'false', always: 'true', run: 'true' })
+  assert.equal(run({ GITHUB_EVENT_NAME: 'schedule', GITHUB_REF: 'refs/heads/main' }).run, 'true')
+  assert.equal(run({ GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/ws/x', EVENT_BEFORE: '' }).always, 'true')
 })
