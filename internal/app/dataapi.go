@@ -21,6 +21,8 @@ type dataAPIConverger interface {
 const (
 	dataAPIRetry = 5 * time.Minute
 	dataAPIIdle  = time.Hour
+	// dataAPIUpgradePoll is how often it asks whether the upgrade that is running has ended.
+	dataAPIUpgradePoll = 15 * time.Second
 )
 
 // convergeDataAPI revokes the default privileges of "public" for the Data API roles of every project
@@ -34,14 +36,14 @@ func convergeDataAPI(ctx context.Context, n *lifecycle.Node, log *slog.Logger) {
 		u, running := notice.UpgradeRunning(n.Cfg.Paths(), time.Now())
 		return running && u.Forward() && u.ProcessAlive()
 	}
-	convergeDataAPILoop(ctx, n.Engine, upgrading, log, dataAPIRetry, dataAPIIdle)
+	convergeDataAPILoop(ctx, n.Engine, upgrading, log, dataAPIUpgradePoll, dataAPIRetry, dataAPIIdle)
 }
 
-func convergeDataAPILoop(ctx context.Context, c dataAPIConverger, upgrading func() bool, log *slog.Logger, retry, idle time.Duration) {
+func convergeDataAPILoop(ctx context.Context, c dataAPIConverger, upgrading func() bool, log *slog.Logger, poll, retry, idle time.Duration) {
 	for {
 		wait := idle
 		if upgrading() {
-			wait = retry
+			wait = poll
 		} else if failed := c.ConvergeDataAPI(ctx); len(failed) > 0 {
 			wait = retry
 			for ref, err := range failed {

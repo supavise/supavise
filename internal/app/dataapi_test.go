@@ -45,7 +45,7 @@ func TestConvergeDataAPILoop(t *testing.T) {
 	upgrading.Store(true)
 	done := make(chan struct{})
 	go func() {
-		convergeDataAPILoop(ctx, c, upgrading.Load, log, 10*time.Millisecond, time.Hour)
+		convergeDataAPILoop(ctx, c, upgrading.Load, log, 10*time.Millisecond, 10*time.Millisecond, time.Hour)
 		close(done)
 	}()
 	time.Sleep(60 * time.Millisecond)

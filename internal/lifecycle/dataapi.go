@@ -9,33 +9,44 @@ import (
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/projectconfig"
 	"github.com/supavise/supavise/internal/registry"
+	"github.com/supavise/supavise/internal/secrets"
 )
 
 // Data API exposure, as hosted Supabase has it since 2026-05-30: a table created in "public" is not
 // reachable through PostgREST or GraphQL until a grant says so. The default privileges that used to
-// give select, insert, update and delete on new tables, and usage and select on new sequences, to
-// anon, authenticated and service_role are revoked for the role postgres (the role the SQL editor,
-// the dashboard and migrations run as). Tables that exist keep their grants. Hosted applies the same
-// change to the projects it already runs on 2026-10-30; Supavise applies it once per project when a
-// node first runs a project on the release that has it (Engine.ConvergeDataAPI).
+// give select, insert, update and delete on new tables, usage and select on new sequences, and execute
+// on new functions, to anon, authenticated and service_role are revoked for the role postgres (the role
+// the SQL editor, the dashboard and migrations run as). Objects that exist keep their grants. Hosted
+// applies the same change to the projects it already runs on 2026-10-30; Supavise applies it once per
+// project when a node first runs a project on the release that has it (Engine.ConvergeDataAPI).
 //
-// Source of the statements: the changelog of hosted Supabase, "Breaking change: tables not exposed to
-// Data and GraphQL API automatically", https://supabase.com/changelog/45329-breaking-change-tables-not-exposed-to-data-and-graphql-api-automatically.
-// The page names these two statements and says nothing about functions, so functions keep their
-// default execute grant here (Studio's own "Automatically expose new tables" switch in
-// Integrations, Data API changes functions too; that is a user's choice made there, not a default).
+// Sources. The first two statements are the ones hosted's changelog gives, "Breaking change: tables not
+// exposed to Data and GraphQL API automatically",
+// https://supabase.com/changelog/45329-breaking-change-tables-not-exposed-to-data-and-graphql-api-automatically.
+// It says nothing about functions. The last two are in Studio's own SQL for the same switch (the
+// "Automatically expose new tables" setting under Integrations, Data API; buildDefaultPrivilegesSql
+// ('revoke') in packages/pg-meta/src/sql/studio/database/privileges.ts at the pinned commit), which
+// the create-project form's checkbox of the same name controls and whose telemetry calls it
+// "new tables and functions". Studio reads the switch as off only when the functions are revoked too
+// (getDefaultPrivilegesStateSql counts three default ACL rows). Revoking functions as well is the safe
+// side of the doubt: a migration that works here because it grants execute on its functions also works
+// on hosted, and the reverse would not hold.
 var RevokeDefaultPrivilegesSQL = []string{
 	"alter default privileges for role postgres in schema public revoke select, insert, update, delete on tables from anon, authenticated, service_role",
 	"alter default privileges for role postgres in schema public revoke usage, select on sequences from anon, authenticated, service_role",
+	"alter default privileges for role postgres in schema public revoke execute on functions from anon, authenticated, service_role",
+	"alter default privileges for role postgres in schema public revoke execute on functions from public",
 }
 
-// GrantDefaultPrivilegesSQL is the rollback the same page gives for the default privileges: it
-// restores the grants new tables and sequences carried before. Existing tables are a second step
-// (grant ... on all tables in schema public). It is documented for users (docs/guide.md); Supavise
-// never runs it.
+// GrantDefaultPrivilegesSQL is the rollback: hosted's page gives the first two statements, Studio's
+// switch the last two. It brings back the grants new objects carried before. Objects created since
+// the revoke need the grants on all tables, sequences and routines of public too (docs/guide.md).
+// Supavise never runs it; a test keeps the guide's copy equal to this one.
 var GrantDefaultPrivilegesSQL = []string{
 	"alter default privileges for role postgres in schema public grant select, insert, update, delete on tables to anon, authenticated, service_role",
 	"alter default privileges for role postgres in schema public grant usage, select on sequences to anon, authenticated, service_role",
+	"alter default privileges for role postgres in schema public grant execute on functions to anon, authenticated, service_role",
+	"alter default privileges for role postgres in schema public grant execute on functions to public",
 }
 
 // APISchemaSQL creates the dedicated schema hosted's "Switch the default API schema" dialog
@@ -64,8 +75,8 @@ type DataAPIOptions struct {
 	ExposeNewTables bool
 	// APISchema also creates the dedicated schema "api" (data_api_use_api_schema).
 	APISchema bool
-	// ExposedSchemas is the comma-separated PostgREST db_schema to save before PostgREST first
-	// starts; empty keeps the default (public,graphql_public).
+	// ExposedSchemas is the comma-separated PostgREST db_schema to save once the schemas exist
+	// (PostgREST restarts on it); empty keeps the default (public,graphql_public).
 	ExposedSchemas string
 	// CopyFrom is the ref of the project a seeded create (a restore as new, a data branch) takes the
 	// recorded choice from. The seed carries the database, default privileges included, so no SQL
@@ -83,6 +94,10 @@ type DataAPISetup struct {
 	RevokeDefaultPrivileges bool
 	// APISchema runs APISchemaSQL.
 	APISchema bool
+	// MustExist lists schemas that have to exist once the statements ran: the exposed schemas of a new
+	// project, which PostgREST refuses to start on when one is missing. Nothing is written for it; a
+	// missing schema fails the call.
+	MustExist []string
 }
 
 // Statements lists the SQL of the setup, in order.
@@ -114,7 +129,7 @@ type DataAPIPlane interface {
 // ApplyDataAPI implements DataAPIPlane.
 func (pl *PostgresPlane) ApplyDataAPI(ctx context.Context, p *registry.Project, s DataAPISetup) error {
 	stmts := s.Statements()
-	if len(stmts) == 0 {
+	if len(stmts) == 0 && len(s.MustExist) == 0 {
 		return nil
 	}
 	c, err := connect(ctx, socketDSN(pl.paths(p), "postgres"))
@@ -139,6 +154,15 @@ func (pl *PostgresPlane) ApplyDataAPI(ctx context.Context, p *registry.Project, 
 			return fmt.Errorf("lifecycle: %s: %w", q, err)
 		}
 	}
+	for _, name := range s.MustExist {
+		var found bool
+		if err := tx.QueryRow(ctx, "select exists (select 1 from pg_namespace where nspname = $1)", name).Scan(&found); err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("lifecycle: schema %q does not exist in %s, so the Data API cannot expose it (create it, then save it as an exposed schema)", name, p.Ref)
+		}
+	}
 	return tx.Commit(ctx)
 }
 
@@ -160,7 +184,7 @@ const (
 // records the decision. A seeded create (restore as new, data branch) runs no SQL, because the
 // seed is a copy of a database that has its own default privileges; it copies the row of
 // CopyFrom so the copy is not converged again.
-func (e *Engine) dataAPIAtCreate(ctx context.Context, p *registry.Project, req CreateRequest) error {
+func (e *Engine) dataAPIAtCreate(ctx context.Context, p *registry.Project, keys *secrets.ProjectKeys, req CreateRequest) error {
 	store := registry.DataAPIOf(e.reg)
 	o := req.DataAPI
 	if req.Seed != nil {
@@ -187,7 +211,9 @@ func (e *Engine) dataAPIAtCreate(ctx context.Context, p *registry.Project, req C
 		choice = registry.PrivilegesGranted
 	}
 	setup := DataAPISetup{RevokeDefaultPrivileges: choice == registry.PrivilegesRevoked, APISchema: o.APISchema}
-	if len(setup.Statements()) > 0 {
+	exposed := splitSchemas(o.ExposedSchemas)
+	setup.MustExist = exposed
+	if len(setup.Statements()) > 0 || len(setup.MustExist) > 0 {
 		dp, ok := e.plane.(DataAPIPlane)
 		if !ok {
 			return nil // a plane that cannot run it: nothing is recorded, a later pass decides
@@ -196,14 +222,35 @@ func (e *Engine) dataAPIAtCreate(ctx context.Context, p *registry.Project, req C
 			return err
 		}
 	}
+	// PostgREST started on the default schemas, because it will not start on one that does not exist yet
+	// (the schema api, a schema of the caller's). Now that they do, it learns the list.
+	if len(exposed) > 0 {
+		if err := e.exposeSchemasAtCreate(ctx, p.Ref, o.ExposedSchemas); err != nil {
+			return err
+		}
+		if cp, ok := e.plane.(ConfigPlane); ok {
+			if err := cp.ReconfigureService(ctx, p, keys, config.SvcPostgREST); err != nil {
+				return fmt.Errorf("restart PostgREST on the exposed schemas: %w", err)
+			}
+		}
+	}
 	if store == nil {
 		return nil
 	}
 	return store.PutDataAPI(ctx, registry.DataAPI{Ref: p.Ref, DefaultPrivileges: choice, Source: registry.DataAPICreate})
 }
 
-// exposeSchemasAtCreate saves the exposed schemas of a new project as its PostgREST db_schema, so
-// that PostgREST starts with them. The row of the project exists; the units do not yet.
+func splitSchemas(list string) []string {
+	var out []string
+	for _, s := range strings.Split(list, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// exposeSchemasAtCreate saves the exposed schemas of a new project as its PostgREST db_schema.
 func (e *Engine) exposeSchemasAtCreate(ctx context.Context, ref, schemas string) error {
 	if schemas == "" {
 		return nil

@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/supavise/supavise/internal/fleet"
 	"github.com/supavise/supavise/internal/projectconfig"
 	"github.com/supavise/supavise/internal/registry"
+	"github.com/supavise/supavise/internal/secrets"
 )
 
 // dataAPIPlane is a fakePlane that can run the Data API statements, and records them.
@@ -19,13 +21,34 @@ type dataAPIPlane struct {
 	dmu  sync.Mutex
 	runs []string
 	err  error
+	// reconfigured are the ReconfigureService calls ("ref service"); reconfErr is what they return.
+	reconfigured []string
+	reconfErr    error
 }
 
 func (d *dataAPIPlane) ApplyDataAPI(_ context.Context, p *registry.Project, s DataAPISetup) error {
 	d.dmu.Lock()
 	defer d.dmu.Unlock()
-	d.runs = append(d.runs, p.Ref+": "+strings.Join(s.Statements(), "; "))
+	run := p.Ref + ": " + strings.Join(s.Statements(), "; ")
+	if len(s.MustExist) > 0 {
+		run += " [must exist: " + strings.Join(s.MustExist, ",") + "]"
+	}
+	d.runs = append(d.runs, run)
 	return d.err
+}
+
+// ConfigPlane, so that the Engine can restart PostgREST on the exposed schemas.
+func (d *dataAPIPlane) ReconfigureService(_ context.Context, p *registry.Project, _ *secrets.ProjectKeys, svc string) error {
+	d.dmu.Lock()
+	defer d.dmu.Unlock()
+	d.reconfigured = append(d.reconfigured, p.Ref+" "+svc)
+	return d.reconfErr
+}
+func (d *dataAPIPlane) ApplyPostgresSettings(context.Context, *registry.Project, *secrets.ProjectKeys, bool, func(context.Context)) (bool, error) {
+	return false, nil
+}
+func (d *dataAPIPlane) SetRolePassword(context.Context, *registry.Project, string, string) error {
+	return nil
 }
 
 func (d *dataAPIPlane) ran() []string {
@@ -58,10 +81,12 @@ func choiceOf(t *testing.T, reg registry.Registry, ref string) *registry.DataAPI
 	return d
 }
 
-func TestRevokeSQLIsHostedsChange(t *testing.T) {
+func TestRevokeSQLRevokesTablesSequencesAndFunctions(t *testing.T) {
 	want := []string{
 		"alter default privileges for role postgres in schema public revoke select, insert, update, delete on tables from anon, authenticated, service_role",
 		"alter default privileges for role postgres in schema public revoke usage, select on sequences from anon, authenticated, service_role",
+		"alter default privileges for role postgres in schema public revoke execute on functions from anon, authenticated, service_role",
+		"alter default privileges for role postgres in schema public revoke execute on functions from public",
 	}
 	if got := (DataAPISetup{RevokeDefaultPrivileges: true}).Statements(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("statements:\n%s", strings.Join(got, "\n"))
@@ -70,8 +95,32 @@ func TestRevokeSQLIsHostedsChange(t *testing.T) {
 		t.Fatalf("an empty setup runs %v", got)
 	}
 	both := (DataAPISetup{RevokeDefaultPrivileges: true, APISchema: true}).Statements()
-	if len(both) != 4 || !strings.HasPrefix(both[2], "create schema if not exists api") {
+	if len(both) != 6 || !strings.HasPrefix(both[4], "create schema if not exists api") {
 		t.Fatalf("with the api schema: %v", both)
+	}
+	// Every statement of the revoke has its undo, in the same order.
+	if len(GrantDefaultPrivilegesSQL) != len(RevokeDefaultPrivilegesSQL) {
+		t.Fatalf("%d revokes, %d grants", len(RevokeDefaultPrivilegesSQL), len(GrantDefaultPrivilegesSQL))
+	}
+	for i, r := range RevokeDefaultPrivilegesSQL {
+		g := GrantDefaultPrivilegesSQL[i]
+		if strings.Replace(strings.Replace(r, " revoke ", " grant ", 1), " from ", " to ", 1) != g {
+			t.Errorf("statement %d: %q is not the undo of %q", i, g, r)
+		}
+	}
+}
+
+// The guide shows the rollback and the explicit grants: its SQL is the code's.
+func TestGuideShowsTheRollbackSQL(t *testing.T) {
+	b, err := os.ReadFile("../../docs/guide.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide := strings.Join(strings.Fields(string(b)), " ")
+	for _, q := range append(append([]string{}, GrantDefaultPrivilegesSQL...), RevokeDefaultPrivilegesSQL...) {
+		if !strings.Contains(guide, q+";") {
+			t.Errorf("docs/guide.md does not show %q", q+";")
+		}
 	}
 }
 
@@ -113,18 +162,48 @@ func TestCreateWithTheAPISchemaAndExposedSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := h.dp.ran()
-	if len(got) != 1 || !strings.Contains(got[0], "revoke select, insert, update, delete on tables") || !strings.Contains(got[0], "create schema if not exists api authorization postgres") {
+	if len(got) != 1 || !strings.Contains(got[0], "revoke select, insert, update, delete on tables") || !strings.Contains(got[0], "create schema if not exists api authorization postgres") ||
+		!strings.HasSuffix(got[0], "[must exist: api,graphql_public]") {
 		t.Fatalf("the plane ran %v", got)
 	}
 	st, err := h.set.Get(ctx, p.Ref, projectconfig.PostgREST)
 	if err != nil || st.Effective.Str("db_schema") != "api,graphql_public" {
 		t.Fatalf("db_schema = %q, %v", st.Effective.Str("db_schema"), err)
 	}
+	// PostgREST started on the default schemas, because the schema api did not exist yet: it restarts on the list once it does.
+	if len(h.dp.reconfigured) != 1 || h.dp.reconfigured[0] != p.Ref+" postgrest" {
+		t.Fatalf("reconfigured = %v", h.dp.reconfigured)
+	}
+	// Without exposed schemas nothing is saved and nothing restarts.
+	q, err := h.e.Create(ctx, CreateRequest{Name: "plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := h.set.Get(ctx, q.Ref, projectconfig.PostgREST); st.Version != 0 || len(h.dp.reconfigured) != 1 {
+		t.Fatalf("a default create saved PostgREST settings or restarted it: %+v %v", st, h.dp.reconfigured)
+	}
+}
+
+// A schema the caller asked to expose has to exist, or PostgREST would not start on it.
+func TestCreateFailsWhenAnExposedSchemaDoesNotExist(t *testing.T) {
+	h := newDataAPIHarness(t)
+	h.dp.err = errors.New(`schema "app" does not exist`)
+	_, err := h.e.Create(context.Background(), CreateRequest{Name: "x", DataAPI: DataAPIOptions{ExposeNewTables: true, ExposedSchemas: "app"}})
+	if err == nil || !strings.Contains(err.Error(), `schema "app" does not exist`) {
+		t.Fatalf("create: %v", err)
+	}
+	if got := h.dp.ran(); len(got) != 1 || !strings.HasSuffix(got[0], "[must exist: app]") {
+		t.Fatalf("the check was not asked for with no statements to run: %v", got)
+	}
+	if len(h.dp.reconfigured) != 0 {
+		t.Fatalf("PostgREST was restarted: %v", h.dp.reconfigured)
+	}
 }
 
 func TestCreateWithoutASettingsStoreRefusesExposedSchemas(t *testing.T) {
-	h := newHarness(t) // Settings is nil
-	_, err := h.e.Create(context.Background(), CreateRequest{Name: "x", DataAPI: DataAPIOptions{ExposedSchemas: "api"}})
+	h := newDataAPIHarness(t)
+	e := NewEngine(h.cfg, h.reg, h.sec, fakeArts{}, h.dp, Options{Fleet: fleet.Fleet{h.tenant}, Backup: h.backup}) // Settings is nil
+	_, err := e.Create(context.Background(), CreateRequest{Name: "x", DataAPI: DataAPIOptions{ExposedSchemas: "api"}})
 	if err == nil || !strings.Contains(err.Error(), "exposed schemas") {
 		t.Fatalf("create: %v", err)
 	}

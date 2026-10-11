@@ -500,17 +500,10 @@ func (e *Engine) Create(ctx context.Context, req CreateRequest) (*registry.Proje
 	if err := e.storeKeys(ctx, ref, keys); err != nil {
 		return fail("store secrets", err)
 	}
-	if req.Seed == nil {
-		// A seeded cluster brings its own PostgREST settings with the project it was taken from
-		// (the caller saves them); a fresh one starts with the exposed schemas that were asked for.
-		if err := e.exposeSchemasAtCreate(ctx, ref, req.DataAPI.ExposedSchemas); err != nil {
-			return fail("exposed schemas", err)
-		}
-	}
 	if err := e.plane.Create(ctx, p, keys, req.Seed); err != nil {
 		return fail("data plane", err)
 	}
-	if err := e.dataAPIAtCreate(ctx, p, req); err != nil {
+	if err := e.dataAPIAtCreate(ctx, p, keys, req); err != nil {
 		return fail("data api", err)
 	}
 	if len(e.opts.Fleet) > 0 {
