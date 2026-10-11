@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -26,6 +27,8 @@ var (
 	pName, pOrg, pClass, pRef, pRegion string
 	pJSON, pShowKeys                   bool
 	pSkipBackup                        bool
+	// Files that carry the credentials of a project moved from hosted Supabase.
+	pJWTSecretFile, pAnonKeyFile, pServiceKeyFile string
 )
 
 type projectView struct {
@@ -87,7 +90,21 @@ func projectCmd(use, short string, args cobra.PositionalArgs, run func(cmd *cobr
 func init() {
 	create := projectCmd("create", "Create a project and wait until it is healthy", cobra.NoArgs,
 		func(cmd *cobra.Command, n *lifecycle.Node, _ []string) error {
-			p, err := n.Engine.Create(cmd.Context(), lifecycle.CreateRequest{Name: pName, OrgSlug: pOrg, Class: pClass, Ref: pRef, Region: pRegion})
+			req := lifecycle.CreateRequest{Name: pName, OrgSlug: pOrg, Class: pClass, Ref: pRef, Region: pRegion}
+			if pJWTSecretFile != "" || pAnonKeyFile != "" || pServiceKeyFile != "" {
+				// The legacy keys name the ref, so the ref is fixed before they are signed.
+				if req.Ref == "" {
+					req.Ref = secrets.NewRef()
+				} else if !secrets.ValidRef(req.Ref) {
+					return fmt.Errorf("--ref %q is not a valid project ref (20 lowercase letters)", req.Ref)
+				}
+				keys, err := projectKeysFromFiles(req.Ref, time.Now(), pJWTSecretFile, pAnonKeyFile, pServiceKeyFile)
+				if err != nil {
+					return err
+				}
+				req.Keys = keys
+			}
+			p, err := n.Engine.Create(cmd.Context(), req)
 			if err != nil {
 				return err
 			}
@@ -105,6 +122,15 @@ func init() {
 			printProject(cmd.OutOrStdout(), v)
 			return nil
 		})
+	create.Long = `Creates a project and waits until it is healthy.
+
+To move a project from hosted Supabase and keep the keys its app holds, save the hosted project's
+legacy JWT secret (Project settings, JWT keys, Legacy JWT secret) in a file and pass it with
+--jwt-secret-file. GoTrue, PostgREST, Realtime and Storage then accept the anon and service_role
+keys the app already has. The proxy accepts such a key when its ref claim names the project, so also
+pass the hosted project's ref with --ref. To keep the two keys whatever the ref, save them in files
+and pass --anon-key-file and --service-role-key-file: they must verify under the secret and carry
+their roles. The publishable and secret keys (sb_...) and every password are new.`
 	create.Flags().StringVar(&pName, "name", "", "project name (default: the ref)")
 	create.Flags().StringVar(&pOrg, "org", "", "organization slug (default \"default\", created on first use)")
 	create.Flags().StringVar(&pClass, "size", "", fmt.Sprintf("compute size %v (default %s; a size named here must fit the node, see `projects sizes`)", lifecycle.ClassNames(), lifecycle.DefaultClass))
@@ -112,6 +138,9 @@ func init() {
 	_ = create.Flags().MarkHidden("class")
 	create.Flags().StringVar(&pRef, "ref", "", "force the ref (20 lowercase letters); default random")
 	create.Flags().StringVar(&pRegion, "region", "", "AWS region code shown for the project (default: region in the config, us-east-1)")
+	create.Flags().StringVar(&pJWTSecretFile, "jwt-secret-file", "", "use the JWT secret in this file (a project moved from hosted Supabase keeps the anon and service_role keys its app holds)")
+	create.Flags().StringVar(&pAnonKeyFile, "anon-key-file", "", "with --jwt-secret-file: keep this anon key as it is, accepted whatever the project's ref")
+	create.Flags().StringVar(&pServiceKeyFile, "service-role-key-file", "", "with --jwt-secret-file: keep this service_role key as it is, accepted whatever the project's ref")
 	create.Flags().BoolVar(&pShowKeys, "show-keys", false, "print the project's keys and database password")
 	create.Flags().BoolVar(&pJSON, "json", false, "print JSON")
 
