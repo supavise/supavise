@@ -82,7 +82,10 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --no-audit --no-fund --prefix tests/linux/crawl
+      # With the runner's Chrome the self-test also runs the crawl driver against its stand-in node (two browser tests).
       - run: node --test tests/linux/crawl/selftest.mjs
+        env:
+          CRAWL_STANDIN_CHROME: /usr/bin/google-chrome
 
   # The job the release gate reads (deploy/release-gate.sh: studio-crawl.yml:crawl).
   crawl:
@@ -106,7 +109,7 @@ jobs:
       - name: Studio build
         env:
           GH_TOKEN: ${{ github.token }}
-          FRESH: ${{ needs.changes.outputs.studio == 'true' && github.event_name != 'schedule' && '--fresh' || '' }}
+          FRESH: ${{ needs.changes.outputs.studio == 'true' && github.event_name == 'push' && '--fresh' || '' }}
         run: |
           # shellcheck disable=SC2086
           f=$(tests/linux/crawl/fetch-studio.sh /tmp/studio-dist $FRESH | tail -n 1)
