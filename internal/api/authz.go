@@ -171,6 +171,21 @@ var routeRules = []routeRule{
 	rule("R", "/platform/oauth/authorizations/{id}", nOperator),
 	rule("", "/v1/snippets/**", nAny),
 	rule("R", "/platform/integrations/{slug}", nAny),
+	// The GitHub integration (github_integration.go). The caller's own authorization of the server's
+	// GitHub App, and the repositories their GitHub token reaches, are theirs: any signed-in user.
+	// Connections belong to a project: the handlers read the organization and the project and check
+	// integrations.github_connections there (Owners and Administrators write, every role reads).
+	rule("", "/platform/integrations/github/authorization", nAny),
+	rule("R", "/platform/integrations/github/repositories/**", nAny),
+	rule("", "/platform/integrations/github/connections/**", nSelf),
+	rule("R", "/v2/organizations/{slug}/integrations/github/connections", nSelf),
+	// The server's own App is the operator's: creating or removing it needs the Owner role, reading
+	// how it is set up the Owner or Administrator role. The manifest page, GitHub's redirect and the
+	// webhook take no credentials (their one-time state or signature is the proof).
+	rule("R", "/supavise/v1/github/app", nOperator),
+	rule("W", "/supavise/v1/github/app", nOwner),
+	rule("", "/supavise/v1/github/app/**", nAny),
+	rule("POST", "/hooks/github", nAny),
 	// The node's health in detail: node-wide, so no organization or project to check against.
 	// Owners and Administrators see it (projects only of the organizations they run); a Developer
 	// or Read-only member has no business with the node's disks and shared services. The public
