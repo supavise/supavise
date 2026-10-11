@@ -54,7 +54,7 @@ Pitfalls in the required fields of the P0 responses (the full shapes are in the 
 |---|---|
 | `ProfileResponse_Output` | `id` number, `gotrue_id` = GoTrue user id, `auth0_id` string (Studio checks `startsWith('github')` for the avatar), `username`, `primary_email`, `is_alpha_user`, `free_project_limit` (number or null); optional `disabled_features` (string array, merged with the build-time list) |
 | `AccessControlPermission[]` | `actions`, `resources`, `condition`, `organization_slug`, `organization_id`, `project_ids`, `project_refs`, `restrictive`. `%` is a wildcard and `condition: null` is unconditional; an empty list denies every action |
-| `OrganizationResponse_Output[]` | `plan` is an inline object `{id: 'free'|'pro'|'team'|'enterprise'|'platform', name}`; `restriction_data` and `restriction_status` are `null` when unrestricted; `opt_in_tags` array; `slug` and numeric `id` |
+| `OrganizationResponse_Output[]` | `plan` is an inline object `{id: 'free'|'pro'|'team'|'enterprise'|'platform', name}`; `restriction_data` and `restriction_status` are `null` when unrestricted; `opt_in_tags` array (the AI data-sharing level, saved by `PATCH /platform/organizations/{slug}`; see "The AI Assistant"); `slug` and numeric `id` |
 | `OrganizationProjectsResponse_Output` | `{pagination: {count, limit, offset}, projects: [...]}`; each project needs `databases[]` (`identifier`, `region`, `status`, `type: 'PRIMARY'`, `cloud_provider`) and the card fields above |
 | `ListProjectsPaginatedResponse_Output` | `{pagination, projects: [...]}`; each project adds `organization_id`, `organization_slug`, `subscription_id`, `is_branch_enabled`, `is_physical_backups_enabled`, `preview_branch_refs` |
 | `ProjectDetailResponse_Output` | `connectionString` (see the wire contract), `restUrl`, `db_host`, `status` (enum: `ACTIVE_HEALTHY`, `COMING_UP`, `INACTIVE`, `UNKNOWN`, `GOING_DOWN`, `INIT_FAILED`, `REMOVED`, `RESTORING`, `UPGRADING`, `PAUSING`, `RESTORE_FAILED`, `RESTARTING`, `PAUSE_FAILED`, `RESIZING`, `ACTIVE_UNHEALTHY`), `subscription_id` string, numeric `id` and `organization_id`; optional `is_hibernating`, `dbVersion` |
@@ -83,6 +83,7 @@ These are the documented routes for which an empty stub is not enough: the page 
 | P1 | POST | `/platform/cli/login` | 201 no body |
 | P0 | GET | `/platform/organizations` | 200 array of `OrganizationResponse_Output` |
 | P0 | GET | `/platform/organizations/{slug}` | 200 `OrganizationSlugResponse_Output` |
+| P2 | PATCH | `/platform/organizations/{slug}` | 200 `UpdateOrganizationResponse_Output`; `name` and `opt_in_tags` (an array of `AI_SQL_GENERATOR_OPT_IN`, `AI_LOG_GENERATOR_OPT_IN`, `AI_DATA_GENERATOR_OPT_IN`; anything else is 400; `[]` clears) are saved, the other fields of the body are not. Owner only |
 | P2 | HEAD | `/platform/organizations/{slug}/billing/invoices` | 200 no body |
 | P1 | GET | `/platform/organizations/{slug}/members` | 200 array of `Member_Output` |
 | P1 | GET | `/platform/organizations/{slug}/members/invitations` | 200 `InvitationResponse_Output` |
@@ -340,8 +341,26 @@ Still answered by a stub and therefore empty or inert, unfixed: organization and
 | `/api/mcp` | Studio's MCP server (`POST` only, stateless Streamable HTTP) | in platform mode patch 0004 serves it, built on the bearer token it receives and calling the Management API on loopback (`SUPAVISE_MANAGEMENT_API_URL`). The proxy answers `404` for it on `studio.<domain>` and forwards to it only from `api.<domain>/mcp`, after the gate has authenticated the caller. `search_docs` reaches `supabase.com` |
 | `/api/incident-banner` | incident.io banner list, requested on every page | yes: incident.io. Answers 500 without a key and delays sign-in; the Supavise proxy answers it with a static `{"incidents": []}` on the Studio host (see "Findings from running Studio") |
 | `/api/incident-status`, `/api/status-page`, `/api/status-override` | status banner and incident pages | yes: statuspage.io, incident.io; failure behavior unverified |
-| `/api/ai/*` | AI assistant | yes: needs `OPENAI_API_KEY` (server env); an absent key disables the assistant (from reading the code, unverified) |
+| `/api/ai/*` | AI Assistant and the SQL editor's AI features | the model provider the operator set (`[studio.ai]`), and nothing else; patch 0006 and "The AI Assistant" below |
 | `/api/check-cname`, `/api/edge-functions/test`, `/api/edge-functions/body`, `/api/generate-attachment-url`, `/api/content/graphql`, `/api/parse-query`, `/api/scoped-access-token-permissions`, `/api/integrations/stripe-sync` | custom domains, edge function tester, support attachments, docs search, SQL parsing, token scopes, Stripe | mixed; none is on the P0 flows |
+
+## The AI Assistant
+
+Studio's AI routes (`/api/ai/sql/generate-v4` for the Assistant, `title-v2`, `policy`, `cron-v2`, `filter-v1`, `code/complete` and the others on the allowlist of `lib/hosted-api-allowlist.ts`) run in Studio's server, one `fetch` per call, read from the code at the pinned commit. Each needs `Authorization: Bearer <dashboard session>`: `apiWrapper` checks it with the dashboard GoTrue (`NEXT_PUBLIC_GOTRUE_URL`, so the node's `api.<domain>`), and the calls below also go to `NEXT_PUBLIC_API_URL`. Studio's server therefore has to reach the node's public address. Patch 0006 and `supavise studio ai` supply the provider (`studio/README.md`, `docs/guide.md`).
+
+| Studio asks | Supavise |
+|---|---|
+| `GET /api/ai/sql/check-api-key` | Patch 0006 allowlists it and asks it in platform mode (upstream answers `{hasKey: true}` without asking there). Answers `{hasKey, model}`: `hasKey` is whether the operator set a provider, `model` the operator's chat model when there is one. A caller without a session gets 401 |
+| `GET /platform/organizations` | answered: `opt_in_tags` is the saved AI level; `getAiOptInLevel` maps `AI_SQL_GENERATOR_OPT_IN` to schema, plus `AI_LOG_GENERATOR_OPT_IN` to schema and logs, plus `AI_DATA_GENERATOR_OPT_IN` to schema, logs and data |
+| `PATCH /platform/organizations/{slug}` with `{opt_in_tags}` | answered and stored (migration 1550). Owner only, as the organization's update permission is |
+| `GET /platform/organizations/{slug}/entitlements` (`assistant.advance_model`) | answered: every feature is granted |
+| `GET /platform/projects/{ref}`, `GET /platform/projects/{ref}/settings` | answered; the pair confirms that the project belongs to the organization, otherwise the Assistant falls back to the most restrictive level |
+| `POST /platform/pg-meta/{ref}/query` (the schema list for the context, `execute_sql`, `list_policies`) | answered |
+| `GET /platform/projects/{ref}/content` and `.../content/item/{id}` (`list_reports`, `get_report`: the saved reports) | answered, as for the Reports page |
+| the remote MCP server at `NEXT_PUBLIC_MCP_URL` (`search_docs`, `list_tables`, `list_extensions`, `list_edge_functions`, `list_branches`, `get_advisors`, `query_logs`) | refused with 401 by the `/mcp` gate: it accepts OAuth and personal access tokens, and Studio forwards the dashboard session. `getTools` logs the failure and goes on without these tools |
+| `https://supabase.com/docs/api/graphql` (docs search) | not reached: `search_docs` is one of the MCP tools above |
+
+What each opt-in level lets Studio put in a request to the provider is in the guide. Studio's server sends no telemetry for the Assistant when no Braintrust key is set, and Supavise sets none.
 
 ## Calls from the browser to a project
 
