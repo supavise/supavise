@@ -18,7 +18,7 @@ Without `--service` the command merges all of them. Realtime, Storage, Supavisor
 
 ## How it reads
 
-One `journalctl -u <unit> --all -o json -n N` per log (with `--grep <ref>` for a shared unit, and `--since` when given), merged by time, the last `-n` lines printed. The default is 100 lines. `--all` is needed because `journalctl -o json` prints any field of 4096 bytes or more as `null`: without it a long statement or JSON line would come out as an empty message, and a long line of a shared unit would not match the ref. A line is `<UTC time> <service> <message>`. A message with control characters (a statement in the Postgres log can hold an escape sequence) is printed with them as `\xNN`.
+One `journalctl -u <unit> --quiet --all -o json -n N` per log (with `--grep <ref>` for a shared unit, and `--since` when given), merged by time, the last `-n` lines printed. `--quiet` keeps `-- No entries --` out of the JSON stream. With `--grep`, journalctl exits 1 without a message when nothing matched, as grep does; that is an empty answer, not a failure. The default is 100 lines. `--all` is needed because `journalctl -o json` prints any field of 4096 bytes or more as `null`: without it a long statement or JSON line would come out as an empty message, and a long line of a shared unit would not match the ref. A line is `<UTC time> <service> <message>`. A message with control characters (a statement in the Postgres log can hold an escape sequence) is printed with them as `\xNN`.
 
 With `--follow` the command starts one `journalctl -f -n 0` per log first, prints the history, then the new lines; a line that is in both is printed once, by its journal cursor. Ctrl-C ends it.
 

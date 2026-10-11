@@ -454,6 +454,36 @@ func TestExecJournal(t *testing.T) {
 		t.Error("Close waited for the program")
 	}
 
+	// journalctl --grep exits 1 without a message when nothing matched, like grep: an empty answer.
+	// The same exit without --grep, or with a message, stays a failure.
+	nomatch := script("nomatch", `exit 1`)
+	rc, err = ExecJournal{Program: nomatch}.Start(ctx, []string{"-u", "x", "--grep", "abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := io.ReadAll(rc); len(b) != 0 {
+		t.Errorf("output = %q", b)
+	}
+	if err := rc.Close(); err != nil {
+		t.Errorf("Close of a --grep that matched nothing = %v, want nil", err)
+	}
+	rc, err = ExecJournal{Program: nomatch}.Start(ctx, []string{"-u", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(rc)
+	if err := rc.Close(); err == nil {
+		t.Error("Close of an exit 1 without --grep = nil, want an error")
+	}
+	rc, err = ExecJournal{Program: script("grepfail", `echo "Failed to open journal" >&2; exit 1`)}.Start(ctx, []string{"--grep", "abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(rc)
+	if err := rc.Close(); err == nil || !strings.Contains(err.Error(), "Failed to open journal") {
+		t.Errorf("Close of a --grep that failed = %v, want the program's message", err)
+	}
+
 	if _, err := (ExecJournal{Program: filepath.Join(dir, "missing")}).Start(ctx, nil); err == nil || !strings.Contains(err.Error(), "systemd") {
 		t.Errorf("missing program error = %v, want a hint about systemd", err)
 	}

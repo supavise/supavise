@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"os/exec"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -140,7 +141,7 @@ func (j ExecJournal) Start(ctx context.Context, args []string) (io.ReadCloser, e
 		}
 		return nil, err
 	}
-	return &proc{ReadCloser: out, c: c, cancel: cancel, stderr: &stderr}, nil
+	return &proc{ReadCloser: out, c: c, cancel: cancel, stderr: &stderr, grep: slices.Contains(args, "--grep")}, nil
 }
 
 type proc struct {
@@ -148,9 +149,12 @@ type proc struct {
 	c      *exec.Cmd
 	cancel context.CancelFunc
 	stderr *bytes.Buffer
-	eof    atomic.Bool
-	once   sync.Once
-	err    error
+	// grep is set when the arguments hold --grep: journalctl then exits 1, silently, when nothing
+	// matched (journalctl.c: "mimic grep's behavior"), which is an empty answer and not a failure.
+	grep bool
+	eof  atomic.Bool
+	once sync.Once
+	err  error
 }
 
 // Read notes the end of the stream: a program whose output ended is exiting on its own.
@@ -173,6 +177,10 @@ func (p *proc) Close() error {
 		}
 		werr := p.c.Wait()
 		p.cancel()
+		var exit *exec.ExitError
+		if p.grep && errors.As(werr, &exit) && exit.ExitCode() == 1 && strings.TrimSpace(p.stderr.String()) == "" {
+			werr = nil // --grep matched nothing
+		}
 		if werr != nil && !stopped {
 			msg := strings.TrimSpace(p.stderr.String())
 			if msg == "" {
@@ -321,11 +329,12 @@ func noLines(o Options) {
 // field in full, at most lines entries (0 with follow starts after the end), the lines from since on,
 // and, for a shared unit, only the lines that mention the ref.
 //
-// --all matters: without it, journalctl -o json prints a field of 4096 bytes or more as null (systemd's
+// --quiet keeps journalctl's "-- No entries --" (printed even with -o json) and its hints off the
+// output. --all matters: without it, journalctl -o json prints a field of 4096 bytes or more as null (systemd's
 // JSON_THRESHOLD in logs-show.c), so a long statement or JSON log line would show as an empty message,
 // and a shared unit's long line would not match the ref.
 func journalArgs(ref string, s Source, lines int, since string, follow bool) []string {
-	args := []string{"-u", s.Unit, "--no-pager", "--all", "-o", "json", "-n", strconv.Itoa(lines)}
+	args := []string{"-u", s.Unit, "--no-pager", "--quiet", "--all", "-o", "json", "-n", strconv.Itoa(lines)}
 	if since != "" {
 		args = append(args, "--since", since)
 	}
