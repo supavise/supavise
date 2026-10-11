@@ -246,6 +246,12 @@ func functionUpload(t *testing.T, name, src string) ([]byte, string) {
 	return buf.Bytes(), mw.FormDataContentType()
 }
 
+// maxAnsweredByAnotherRoute is the most unclaimed operations TestStubsMatchSpec accepts that
+// a more specific implemented route or an ambiguous pair answers instead of their stub. Today
+// it is 68; the margin is for routes added later, and a lost path family (the /platform/**
+// operations alone are about a hundred) goes far beyond it.
+const maxAnsweredByAnotherRoute = 80
+
 // TestStubsMatchSpec calls every operation no handler claims and checks that its
 // stub is the success status of the spec with a body that satisfies the schema.
 func TestStubsMatchSpec(t *testing.T) {
@@ -253,7 +259,7 @@ func TestStubsMatchSpec(t *testing.T) {
 	ops, _ := Operations()
 	impl := f.srv.implemented()
 	paramRe := regexp.MustCompile(`\{[^}]+\}`)
-	n := 0
+	n, left := 0, 0 // left: unclaimed operations that a more specific route (or an ambiguous pair) answered
 	for _, op := range ops {
 		if _, ok := impl[op.Key()]; ok {
 			continue
@@ -266,7 +272,8 @@ func TestStubsMatchSpec(t *testing.T) {
 		})
 		rec := f.do(op.Method, path, nil)
 		if rec.Header().Get("X-Supavise-Stub") == "" {
-			continue // a more specific implemented route (or an ambiguous pair) answered
+			left++ // a more specific implemented route (or an ambiguous pair) answered
+			continue
 		}
 		n++
 		want := op.Status
@@ -281,10 +288,15 @@ func TestStubsMatchSpec(t *testing.T) {
 			validateAgainstSpec(t, op.Key(), rec.Body.Bytes())
 		}
 	}
-	t.Logf("%d stubbed operations checked", n)
-	// A floor that catches a sweep which stopped finding stubs; each handler written for an
-	// operation takes one stub away, so it stays well under the count.
-	if n < 200 {
-		t.Fatalf("only %d stubs were exercised", n)
+	t.Logf("%d stubbed operations checked, %d answered by another route", n, left)
+	// The guard against a sweep that stopped finding stubs. It does not depend on how many
+	// operations have a handler (each handler written moves an operation out of the sweep and
+	// out of the count both): what a broken sweep changes is how many operations no stub
+	// answers, so that number stays near what it is today.
+	if left > maxAnsweredByAnotherRoute {
+		t.Fatalf("%d of %d unclaimed operations were not answered by a stub (limit %d); did the stub marker or a whole path family go away?", left, n+left, maxAnsweredByAnotherRoute)
+	}
+	if n == 0 {
+		t.Fatal("no stub was exercised")
 	}
 }
