@@ -64,6 +64,8 @@ async function seedData(ref, { rich }) {
     grant all on public.crawl_items to service_role;
     notify pgrst, 'reload schema';`)
   if (!rich) return
+  // pg_graphql is off in a new project, as on hosted; the GraphiQL page and the Data API docs need it
+  await node.sql(ref, 'create extension if not exists pg_graphql')
   await node.sql(ref, 'create extension if not exists pg_cron')
   await node.sql(ref, `select cron.schedule('crawl-job', '0 3 * * *', $$select 1$$)`)
   try {
@@ -160,6 +162,9 @@ if (cfg.idle_pause) {
   fx.projects.idle = await waitBranch('crawl-idle')
 }
 
+// the branch has the parent's function (copied at create); its pages are visited like the parent's
+fx.byRef[fx.projects.B] = { functions: cfg.functions === false ? [] : ['hello'] }
+
 // ---- the other organization and the probe parent ------------------------------------------------------
 fx.projects.other = await createProject('crawl-other', cfg.org2)
 fx.projects.P = await createProject('crawl-probe', cfg.org)
@@ -177,11 +182,12 @@ for (const key of ['A', 'B']) {
   const init = await node.api('POST', `/v1/projects/${ref}/custom-hostname/initialize`, { custom_hostname: host })
   const ov = init.json?.data?.result?.ownership_verification ?? init.json?.result?.ownership_verification
   if (!ov?.name || !ov?.value) throw new Failure(`custom-hostname/initialize answered without an ownership_verification: ${redact(init.text).slice(0, 300)}`)
-  zone.push(`cname=${host},${ref}.api.${cfg.domain}`, `txt-record=${ov.name},${ov.value}`)
+  // dnsmasq answers a CNAME only for a target it knows itself, so the project's host is a record of its own too
+  zone.push(`cname=${host},${ref}.api.${cfg.domain}`, `host-record=${ref}.api.${cfg.domain},127.0.0.1`, `txt-record=${ov.name},${ov.value}`)
   fx.hostnames[key] = host
 }
 // the probe parent has a CNAME for a hostname the custom-domain probe adds through the dashboard
-zone.push(`cname=crawl-p.example.test,${fx.projects.P}.api.${cfg.domain}`)
+zone.push(`cname=crawl-p.example.test,${fx.projects.P}.api.${cfg.domain}`, `host-record=${fx.projects.P}.api.${cfg.domain},127.0.0.1`)
 fx.hostnames.P = 'crawl-p.example.test'
 if (cfg.dns_dir) {
   writeFileSync(join(cfg.dns_dir, 'zone.conf'), `${zone.join('\n')}\n`)
