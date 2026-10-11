@@ -1,18 +1,45 @@
 name: studio
 
-# Builds platform-mode Studio (studio/build.sh) and runs the headless spike against it.
-# Public-repo runners have 4 vCPU and 16 GB RAM; ci-prepare.sh adds swap and frees disk.
+# Builds platform-mode Studio (studio/build.sh) and runs the headless spike against it, then the remote MCP endpoint end to
+# end on the amd64 build (mcp-e2e). Public-repo runners have 4 vCPU and 16 GB RAM; ci-prepare.sh adds swap and frees disk.
+#
+# The workflow starts on every push, and the `changes` job decides what runs: the build (and the spike) only when the push
+# touched Studio, its pin or this file, as the path filter this replaces did; mcp-e2e when the push touched Studio or
+# anything the endpoint depends on (the API server, the proxy, the fleet, the OAuth walk), and always on main, so that the
+# release gate (deploy/release-gate.sh) finds a run of both on the tagged commit. When the build did not run, mcp-e2e takes
+# the amd64 build of the newest successful run on main (tests/linux/crawl/fetch-studio.sh), which is the same code.
 on:
   push:
     branches: [main, "ws/**", "integrate/**"]
-    paths: ["studio/**", "internal/versions/versions.yaml", ".github/workflows/studio.yml"]
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read   # gh run download of an earlier build
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.c.outputs.run }}
+      studio: ${{ steps.c.outputs.studio }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: c
+        env:
+          EVENT_BEFORE: ${{ github.event.before }}
+        run: |
+          tests/linux/crawl/changes.sh \
+            'studio=^(studio/|internal/versions/versions\.yaml$|\.github/workflows/studio\.yml$)' \
+            'mcp=^(internal/(api|proxy|fleet|oauth)/|internal/branching/testdata/|tests/linux/(oauth/|oauth-smoke\.sh|lib\.sh))' \
+            | tee -a "$GITHUB_OUTPUT"
+
   build:
+    needs: changes
+    if: needs.changes.outputs.studio == 'true' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -46,19 +73,17 @@ jobs:
           path: studio/.build-cache/spike/out
           if-no-files-found: ignore
 
-  # The remote MCP endpoint end to end, on the Studio build the `build` job just made (amd64): the same
-  # walk as the `oauth-smoke` job of linux.yml (tests/linux/oauth-smoke.sh) with Studio running from the
-  # artifact, plus step L-09: MCP over Streamable HTTP at /mcp with two protocol revisions, a project-scoped
-  # and an account-scoped URL, read_only, features, a personal access token as bearer, get_project_url and
-  # create_project. It reuses the build's artifact, so it costs no second Studio build. `!cancelled()` runs
-  # it when only the spike (or the arm64 build) failed; a missing amd64 artifact fails the download step.
-  # The path filter above is Studio's, so a push that changes only the walk, the /mcp gate or the proxy
-  # does not start this workflow: run it by hand (workflow_dispatch) after such a change and before a
-  # release. The `oauth-smoke` job of linux.yml, which release-gate.sh requires, covers the same walk
-  # without L-09 and the Studio checks.
+  # The remote MCP endpoint end to end, on the Studio build the `build` job just made (amd64), or on the newest one from main
+  # when this push did not build Studio: the same walk as the `oauth-smoke` job of linux.yml (tests/linux/oauth-smoke.sh) with
+  # Studio running from the artifact, plus step L-09: MCP over Streamable HTTP at /mcp with two protocol revisions, a
+  # project-scoped and an account-scoped URL, read_only, features, a personal access token as bearer, get_project_url and
+  # create_project, and the six branch tools (create_branch, list_branches, rebase_branch, merge_branch, reset_branch,
+  # delete_branch) on an account-scoped URL and a project-scoped URL bound to a branch. `!cancelled()` runs it when only the
+  # spike (or the arm64 build) failed; a missing amd64 artifact fails the download step. The release gate requires this job
+  # (deploy/release-gate.sh: studio.yml:mcp-e2e).
   mcp-e2e:
-    needs: build
-    if: ${{ !cancelled() }}
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.outputs.run == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -69,10 +94,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - if: needs.build.result != 'skipped'
+        uses: actions/download-artifact@v4
         with:
           name: studio-linux-amd64
           path: /tmp/studio-dist
+      - if: needs.build.result == 'skipped'
+        name: Studio build of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tests/linux/crawl/fetch-studio.sh /tmp/studio-dist
       - name: build supavise
         run: CGO_ENABLED=0 go build -trimpath -o /tmp/supavise ./cmd/supavise
       - name: mcp end to end
