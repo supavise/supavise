@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/supavise/supavise/internal/projectconfig"
+	"github.com/supavise/supavise/internal/secrets"
 )
 
 // Settings is the project's saved configuration as the lifecycle renders it: the
@@ -82,3 +83,14 @@ type Reconfigurer interface {
 	// pooler.
 	SetDatabasePassword(ctx context.Context, ref, password string) error
 }
+
+// JWTSecretSetter is the optional Manager capability behind the dashboard's "Change legacy
+// JWT secret" with a secret of the caller's own. *Engine implements it.
+type JWTSecretSetter interface {
+	// SetJWTSecret makes secret the project's JWT secret, signs the legacy anon and
+	// service_role keys with it again and restarts what verifies a JWT. A failure after the
+	// first step is a *JWTSecretError and leaves the previous secret in place.
+	SetJWTSecret(ctx context.Context, ref, secret string) (*secrets.ProjectKeys, error)
+}
+
+var _ JWTSecretSetter = (*Engine)(nil)
