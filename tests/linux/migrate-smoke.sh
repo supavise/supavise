@@ -8,7 +8,9 @@
 # A first project plays the hosted one: a JWT secret of the shape hosted generates, tables with
 # RLS and explicit grants, a function and a trigger, a login role, a pg_cron job, Auth users with
 # passwords (one signed in, so a refresh token exists), a Storage bucket and an object, and
-# non-default Auth and PostgREST settings. The script reads the guide, takes the fenced block that
+# non-default Auth, PostgREST and Storage settings (a Storage limit above the 50 MiB default, and an
+# object larger than that), and objects whose grants were tightened (a table and a function that
+# anon cannot use). The script reads the guide, takes the fenced block that
 # follows each `<!-- migrate-smoke: NAME -->` marker, and runs it with the variables the guide
 # names, so the guide and the test cannot drift apart. The steps are the guide's:
 #
@@ -18,13 +20,16 @@
 #     ref of its own;
 #   - `supabase db dump --db-url` (roles, schema, data; Docker) through the pooler on the session
 #     port, and the single-transaction psql restore;
-#   - the pg_cron jobs, which the dump leaves out, are created again; the Storage loop copies the
-#     file; the settings loop copies Auth, PostgREST, Storage and Realtime settings without secrets.
+#   - the pg_cron jobs, which the dump leaves out, are created again; the settings loop copies
+#     Auth, PostgREST, Storage and Realtime settings without secrets; the Storage loop copies the
+#     files, the larger one included because the settings came first;
+#   - the grants comparison of step 8 finds no difference.
 #
 # It then asserts what a moved project must do: row counts, RLS through PostgREST with the first
 # project's anon key (the key bytes are the same), password sign-in and a refresh token of a moved
-# user, the pg_cron job, the Storage object with its content type and cache control, the copied
-# settings, and that the dump leaves the extension but not the job. The reverse direction dumps
+# user, the pg_cron job, the Storage objects with their content type and cache control, the copied
+# settings, the tightened grants (the restore must not hand them back through the node's default
+# privileges), and that the dump leaves the extension but not the job. The reverse direction dumps
 # the second project the same way and restores into a third. On the third project it changes the
 # JWT secret as Studio does (PATCH /platform/projects/{ref}/config/secrets): a key signed with the
 # new secret works through the proxy, the old key does not, and the pgsodium root key is read and
@@ -163,6 +168,8 @@ alter table public.todos enable row level security;
 create policy "owners read" on public.todos for select to authenticated using (owner = auth.uid());
 create policy "anon reads done" on public.todos for select to anon using (done);
 grant usage on schema public to anon, authenticated, app_user;
+-- The default privileges gave anon and authenticated everything on todos; tighten that, as a hosted project may.
+revoke all on public.todos from anon, authenticated;
 grant select on public.todos to anon, app_user;
 grant select, insert, update, delete on public.todos to authenticated;
 grant usage, select on all sequences in schema public to authenticated;
@@ -170,6 +177,10 @@ create function public.add_numbers(a int, b int) returns int language sql immuta
 grant execute on function public.add_numbers(int, int) to anon, authenticated;
 create function public.shout() returns trigger language plpgsql as $$ begin new.title := upper(new.title); return new; end $$;
 create trigger shout_todos before insert on public.todos for each row execute function public.shout();
+create table public.audit_log (id bigint generated always as identity primary key, note text not null);
+revoke all on public.audit_log from anon, authenticated;
+create function public.admin_report() returns int language sql stable as $$ select 42 $$;
+revoke execute on function public.admin_report() from public, anon;
 select cron.schedule('nightly-cleanup', '0 3 * * *', $$delete from public.todos where done and id < 0$$);
 SQL
 
@@ -188,6 +199,17 @@ sapi() { curl -fsS -m 30 -H "apikey: $OLD_SVC" -H "Authorization: Bearer $OLD_SV
 sapi -X POST -H 'Content-Type: application/json' -d '{"id":"avatars","name":"avatars","public":false}' "$OLD_URL/storage/v1/bucket" >/dev/null || fail "creating a bucket"
 sapi -X POST -H 'Content-Type: text/plain' -H 'Cache-Control: max-age=7200' --data-binary 'hello from the hosted project' \
   "$OLD_URL/storage/v1/object/avatars/docs/hello%20world.txt" >/dev/null || fail "uploading an object"
+# Above the 50 MiB a new project starts with, as a hosted Pro project may have: the settings step has to carry it
+# over before the files.
+papi PATCH "/v1/projects/$OLD_REF/config/storage" -H 'Content-Type: application/json' -d '{"fileSizeLimit":104857600}' -o /dev/null -w '%{http_code}' | grep -qx 200 || fail "Storage settings of the first project"
+head -c 54525952 /dev/urandom >"$WORK/big.bin" # 52 MiB
+BIG_SHA=$(sha256sum "$WORK/big.bin" | cut -d' ' -f1)
+for ((i = 0; i < 20; i++)); do # the Storage tenant takes the new limit a moment after the PATCH
+  [[ $(sapi -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/octet-stream' --data-binary "@$WORK/big.bin" \
+    -H 'x-upsert: true' "$OLD_URL/storage/v1/object/avatars/big/blob.bin" || true) == 200 ]] && break
+  sleep 2
+done
+[[ $(sapi "$OLD_URL/storage/v1/object/authenticated/avatars/big/blob.bin" | sha256sum | cut -d' ' -f1) == "$BIG_SHA" ]] || fail "the 52 MiB object is not in the first project"
 papi PATCH "/v1/projects/$OLD_REF/config/auth" -H 'Content-Type: application/json' \
   -d '{"site_url":"https://app.example.test","uri_allow_list":"https://app.example.test/**"}' -o /dev/null -w '%{http_code}' | grep -qx 200 || fail "auth settings of the first project"
 papi PATCH "/v1/projects/$OLD_REF/postgrest" -H 'Content-Type: application/json' -d '{"max_rows":777}' -o /dev/null -w '%{http_code}' | grep -qx 200 || fail "PostgREST settings of the first project"
@@ -250,12 +272,23 @@ fi
 sed -i 's/^major_version = .*/major_version = 17/' "$WORK/hosted/supabase/config.toml"
 grep -q '^major_version = 17' "$WORK/hosted/supabase/config.toml" || fail "supabase/config.toml does not say major_version = 17"
 
-# The restore writes into the storage schema, which Storage sets up for a new project in the background.
-for ((i = 0; i < 90; i++)); do
-  [[ $(psql "$NEW_DB_URL" -Atc "select to_regclass('storage.objects') is not null") == t ]] && break
-  sleep 2
-done
-[[ $(psql "$NEW_DB_URL" -Atc "select to_regclass('storage.objects') is not null") == t ]] || fail "Storage did not set up the new project's schema"
+# The restore writes into the auth and storage schemas, which GoTrue and Storage migrate in the background
+# after `projects create` returns (Storage creates storage.objects early and adds columns and tables in
+# later migrations, which the dump's COPY lists name). A project is ready when it has run as many Auth and
+# Storage migrations as the first one, which runs the same releases.
+migrations() { psql "$1" -Atc "select (select count(*) from auth.schema_migrations) || '/' || (select count(*) from storage.migrations)" 2>/dev/null || true; }
+wait_migrated() { # URL
+  local want got="" i
+  want=$(migrations "$OLD_DB_URL")
+  [[ $want =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]] || fail "the first project reports no Auth and Storage migrations ('$want')"
+  for ((i = 0; i < 90; i++)); do
+    got=$(migrations "$1")
+    [[ $got == "$want" ]] && return 0
+    sleep 2
+  done
+  fail "Auth and Storage migrations (auth/storage) of the project at ${1##*@}: '$got', want '$want'"
+}
+wait_migrated "$NEW_DB_URL"
 
 guide dump
 for f in roles schema data; do [[ -s $WORK/hosted/$f.sql ]] || fail "$f.sql is empty"; done
@@ -272,13 +305,44 @@ nq() { psql "$NEW_DB_URL" -Atc "$1"; }
 [[ $(nq "select count(*) from pg_policies where tablename = 'todos'") == 2 ]] || fail "policies"
 [[ $(nq 'select public.add_numbers(2, 3)') == 5 ]] || fail "the function"
 [[ $(nq "select count(*) from pg_trigger where tgname = 'shout_todos'") == 1 ]] || fail "the trigger"
+# The grants tightened on the first project stay tight: the node's default privileges must not hand them back.
+[[ $(nq "select has_table_privilege('anon', 'public.todos', 'select'), has_table_privilege('anon', 'public.todos', 'insert')") == 't|f' ]] || fail "anon's privileges on todos (select only)"
+[[ $(nq "select has_table_privilege('authenticated', 'public.todos', 'delete')") == t ]] || fail "authenticated lost its grant on todos"
+[[ $(nq "select has_table_privilege('anon', 'public.audit_log', 'select') or has_table_privilege('authenticated', 'public.audit_log', 'select')") == f ]] || fail "audit_log is open to anon or authenticated after the restore"
+[[ $(nq "select has_table_privilege('service_role', 'public.audit_log', 'select')") == t ]] || fail "service_role lost its grant on audit_log"
+[[ $(nq "select has_function_privilege('anon', 'public.admin_report()', 'execute')") == f ]] || fail "admin_report() is open to anon after the restore"
+[[ $(nq "select has_function_privilege('authenticated', 'public.admin_report()', 'execute')") == t ]] || fail "authenticated lost execute on admin_report()"
+# The dump sets the postgres role's default privileges again: a table made now gets what it gets on the first project.
+default_grant() { # URL: select and insert rights anon and service_role get on a table created now
+  psql "$1" -Atq --variable ON_ERROR_STOP=1 <<'SQL' || fail "creating a probe table"
+begin;
+create table public.default_probe (id int);
+select has_table_privilege('anon', 'public.default_probe', 'select'), has_table_privilege('service_role', 'public.default_probe', 'insert');
+rollback;
+SQL
+}
+NEW_DEFAULTS=$(default_grant "$NEW_DB_URL"); OLD_DEFAULTS=$(default_grant "$OLD_DB_URL")
+[[ -n $NEW_DEFAULTS && $NEW_DEFAULTS == "$OLD_DEFAULTS" ]] || fail "a new table gets other grants on the new project ('$NEW_DEFAULTS') than on the first ('$OLD_DEFAULTS')"
 [[ $(nq "select count(*) from pg_extension where extname = 'pg_cron'") == 1 ]] || fail "the schema dump does not create pg_cron"
 log "pg_cron jobs in the restored database before the guide's cron step: $(nq 'select count(*) from cron.job')"
 guide cron
 [[ $(nq "select count(*) from cron.job where jobname = 'nightly-cleanup' and schedule = '0 3 * * *'") == 1 ]] || fail "the cron job does not exist exactly once after the guide's cron step"
 nq "alter role app_user with password 'a-new-password-for-app-user'" >/dev/null || fail "setting a role password (step 4)"
 
-# ---- step 5: Storage ---------------------------------------------------------------------------
+# ---- step 5: settings (before the files, which can be larger than a new project's default limit) --
+guide settings
+[[ $(papi GET "/v1/projects/$NEW_REF/config/auth" | json_get 'd["site_url"]') == https://app.example.test ]] || fail "site_url was not copied"
+[[ $(papi GET "/v1/projects/$NEW_REF/config/auth" | json_get 'd["uri_allow_list"]') == 'https://app.example.test/**' ]] || fail "uri_allow_list was not copied"
+[[ $(papi GET "/v1/projects/$NEW_REF/postgrest" | json_get 'd["max_rows"]') == 777 ]] || fail "max_rows was not copied"
+[[ $(papi GET "/v1/projects/$NEW_REF/config/storage" | json_get 'd["fileSizeLimit"]') == 104857600 ]] || fail "fileSizeLimit was not copied"
+
+# ---- step 6: Storage ---------------------------------------------------------------------------
+for ((i = 0; i < 30; i++)); do # the Storage tenant takes the copied limit a moment after the PATCH
+  [[ $(curl -s -o /dev/null -w '%{http_code}' -m 60 -X POST -H "apikey: $OLD_SVC" -H "Authorization: Bearer $OLD_SVC" -H 'Content-Type: application/octet-stream' \
+    --data-binary "@$WORK/big.bin" "$NEW_URL/storage/v1/object/avatars/limit-probe.bin") != 413 ]] && break
+  sleep 2
+done
+curl -fsS -m 30 -X DELETE -H "apikey: $OLD_SVC" -H "Authorization: Bearer $OLD_SVC" "$NEW_URL/storage/v1/object/avatars/limit-probe.bin" >/dev/null 2>&1 || true
 guide storage
 grep -q 'copied avatars/docs/hello world.txt' "$GUIDE_OUT" || { cat "$GUIDE_OUT" >&2; fail "the Storage loop copied nothing"; }
 got=$(curl -fsS -m 30 -D "$WORK/storage.headers" -H "apikey: $OLD_SVC" -H "Authorization: Bearer $OLD_SVC" \
@@ -288,14 +352,17 @@ tr -d '\r' <"$WORK/storage.headers" | grep -qi '^content-type: text/plain' || fa
 [[ $(psql "$NEW_DB_URL" -Atc "select metadata->>'cacheControl' from storage.objects where bucket_id = 'avatars' and name = 'docs/hello world.txt'") == \
    $(psql "$OLD_DB_URL" -Atc "select metadata->>'cacheControl' from storage.objects where bucket_id = 'avatars' and name = 'docs/hello world.txt'") ]] \
   || fail "the copied object lost its cache control"
+[[ $(curl -fsS -m 120 -H "apikey: $OLD_SVC" -H "Authorization: Bearer $OLD_SVC" "$NEW_URL/storage/v1/object/authenticated/avatars/big/blob.bin" | sha256sum | cut -d' ' -f1) == "$BIG_SHA" ]] \
+  || fail "the 52 MiB object (over the default limit of a new project) was not copied intact"
+[[ ! -e $WORK/hosted/storage-failed.txt ]] || fail "the Storage loop listed objects it could not copy"
 
-# ---- step 7: settings --------------------------------------------------------------------------
-guide settings
-[[ $(papi GET "/v1/projects/$NEW_REF/config/auth" | json_get 'd["site_url"]') == https://app.example.test ]] || fail "site_url was not copied"
-[[ $(papi GET "/v1/projects/$NEW_REF/config/auth" | json_get 'd["uri_allow_list"]') == 'https://app.example.test/**' ]] || fail "uri_allow_list was not copied"
-[[ $(papi GET "/v1/projects/$NEW_REF/postgrest" | json_get 'd["max_rows"]') == 777 ]] || fail "max_rows was not copied"
-
-# ---- step 8: what the app sees ----------------------------------------------------------------
+# ---- step 8: grants, then what the app sees ---------------------------------------------------
+guide grants # diff exits 1 on any difference, which fails the block
+grep -Eq '^table (public\.)?todos anon SELECT$' "$WORK/hosted/grants-old.txt" || { cat "$WORK/hosted/grants-old.txt" >&2; fail "the grants listing of the first project does not show anon's grant on todos"; }
+grep -Eq '^table (public\.)?audit_log service_role SELECT$' "$WORK/hosted/grants-new.txt" || fail "the grants listing of the new project does not show service_role's grant on audit_log"
+if grep -Eq '^(table (public\.)?audit_log (anon|authenticated)|function (public\.)?admin_report\(\) (anon|-)) ' "$WORK/hosted/grants-new.txt"; then
+  cat "$WORK/hosted/grants-new.txt" >&2; fail "the new project holds a grant that the first project had revoked"
+fi
 log "the first project's anon key against the new project: RLS through PostgREST"
 rest_count() { # KEY BEARER QUERY: rows PostgREST answers on the new project, retried while its schema cache loads
   local n="" i
@@ -329,17 +396,14 @@ for ((i = 0; i < 60; i++)); do
   sleep 2
 done
 psql "$THIRD_DB_URL" -Atc 'select 1' >/dev/null || fail "the pooler does not serve the third project"
-for ((i = 0; i < 90; i++)); do
-  [[ $(psql "$THIRD_DB_URL" -Atc "select to_regclass('storage.objects') is not null") == t ]] && break
-  sleep 2
-done
-[[ $(psql "$THIRD_DB_URL" -Atc "select to_regclass('storage.objects') is not null") == t ]] || fail "Storage did not set up the third project's schema"
+wait_migrated "$THIRD_DB_URL"
 cp -r "$WORK/hosted/supabase" "$WORK/reverse/supabase"
 (
   export OLD_DB_URL=$NEW_DB_URL NEW_DB_URL=$THIRD_DB_URL
   guide dump "$WORK/reverse"
   grep -q 'COPY "public"."todos"' "$WORK/reverse/data.sql" || fail "the dump of the new project has no todos"
   guide restore "$WORK/reverse"
+  guide grants "$WORK/reverse"
 )
 tq() { psql "$THIRD_DB_URL" -Atc "$1"; }
 [[ $(tq 'select count(*) from public.todos') == 10 && $(tq 'select count(*) from auth.users') == 2 && $(tq 'select public.add_numbers(2, 3)') == 5 ]] || fail "the third project does not hold what the second held"
