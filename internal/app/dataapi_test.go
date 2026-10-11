@@ -1,13 +1,18 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/supavise/supavise/internal/config"
+	"github.com/supavise/supavise/internal/notice"
 )
 
 type fakeConverger struct {
@@ -63,5 +68,63 @@ func TestConvergeDataAPILoop(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the loop did not stop with its context")
+	}
+}
+
+// A project that stays undone is tried less often each time, and its failure is logged once while
+// the message stays the same.
+func TestConvergeDataAPILoopBacksOffAndLogsOnce(t *testing.T) {
+	for i, want := range []time.Duration{5 * time.Minute, 15 * time.Minute, time.Hour, time.Hour} {
+		if got := dataAPIBackoff(5*time.Minute, i); got != want {
+			t.Errorf("backoff after %d failed passes = %v, want %v", i+1, got, want)
+		}
+	}
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &fakeConverger{}
+	c.fail.Store(true)
+	done := make(chan struct{})
+	go func() {
+		convergeDataAPILoop(ctx, c, func() bool { return false }, log, time.Hour, 5*time.Millisecond, time.Hour)
+		close(done)
+	}()
+	waitFor(t, "four passes", func() bool { return c.calls.Load() >= 4 })
+	cancel()
+	<-done
+	if n := strings.Count(buf.String(), "could not revoke the default privileges"); n != 1 {
+		t.Fatalf("%d warnings for one unchanged failure:\n%s", n, buf.String())
+	}
+}
+
+// The pass waits for an upgrade in any phase while its process is alive, the rolling_back phase
+// included, and goes ahead once the upgrade has ended.
+func TestDataAPIWaitsForAnUpgradeThatRollsBack(t *testing.T) {
+	cfg := &config.Config{StateDir: t.TempDir()}
+	p := cfg.Paths()
+	now := time.Now()
+	if dataAPIUpgradeRunning(p, now) {
+		t.Fatal("no marker, and an upgrade is running")
+	}
+	for _, phase := range []string{"services", notice.PhaseRollingBack} {
+		if err := notice.WriteUpgrade(p, notice.Upgrade{Phase: phase, From: "v0.2.1", To: "v0.3.0", StartedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if !dataAPIUpgradeRunning(p, now) {
+			t.Errorf("phase %q does not hold the pass back", phase)
+		}
+	}
+	// A marker whose process is gone, and a finished upgrade, do not.
+	if err := notice.WriteUpgrade(p, notice.Upgrade{Phase: notice.PhaseRollingBack, StartedAt: now, PID: 2147483646}); err != nil {
+		t.Fatal(err)
+	}
+	if dataAPIUpgradeRunning(p, now) {
+		t.Error("an upgrade whose process is gone holds the pass back")
+	}
+	if err := notice.WriteUpgrade(p, notice.Upgrade{Phase: "done", StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if dataAPIUpgradeRunning(p, now) {
+		t.Error("a finished upgrade holds the pass back")
 	}
 }

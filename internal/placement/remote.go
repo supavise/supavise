@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/lifecycle"
@@ -146,6 +148,14 @@ var _ lifecycle.DataAPIPlane = (*RemotePlane)(nil)
 
 // ApplyDataAPI implements lifecycle.DataAPIPlane: the statements run on the node, in the project's
 // database.
+//
+// A node on an older release answers 400 "unknown plane method" for it; that is lifecycle.ErrPeerBehind,
+// so the caller waits for the node's upgrade instead of reporting a failure.
 func (r *RemotePlane) ApplyDataAPI(ctx context.Context, p *registry.Project, s lifecycle.DataAPISetup) error {
-	return r.call(ctx, p.Ref, planeApplyDataAPI, dataAPIArgs{Project: p, Setup: s}, nil)
+	err := r.call(ctx, p.Ref, planeApplyDataAPI, dataAPIArgs{Project: p, Setup: s}, nil)
+	var re *mesh.RemoteError
+	if errors.As(err, &re) && re.Status == http.StatusBadRequest && strings.Contains(re.Message, "unknown plane method") {
+		return fmt.Errorf("%w: node %s", lifecycle.ErrPeerBehind, r.Node)
+	}
+	return err
 }

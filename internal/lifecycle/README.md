@@ -61,9 +61,10 @@ Hosted Supabase no longer grants new tables to the Data API roles: since 2026-05
 privileges of `public` for `postgres`, and it applies that to the projects it already runs on 2026-10-30
 (<https://supabase.com/changelog/45329-breaking-change-tables-not-exposed-to-data-and-graphql-api-automatically>). `dataapi.go`
 does the same. `RevokeDefaultPrivilegesSQL` revokes select, insert, update and delete on tables and usage and select on
-sequences (the changelog's two statements), and execute on functions (Studio's own switch for the same setting,
-`buildDefaultPrivilegesSql('revoke')` in pg-meta; the changelog is silent on functions, and revoking them is the safe side for
-a migration that must also run on hosted). Objects that exist keep their grants.
+sequences (the changelog's two statements), and runs the two function statements of Studio's own switch for the same setting
+(`buildDefaultPrivilegesSql('revoke')` in pg-meta; the changelog is silent on functions). Those two do not lock functions
+down: PostgreSQL gives EXECUTE on a new function to PUBLIC globally, and a per-schema default privilege cannot take it away, so a
+new function stays callable through `rpc`, on hosted too. Objects that exist keep their grants.
 
 - **Create.** `CreateRequest.DataAPI` (`DataAPIOptions`) is the choice; its zero value is hosted's default (revoke), so a caller
   that says nothing gets it. After the cluster is up, `PostgresPlane.ApplyDataAPI` (the optional capability `DataAPIPlane`, part
@@ -78,18 +79,26 @@ a migration that must also run on hosted). Objects that exist keep their grants.
   list: omitted keeps the default, `[]` (the Data API off) exposes `graphql_public` only, because PostgREST falls back to
   `public` for an empty list and a node cannot switch it off.
 - **Seeded creates.** A restore as new and a data branch hold the source's database, default privileges included, so no SQL runs.
-  `DataAPIOptions.CopyFrom` names the source and its row is copied (`copy`); `CopyChoice` is the decision a backup manifest
-  remembers for a source that no longer exists. With neither, the new project has no row and is converged like an existing one.
+  `DataAPIOptions.CopyFrom` names the source and its row is copied (`copy`); a data branch cloned from the live parent sets it.
+  `CopyChoice` is the decision a backup manifest recorded; a restore as new sets only this, never `CopyFrom`, because the source's
+  row as it is now can say `revoked` (the node upgraded after the backup) while the restored database still has the old grants.
+  With neither, the new project has no row and is converged like an existing one.
   A schema-only branch is a fresh create: `internal/branching` passes `ExposeNewTables` from the parent's row before the
   migrations replay.
 - **Existing projects.** `Engine.ConvergeDataAPI` lists the running projects without a row and applies the revoke once
-  (`convergeLocked`, source `upgrade`, event `project.data_api_defaults_revoked`); a failure is the event
-  `project.data_api_defaults_failed`, records nothing and is tried again. A project with a row is never touched again, so a
-  user who rolled the revoke back with SQL keeps the rollback across restarts and upgrades. A paused project is done by `resume`.
+  (`convergeLocked`, source `upgrade`, event `project.data_api_defaults_revoked`); a failure records nothing and is tried
+  again, and is the event `project.data_api_defaults_failed` once per distinct message and hour, not at every pass. A cluster in
+  recovery (`ErrNotPrimary`) and a home node on an older release (`ErrPeerBehind`) are waited for with no event. A project with
+  a row is never touched again, and a pass does not even take its lock, so a user who rolled the revoke back with SQL keeps the
+  rollback across restarts and upgrades. A project whose lock another operation holds is skipped after `convergeLockWait` (10 s)
+  and tried at the next pass. A paused project is done by `resume`.
   The leader's Engine drives every project, through the plane router for one homed on another node (`apply_data_api` on the
   peer plane path, see `internal/placement`); a follower's Engine, whose registry is read-only, does nothing. `internal/app`
-  runs it after the projects start, skips it while a forward node upgrade runs (an upgrade that fails rolls the node back to a
-  release that does not know the change), and repeats it: every 5 minutes while a project failed, every hour otherwise.
+  runs it after the projects start, skips it while a node upgrade runs in any phase, `rolling_back` included, as long as
+  its process is alive (an upgrade that fails rolls the node back to a release that does not know the change), and repeats it:
+  after 5 minutes, then 15 minutes, then every hour while a project stays undone, and every hour otherwise. A create whose
+  home node is on an older release goes on without the revoke (a warning) and is converged later; a create that needs the
+  schema `api` or an exposed list fails with `ErrPeerBehind`.
 - **The row is a record of what Supavise did, not of the database.** SQL a user runs changes the database and leaves the row alone.
 
 ## Other operations

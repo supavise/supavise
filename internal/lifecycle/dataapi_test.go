@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/fleet"
@@ -271,6 +272,21 @@ func TestSeededCreateCopiesTheSourceDecision(t *testing.T) {
 	if _, err := registry.DataAPIOf(h.reg).GetDataAPI(ctx, other.Ref); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("a copy of nothing recorded a decision: %v", err)
 	}
+	// A restore as new of a backup that recorded nothing names no source (the source's row may have
+	// been written since): the copy is unrecorded and its first pass revokes the old grants.
+	restored, err := h.e.Create(ctx, CreateRequest{Name: "restored", Seed: seed, Keys: keys})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.DataAPIOf(h.reg).GetDataAPI(ctx, restored.Ref); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("a seeded create with no decision to copy recorded one: %v", err)
+	}
+	if failed := h.e.ConvergeDataAPI(ctx); len(failed) != 0 {
+		t.Fatalf("failed: %v", failed)
+	}
+	if d := choiceOf(t, h.reg, restored.Ref); d.DefaultPrivileges != registry.PrivilegesRevoked || d.Source != registry.DataAPIUpgrade {
+		t.Fatalf("choice after the first pass = %+v", d)
+	}
 }
 
 // existing makes a running project the way an earlier release left it: no decision recorded.
@@ -395,9 +411,9 @@ func TestConvergeFailureIsRetriedAndRecordsNothing(t *testing.T) {
 	h := newDataAPIHarness(t)
 	ctx := context.Background()
 	p := h.existing(t, "stuck")
-	h.dp.err = ErrNotPrimary
+	h.dp.err = errors.New("connection refused")
 	failed := h.e.ConvergeDataAPI(ctx)
-	if !errors.Is(failed[p.Ref], ErrNotPrimary) {
+	if failed[p.Ref] == nil || !strings.Contains(failed[p.Ref].Error(), "connection refused") {
 		t.Fatalf("failed = %v", failed)
 	}
 	if _, err := registry.DataAPIOf(h.reg).GetDataAPI(ctx, p.Ref); !errors.Is(err, registry.ErrNotFound) {
@@ -493,5 +509,142 @@ func TestParseExposedSchemas(t *testing.T) {
 		if err != nil || got != tc.want {
 			t.Errorf("%s: got %q, %v, want %q", tc.name, got, err, tc.want)
 		}
+	}
+}
+
+func (h *dataAPIEnv) countEvents(t *testing.T, ref, kind string) int {
+	t.Helper()
+	evs, err := h.reg.ListEvents(context.Background(), ref, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, ev := range evs {
+		if ev.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// A project that keeps failing the same way adds one failure event, not one per pass; a different
+// failure adds another, and so does the same one an hour later. A cluster in recovery and a node
+// behind on its release are waited for, with no event, and succeed when they catch up.
+func TestConvergeFailureEventsAreNotRepeated(t *testing.T) {
+	h := newDataAPIHarness(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	h.e.opts.Now = func() time.Time { return now }
+	p := h.existing(t, "down")
+
+	h.dp.err = errors.New("connection refused")
+	for i := 0; i < 5; i++ {
+		if failed := h.e.ConvergeDataAPI(ctx); failed[p.Ref] == nil {
+			t.Fatalf("pass %d did not fail", i)
+		}
+	}
+	if n := h.countEvents(t, p.Ref, EventDataAPIFailed); n != 1 {
+		t.Fatalf("%d failure events after five identical failures, want 1", n)
+	}
+	h.dp.err = errors.New("the database is shutting down")
+	h.e.ConvergeDataAPI(ctx)
+	if n := h.countEvents(t, p.Ref, EventDataAPIFailed); n != 2 {
+		t.Fatalf("%d failure events after a different failure, want 2", n)
+	}
+	now = now.Add(dataAPIFailureEvery)
+	h.e.ConvergeDataAPI(ctx)
+	if n := h.countEvents(t, p.Ref, EventDataAPIFailed); n != 3 {
+		t.Fatalf("%d failure events an hour later, want 3", n)
+	}
+
+	for _, waiting := range []error{ErrNotPrimary, ErrPeerBehind} {
+		h.dp.err = waiting
+		failed := h.e.ConvergeDataAPI(ctx)
+		if !errors.Is(failed[p.Ref], waiting) {
+			t.Fatalf("a project waiting on %v: failed = %v", waiting, failed)
+		}
+	}
+	if n := h.countEvents(t, p.Ref, EventDataAPIFailed); n != 3 {
+		t.Fatalf("a wait wrote an event: %d failure events", n)
+	}
+	h.dp.err = nil
+	if failed := h.e.ConvergeDataAPI(ctx); len(failed) != 0 {
+		t.Fatalf("failed: %v", failed)
+	}
+	if d := choiceOf(t, h.reg, p.Ref); d.DefaultPrivileges != registry.PrivilegesRevoked {
+		t.Fatalf("choice = %+v", d)
+	}
+}
+
+// A project whose lock another operation holds is skipped after the lock wait, and the pass goes on
+// to the others. A project that has its row is not even looked at under its lock.
+func TestConvergeDoesNotWaitOnABusyProject(t *testing.T) {
+	h := newDataAPIHarness(t)
+	ctx := context.Background()
+	defer func(w time.Duration) { convergeLockWait = w }(convergeLockWait)
+	convergeLockWait = 50 * time.Millisecond
+	busy := h.existing(t, "busy")
+	free := h.existing(t, "other")
+	done, err := h.e.Create(ctx, CreateRequest{Name: "done"}) // has its row
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlockBusy, err := h.e.lock(ctx, busy.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlockDone, err := h.e.lock(ctx, done.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.dp.dmu.Lock()
+	h.dp.runs = nil // forget the create's own run
+	h.dp.dmu.Unlock()
+	start := time.Now()
+	failed := h.e.ConvergeDataAPI(ctx)
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("the pass took %v with a project locked", took)
+	}
+	if failed[busy.Ref] == nil || !errors.Is(failed[busy.Ref], context.DeadlineExceeded) || len(failed) != 1 {
+		t.Fatalf("failed = %v, want only the locked project %s", failed, busy.Ref)
+	}
+	if got := h.dp.ran(); len(got) != 1 || !strings.HasPrefix(got[0], free.Ref+": ") {
+		t.Fatalf("the plane ran %v, want only %s", got, free.Ref)
+	}
+	if h.countEvents(t, busy.Ref, EventDataAPIFailed) != 0 {
+		t.Fatal("a busy project recorded a failure event")
+	}
+	unlockBusy()
+	unlockDone()
+	if failed := h.e.ConvergeDataAPI(ctx); len(failed) != 0 {
+		t.Fatalf("after the lock was released: %v", failed)
+	}
+	if d := choiceOf(t, h.reg, busy.Ref); d.DefaultPrivileges != registry.PrivilegesRevoked {
+		t.Fatalf("choice = %+v", d)
+	}
+}
+
+// At create, a home node on an older release is waited for when the revoke is all that was asked,
+// and a failure when the caller asked for a schema only the node can make.
+func TestCreateOnANodeBehindWaitsForTheRevokeOnly(t *testing.T) {
+	h := newDataAPIHarness(t)
+	ctx := context.Background()
+	h.dp.err = ErrPeerBehind
+	p, err := h.e.Create(ctx, CreateRequest{Name: "behind"})
+	if err != nil {
+		t.Fatalf("the default create on a node behind: %v", err)
+	}
+	if _, err := registry.DataAPIOf(h.reg).GetDataAPI(ctx, p.Ref); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("a revoke that did not run was recorded: %v", err)
+	}
+	if _, err := h.e.Create(ctx, CreateRequest{Name: "api", DataAPI: DataAPIOptions{APISchema: true, ExposedSchemas: "api,graphql_public"}}); !errors.Is(err, ErrPeerBehind) {
+		t.Fatalf("a create that needs the schema: %v", err)
+	}
+	h.dp.err = nil
+	if failed := h.e.ConvergeDataAPI(ctx); len(failed) != 0 {
+		t.Fatalf("failed: %v", failed)
+	}
+	if d := choiceOf(t, h.reg, p.Ref); d.DefaultPrivileges != registry.PrivilegesRevoked || d.Source != registry.DataAPIUpgrade {
+		t.Fatalf("choice = %+v", d)
 	}
 }

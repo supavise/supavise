@@ -3,6 +3,7 @@ package placement
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -60,5 +61,22 @@ func TestRouterApplyDataAPIFollowsTheHome(t *testing.T) {
 	follower.err["ApplyDataAPI"] = boom
 	if err := r.ApplyDataAPI(ctx, pb, setup); err == nil || !strings.Contains(err.Error(), boom.Error()) {
 		t.Fatalf("an error of the home node: %v", err)
+	}
+}
+
+// A node on an older release answers 400 "unknown plane method" for the call: the caller gets
+// lifecycle.ErrPeerBehind, which it treats as "try again later". Another 400 stays what it is.
+func TestRemoteApplyDataAPIOfAnOlderNodeIsErrPeerBehind(t *testing.T) {
+	p := testProject("n2")
+	old := &mesh.RemoteError{Node: "n2", Status: http.StatusBadRequest, Message: `unknown plane method "apply_data_api"`}
+	r := &RemotePlane{Node: "n2", RPC: failingRPC{old}}
+	err := r.ApplyDataAPI(context.Background(), p, lifecycle.DataAPISetup{RevokeDefaultPrivileges: true})
+	if !errors.Is(err, lifecycle.ErrPeerBehind) {
+		t.Fatalf("an older node: %v", err)
+	}
+	other := &mesh.RemoteError{Node: "n2", Status: http.StatusBadRequest, Message: "the call needs the project and the setup"}
+	r = &RemotePlane{Node: "n2", RPC: failingRPC{other}}
+	if err := r.ApplyDataAPI(context.Background(), p, lifecycle.DataAPISetup{}); err == nil || errors.Is(err, lifecycle.ErrPeerBehind) {
+		t.Fatalf("another bad request: %v", err)
 	}
 }
