@@ -368,13 +368,19 @@ export async function startFake({ mcp = false, domain = "supavise.test" } = {}) 
     return { access_token: access, token_type: "Bearer", expires_in: 3600, refresh_token: refresh, scope: scopes.join(" ") };
   }
 
+  // The state of the branch tools: branches by name, and the tables each project ref has (apply_migration adds one).
+  const fakeBranches = [];
+  const tablesOf = new Map();
+  const tableSet = (r) => { if (!tablesOf.has(r)) tablesOf.set(r, new Set(["items"])); return tablesOf.get(r); };
+  const letters = () => Array.from({ length: 20 }, () => "abcdefghijklmnopqrstuvwxyz"[Math.floor(Math.random() * 26)]).join("");
+
   function mcpHandler(url, q, p, b, out, err) {
     const ref = q.get("project_ref"), ro = q.get("read_only"), features = q.get("features");
     if (ref && !/^[a-z]{20}$/.test(ref)) return err(400, "invalid project_ref");
     if (ro && ro !== "true" && ro !== "false") return err(400, "invalid read_only");
     const project = ["execute_sql", "list_tables", "get_project_url"];
     const writes = ["apply_migration"];
-    const account = ["list_organizations", "list_projects", "get_cost", "confirm_cost", "create_project"];
+    const account = ["list_organizations", "list_projects", "get_cost", "confirm_cost", "create_project", "create_branch", "list_branches", "delete_branch", "merge_branch", "reset_branch", "rebase_branch"];
     let tools = features === "docs" ? ["search_docs"] : [...project, ...(ro === "true" ? [] : writes), ...(ref ? [] : account)];
     const text = (t, isError = false) => ({ jsonrpc: "2.0", id: b.id, result: { content: [{ type: "text", text: t }], isError } });
     if (b.method === "initialize") return out(200, { jsonrpc: "2.0", id: b.id, result: { protocolVersion: b.params?.protocolVersion ?? "2025-06-18", capabilities: {}, serverInfo: { name: "fake", version: "0" } } });
@@ -387,6 +393,24 @@ export async function startFake({ mcp = false, domain = "supavise.test" } = {}) 
       if (n === "list_organizations") return out(200, text(JSON.stringify(orgs.filter((o) => p.orgs.includes(o.id)).map((o) => o.slug))));
       if (n === "list_projects") return out(200, text(JSON.stringify(projects.filter((x) => p.orgs.includes(x.org)).map((x) => x.ref))));
       if (n === "create_project") return out(200, text("Cost confirmation ID does not match", true));
+      const a = b.params.arguments ?? {};
+      if (n === "get_cost") return out(200, text(JSON.stringify({ type: a.type, recurrence: "hourly", amount: 0.01344 })));
+      if (n === "confirm_cost") return out(200, text(JSON.stringify({ confirmation_id: "fake-confirm" })));
+      if (n === "create_branch") {
+        if (a.confirm_cost_id !== "fake-confirm") return out(200, text("Cost confirmation ID does not match", true));
+        const br = { id: crypto.randomUUID(), name: a.name, project_ref: letters(), parent: a.project_id, status: "FUNCTIONS_DEPLOYED" };
+        fakeBranches.push(br);
+        tablesOf.set(br.project_ref, new Set(tableSet(a.project_id)));
+        return out(200, text(JSON.stringify(br)));
+      }
+      if (n === "list_branches") return out(200, text(JSON.stringify({ branches: fakeBranches.filter((x) => x.parent === a.project_id) })));
+      const br = fakeBranches.find((x) => x.id === a.branch_id);
+      if (["delete_branch", "merge_branch", "reset_branch", "rebase_branch"].includes(n) && !br) return out(200, text("Branch not found", true));
+      if (n === "delete_branch") { fakeBranches.splice(fakeBranches.indexOf(br), 1); return out(200, text("deleted")); }
+      if (n === "merge_branch") { for (const t of tableSet(br.project_ref)) tableSet(br.parent).add(t); return out(200, text("merged")); }
+      if (n === "reset_branch" || n === "rebase_branch") return out(200, text("ok"));
+      if (n === "apply_migration") { const m = /create table public\.(\w+)/i.exec(a.query ?? ""); if (m) tableSet(ref).add(m[1]); return out(200, text("ok")); }
+      if (n === "list_tables") return out(200, text(JSON.stringify([...tableSet(ref)].map((name) => ({ schema: "public", name })))));
       return out(200, text("ok"));
     }
     return out(202, "");

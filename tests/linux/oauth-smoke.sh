@@ -12,14 +12,18 @@
 # The first form is the `oauth-smoke` job (no Studio): the node, two organizations with a project each,
 # an Owner, an Administrator and a Developer, and tests/linux/oauth/oauth-walk.mjs, which runs steps
 # L-01 to L-14 (the contract is docs/design.md, section 13). The real stdio MCP server and its smoke scripts then run with an OAuth
-# access token (REQUIRE_CLIENTS=1 makes a missing node or npx a failure instead of a skip). Afterwards
+# access token (REQUIRE_CLIENTS=1 makes a missing node or npx a failure instead of a skip): its smoke and roles scripts,
+# and internal/branching/testdata/mcp-branches.mjs, which creates, changes, merges, rebases, resets and deletes a branch with
+# the six branch tools. Afterwards
 # the script reads the registry and the journal: no plaintext secret in any oauth table or log line, no
 # oauth token in access_tokens, the audit events of each state change, and none of them carrying a
 # secret.
 #
 # With --studio-artifact (the `mcp-e2e` job, amd64) Studio runs from the given build and the walk adds
 # L-09: MCP over Streamable HTTP at /mcp with two protocol revisions, project-scoped and account-scoped
-# URLs, read_only, features, a personal access token as bearer, get_project_url and create_project.
+# URLs, read_only, features, a personal access token as bearer, get_project_url and create_project, and the six
+# branch tools (create_branch with a confirmed cost on an account-scoped URL, list_branches, rebase_branch, merge_branch,
+# reset_branch, delete_branch) with a project-scoped URL bound to the branch.
 # The artifact is served to the node from a local HTTP server and checked against a SHA256SUMS file
 # next to it when there is one.
 #
@@ -147,7 +151,7 @@ log "the walk (L-01 to L-14)"
 STDIO_JSON=null
 if [[ $MCP -eq 0 ]]; then
   if command -v npx >/dev/null; then
-    STDIO_JSON="{\"smoke\":\"$REPO_ROOT/internal/api/testdata/mcp-smoke.mjs\",\"roles\":\"$REPO_ROOT/internal/api/testdata/mcp-roles.mjs\"}"
+    STDIO_JSON="{\"smoke\":\"$REPO_ROOT/internal/api/testdata/mcp-smoke.mjs\",\"roles\":\"$REPO_ROOT/internal/api/testdata/mcp-roles.mjs\",\"branches\":\"$REPO_ROOT/internal/branching/testdata/mcp-branches.mjs\"}"
   else
     [[ ${REQUIRE_CLIENTS:-} == 1 ]] && fail "npx is required (REQUIRE_CLIENTS=1)"
     log "npx is not installed: the stdio MCP server checks are skipped"
