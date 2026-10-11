@@ -4,8 +4,8 @@
 // the counts to answer the dashboard's request charts (usage.api-counts, usage.api-requests-count).
 //
 // The counter is bounded: a project keeps one ring of per-minute counts for the last three hours
-// and one ring of per-hour counts for the last eight days, which is enough for the ranges Studio
-// asks for (15 minutes to 7 days) and costs about 12 KB per project. Counts are lost when the
+// (and the minute in progress) and one ring of per-hour counts for the last eight days, which is
+// enough for the ranges Studio asks for (15 minutes to 7 days) and costs about 12 KB per project. Counts are lost when the
 // process stops, and they cover only the requests this process served.
 package reqstats
 
@@ -78,7 +78,9 @@ const (
 )
 
 const (
-	minuteSlots = 180 // 3 hours
+	// minuteSlots is 3 hours and the minute in progress: a range of "now minus 3 hours" up to now covers
+	// 181 minute buckets, and with 180 slots the oldest of them would share the slot of the current one.
+	minuteSlots = 181
 	hourSlots   = 200 // 8 days and 8 hours, so that the oldest UTC day of a 7-day range is complete
 )
 
@@ -160,7 +162,8 @@ type Bucket struct {
 // [from, to], oldest first, with zero counts for the buckets that saw no request. The first and
 // last buckets are whole buckets, so their counts include requests outside [from, to]. A range
 // that reaches back further than the rings hold returns zero counts for the part they no longer
-// hold; a Minute range is limited to three hours and a Hour or Day range to eight days.
+// hold; a Minute range is limited to three hours (181 buckets, the minute in progress included) and
+// a Hour or Day range to eight days.
 func (c *Counter) Series(ref string, from, to time.Time, step Step) []Bucket {
 	if to.Before(from) {
 		return nil
