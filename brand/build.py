@@ -370,6 +370,10 @@ ICONS = {
                  '<path stroke="none" fill="@" d="M24 28h12v4H24z"/>',
     "plug":      '<path d="M18 4V14M30 4V14"/><path d="M12 14H36V24A12 12 0 0 1 12 24Z"/><path d="M24 36V44"/>'
                  '<path stroke="none" fill="@" d="M20 20h8v6H20z"/>',
+    "advisors":  '<circle cx="20" cy="20" r="14"/><path d="M31 31L43 43"/>'
+                 '<path stroke="none" fill="@" d="M13 20.5L16 17.5L19.5 21L27 12.5L30 15.5L19.5 27Z"/>',
+    "migrate":   '<path stroke="none" fill="@" d="M3 6h6v36H3z"/><path d="M42 6V42"/><path d="M14 16H36"/><path d="M30 9L37 16L30 23"/>'
+                 '<path d="M34 32H12"/><path d="M18 25L11 32L18 39"/>',
 }
 
 def icon(name, x, y, size, color):
@@ -384,13 +388,15 @@ FEATURES = [
     ("branch", "Branching", "Schema-only branches or full copies of your data, for previews and agents"),
     ("terminal", "Supabase CLI", "Link, push migrations and manage branches, with a profile file"),
     ("plug", "MCP for AI tools", "Claude Code, Cursor and VS Code sign in to your server's MCP endpoint with OAuth"),
+    ("advisors", "Advisors", "Hosted's security and performance database checks, in the dashboard, CLI and MCP"),
+    ("pulse", "Monitoring", "CPU, memory and disk reports, resource warnings, and alerts by email or webhook"),
     ("backup", "Backups", "Point-in-time restore from the dashboard, including Storage files"),
+    ("migrate", "Move from hosted", "Move a project from hosted Supabase with its data, users and legacy keys, or back again"),
     ("bucket", "Storage on S3", "Move Storage's files to an S3 bucket in place, with a short pause for writes"),
     ("replica", "Read replicas", "A copy of a project on a second server, with its own API and pooler endpoints"),
     ("failover", "Failover", "Switch a project or the whole server to its replica, by hand or automatically on AWS"),
     ("team", "Teams", "Organizations, roles, invitations, SAML single sign-on and MFA"),
     ("key", "API keys", "Publishable and secret keys, legacy JWT keys and key rotation"),
-    ("pulse", "Monitoring", "Health checks, an uptime endpoint, and alerts by email or webhook"),
     ("shield", "Operations", "Automatic HTTPS, security patches and signed updates"),
     ("upgrade", "Upgrades", "One command brings servers and AWS stacks forward from v0.1.x, backed up first"),
     ("cloud", "AWS", "A one-field CloudFormation template, and a second stack for a replica server"),
