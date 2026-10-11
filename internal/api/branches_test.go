@@ -703,3 +703,35 @@ func TestBranchDeleteTellsTheFunctionsHook(t *testing.T) {
 }
 
 var errBoom = errors.New("boom: relation g already exists")
+
+// The failure reason, the expiry and the region sit next to the spec's fields, which stay as they are.
+func TestBranchJSONCarriesDetailExpiryAndRegion(t *testing.T) {
+	exp := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	b := &branching.Branch{
+		ID: "6f9619ff-8b86-4011-b42d-00c04fc964ff", Name: "d", Ref: "abcdefghijklmnopqrst", ParentRef: testRef, Region: "eu-west-1",
+		State: registry.BranchMigrationsFailed, ProjectStatus: registry.StatusActiveHealthy, Detail: "apply to the parent: relation f already exists",
+		ExpiresAt: &exp, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	body, err := json.Marshal(mustBranchJSON(t, b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["supavise_detail"] != "apply to the parent: relation f already exists" || m["supavise_expires_at"] != "2026-11-01T12:00:00Z" ||
+		m["supavise_region"] != "eu-west-1" || m["status"] != "MIGRATIONS_FAILED" {
+		t.Fatalf("branch JSON = %s", body)
+	}
+	validateAgainstSpec(t, "GET /v1/projects/{ref}/branches/{name}", body)
+	// Nothing to say: the fields are absent. A persistent branch never shows an expiry.
+	b.Detail, b.Region, b.State = "", "", registry.BranchFunctionsDeployed
+	b.Persistent = true
+	body, _ = json.Marshal(mustBranchJSON(t, b))
+	for _, k := range []string{"supavise_detail", "supavise_expires_at", "supavise_region"} {
+		if strings.Contains(string(body), k) {
+			t.Errorf("%s in %s", k, body)
+		}
+	}
+}
