@@ -145,6 +145,7 @@ POST /v1/projects/{ref}/upgrade	projects:write
 POST /v1/projects/{ref}/vanity-subdomain/activate	domains:write
 POST /v1/projects/{ref}/vanity-subdomain/check-availability	domains:write
 POST /v2/organizations/{slug}/members/invitations	organizations:write
+POST /v2/projects/{ref}/advisors/run	database:read	(override)
 POST /v2/projects/{ref}/analytics/log-drains	analytics_config:write
 POST /v2/projects/{ref}/branches	environment:write
 POST /v2/projects/{ref}/compute/{name}/deploy	edge_functions:write

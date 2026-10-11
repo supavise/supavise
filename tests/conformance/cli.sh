@@ -93,6 +93,9 @@ else
   cat >"$MIG" <<SQL
 create table public.conf_widgets (id int primary key, name text not null);
 insert into public.conf_widgets values (1, 'sprocket'), (2, 'gear');
+-- The Data API may read it. The security advisor reports a table without RLS only when anon or
+-- authenticated can read it, and a project does not have to grant that to tables by default.
+grant select on public.conf_widgets to anon;
 SQL
   step migration-list-before migration list --linked
   line=$(grep -F "$VERSION" "$LAST" | head -1)
@@ -109,6 +112,42 @@ SQL
   [[ $(grep -o "$VERSION" <<<"$line" | wc -l) -eq 2 ]] || bad "after the push the migration should be on both sides: '$line'"
 
   step db-push-again db push --yes && has "$LAST" "up to date" "a second db push should find nothing to do"
+
+  # The advisors. The migration made a table in public without row level security, which hosted's
+  # Security Advisor reports as an error: `db advisors --linked` reads GET /v1/projects/{ref}/advisors/security
+  # and /performance, and prints the lints it gets as JSON. The Auth settings add their own lints.
+  step db-advisors-security db advisors --linked --type security --level error \
+    && has "$LAST" "rls_disabled_in_public" "db advisors does not report the table without RLS" \
+    && has "$LAST" "conf_widgets" "the finding does not name the migration's table"
+  step db-advisors-performance db advisors --linked --type performance --level info \
+    && has "$LAST" "auth_db_connections_absolute" "db advisors --type performance lacks the lint of the Auth settings"
+  if grep -qF rls_disabled_in_public "$LAST"; then bad "the performance advisor reports a security lint"; fi
+  # --fail-on turns an error-level lint into a failing exit status.
+  N=$((N + 1))
+  log "supabase db advisors --linked --type security --level error --fail-on error (must fail)"
+  if cli db advisors --linked --type security --level error --fail-on error >"$OUT/$(printf '%02d' "$N")-db-advisors-fail-on.log" 2>&1; then
+    bad "db advisors --fail-on error exited 0 with an error-level lint present"
+  fi
+  # The endpoint's own shape, which the CLI and the MCP server read: the table's finding is an
+  # ERROR in the SECURITY category with its schema and table in metadata, and the other
+  # category's list does not hold it.
+  # The answers go through files: a project with many findings outgrows the 128 KiB that Linux
+  # allows for one command-line argument.
+  mapi GET "/v1/projects/$REF/advisors/security" >"$OUT/advisors-security.json"
+  mapi GET "/v1/projects/$REF/advisors/performance" >"$OUT/advisors-performance.json"
+  python3 - "$OUT/advisors-security.json" "$OUT/advisors-performance.json" <<'PY' || bad "GET /v1/projects/{ref}/advisors/{security,performance} do not answer as hosted does (see $OUT/advisors-*.json)"
+import json, sys
+sec, perf = (json.load(open(a))["lints"] for a in sys.argv[1:3])
+hits = [l for l in sec if l["name"] == "rls_disabled_in_public" and l.get("metadata", {}).get("name") == "conf_widgets"]
+assert len(hits) == 1, "no rls_disabled_in_public for public.conf_widgets: %r" % [l["name"] for l in sec]
+l = hits[0]
+assert l["level"] == "ERROR" and l["categories"] == ["SECURITY"] and l["facing"] == "EXTERNAL", l
+assert l["metadata"]["schema"] == "public" and l["metadata"]["type"] == "table", l
+assert l["cache_key"] == "rls_disabled_in_public_public_conf_widgets", l
+assert l["remediation"].startswith("https://supabase.com/docs/guides/database/database-linter?lint=0013"), l
+assert all("SECURITY" in x["categories"] for x in sec) and all("PERFORMANCE" in x["categories"] for x in perf)
+assert not [x for x in perf if x["name"] == "rls_disabled_in_public"]
+PY
 fi
 
 # Types from the Management API.
