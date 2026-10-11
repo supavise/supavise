@@ -392,6 +392,35 @@ func TestDashboardMergeNeverAppliesTwice(t *testing.T) {
 		t.Fatalf("diff after the merge:\n%s", d)
 	}
 
+	// The tracked migration is in both histories as covered by the diff, which holds its changes: the
+	// parent's history replays to the same schema, for a new branch and for a reset of this one.
+	for _, ref := range []string{parentRef, b.Ref} {
+		for _, m := range h.migrations(ref) {
+			if m.Name == "tracked" && m.Covered != rec.Version {
+				t.Fatalf("%s: the tracked migration is not marked as covered by the diff: %+v", ref, m)
+			}
+			if m.Name == "branch_merge_a" && m.Covered != "" {
+				t.Fatalf("%s: the diff itself is marked as covered", ref)
+			}
+		}
+	}
+	fresh := h.create("replayed", nil)
+	h.mustState(fresh, registry.BranchFunctionsDeployed)
+	for _, tbl := range []string{"base_t", "tracked", "untracked"} {
+		if !h.has(fresh.Ref, tbl) {
+			t.Fatalf("a branch made from the merged parent lacks %s", tbl)
+		}
+	}
+	h.histories(parentRef, fresh.Ref)
+	if _, err := h.svc.Reset(ctx, b.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	h.mustState(h.wait(b.Ref), registry.BranchFunctionsDeployed)
+	if !h.has(b.Ref, "tracked") || !h.has(b.Ref, "untracked") {
+		t.Fatal("a reset of the merged branch lost a table")
+	}
+	h.histories(parentRef, b.Ref)
+
 	// Again: the same record, the same merge. Nothing runs, nothing breaks.
 	record()
 	again := h.merge(b.Ref, ActionInput{})
@@ -549,4 +578,60 @@ func TestDiffHonorsIncludedSchemas(t *testing.T) {
 
 func errorsIs(err, target error) bool {
 	return err != nil && strings.Contains(err.Error(), target.Error())
+}
+
+// A diff recorded and not merged yet holds the branch's tracked migrations too: a reset must not
+// create their tables twice.
+func TestResetWithARecordedDiffDoesNotReplayTheMigrationsItHolds(t *testing.T) {
+	h := newPGHarness(t)
+	ctx := context.Background()
+	h.apply(parentRef, mig("20260101000000", "init", "create table public.base_t (id int primary key)"))
+	b := h.create("feat", nil)
+	h.apply(b.Ref, mig("20260102000000", "tracked", "create table public.tracked (id int primary key)"))
+	h.exec(b.Ref, "create table public.untracked (id int primary key)")
+	diff, err := h.svc.Diff(ctx, b.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.schemaDB().Record(ctx, b.Ref, []Migration{{Version: "20260103000000", Name: "branch_merge_a", Statements: []string{diff}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Reset(ctx, b.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	got := h.wait(b.Ref)
+	h.mustState(got, registry.BranchFunctionsDeployed)
+	if !h.has(b.Ref, "tracked") || !h.has(b.Ref, "untracked") || !h.has(b.Ref, "base_t") {
+		t.Fatalf("after the reset: tracked=%v untracked=%v base_t=%v (%s)", h.has(b.Ref, "tracked"), h.has(b.Ref, "untracked"), h.has(b.Ref, "base_t"), got.Detail)
+	}
+	// And the merge afterwards still works, once.
+	m := h.merge(b.Ref, ActionInput{})
+	h.mustState(m, registry.BranchFunctionsDeployed)
+	if !h.has(parentRef, "tracked") || !h.has(parentRef, "untracked") {
+		t.Fatalf("the merge after the reset: %s", m.Detail)
+	}
+}
+
+// Push takes in the parent's history, covered rows included, without running them.
+func TestPushRecordsCoveredMigrationsWithoutRunningThem(t *testing.T) {
+	h := newPGHarness(t)
+	ctx := context.Background()
+	h.apply(parentRef, mig("20260101000000", "init", "create table public.base_t (id int primary key)"))
+	old := h.create("old", nil) // made before the merge below
+	b := h.create("feat", nil)
+	h.apply(b.Ref, mig("20260102000000", "tracked", "create table public.tracked (id int primary key)"))
+	diff, _ := h.svc.Diff(ctx, b.Ref)
+	if _, err := h.svc.schemaDB().Record(ctx, b.Ref, []Migration{{Version: "20260103000000", Name: "branch_merge_a", Statements: []string{diff}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.mustState(h.merge(b.Ref, ActionInput{}), registry.BranchFunctionsDeployed)
+	if _, err := h.svc.Push(ctx, old.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	got := h.wait(old.Ref)
+	h.mustState(got, registry.BranchFunctionsDeployed)
+	if !h.has(old.Ref, "tracked") {
+		t.Fatalf("the push did not bring the merged table: %s", got.Detail)
+	}
+	h.histories(parentRef, old.Ref)
 }

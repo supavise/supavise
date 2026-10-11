@@ -111,8 +111,9 @@ const maxInt32 = 2147483647
 // the setting, so its GoTrue has always run on its own default, and changing the default here
 // would shorten the OTP of every existing project at its next restart. Instead the lifecycle
 // engine saves these values once, when it creates a project, so only a new project starts on
-// them and an existing one keeps what it runs. A branch and a restore as new are new projects: they
-// start as a new project does, since settings are not copied from the source.
+// them and an existing one keeps what it runs. A restore as new is a new project and starts as one
+// does. A branch starts as one too, and then the engine lays the parent's saved settings over these
+// (CopyForBranch, branchcopy.go), so a value the parent saved wins and one it never saved stays.
 func NewProjectAuth() map[string]any {
 	return map[string]any{"mailer_otp_exp": int64(3600)}
 }

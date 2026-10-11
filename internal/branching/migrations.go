@@ -23,7 +23,16 @@ type Migration struct {
 	Version    string
 	Name       string
 	Statements []string
+	// Covered is set on a migration whose changes another migration of the same history already holds
+	// (the version of that one): the diff Studio's merge page recorded is the whole of what the branch
+	// changed, tracked migrations included, so the tracked ones are kept in the history without being
+	// run again. A replay, a push and a merge record a covered migration and do not run it. It is
+	// stored in the created_by column of the history table; it takes no part in comparing migrations.
+	Covered string
 }
+
+// coveredPrefix begins the created_by value of a covered migration.
+const coveredPrefix = "supavise:covered:"
 
 // sql is the migration as one script, for diffs and equality.
 func (m Migration) sql() string { return strings.Join(m.Statements, ";\n") }
@@ -199,13 +208,27 @@ func readMigrations(ctx context.Context, c *pgx.Conn) ([]Migration, error) {
 	if !has {
 		return nil, nil
 	}
-	rows, err := c.Query(ctx, `select version, coalesce(name, ''), coalesce(statements, '{}') from `+migrationsTable+` order by version`)
+	// A history written by another tool may lack the created_by column.
+	var hasBy bool
+	if err := c.QueryRow(ctx, `select exists (select 1 from pg_attribute where attrelid = '`+migrationsTable+`'::regclass and attname = 'created_by' and not attisdropped)`).Scan(&hasBy); err != nil {
+		return nil, err
+	}
+	by := `''`
+	if hasBy {
+		by = `coalesce(created_by, '')`
+	}
+	rows, err := c.Query(ctx, `select version, coalesce(name, ''), coalesce(statements, '{}'), `+by+` from `+migrationsTable+` order by version`)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Migration, error) {
 		var m Migration
-		err := r.Scan(&m.Version, &m.Name, &m.Statements)
+		var createdBy string
+		err := r.Scan(&m.Version, &m.Name, &m.Statements, &createdBy)
+		m.Covered = strings.TrimPrefix(createdBy, coveredPrefix)
+		if m.Covered == createdBy {
+			m.Covered = "" // not a marker
+		}
 		return m, err
 	})
 }
@@ -408,7 +431,7 @@ func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, see
 	}
 	if len(hist) > 0 {
 		s.setState(ctx, j.ref, registry.BranchRunningMigration, fmt.Sprintf("replaying %d migration(s)", len(hist)), nil)
-		if _, err := s.db.Apply(ctx, j.ref, hist, ApplyOptions{}); err != nil {
+		if _, err := s.applyHistory(ctx, j.ref, hist, ApplyOptions{}); err != nil {
 			return 0, false, fmt.Errorf("replay the migrations: %w", err)
 		}
 	}
@@ -430,6 +453,40 @@ func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, see
 		return len(hist), true, nil
 	}
 	return len(hist), false, nil
+}
+
+// applyHistory runs the migrations of ms that are not covered and records the covered ones without
+// running them (they are in the history so that it matches the other side's, and their changes come
+// with the migration that covers them). Without a SchemaDatabase every migration runs.
+func (s *Service) applyHistory(ctx context.Context, ref string, ms []Migration, o ApplyOptions) (ApplyResult, error) {
+	var run, covered []Migration
+	for _, m := range ms {
+		if m.Covered != "" && s.schemaDB() != nil {
+			covered = append(covered, m)
+		} else {
+			run = append(run, m)
+		}
+	}
+	res, err := s.db.Apply(ctx, ref, run, o)
+	if err != nil {
+		return res, err
+	}
+	if len(covered) > 0 {
+		if _, err := s.schemaDB().Record(ctx, ref, covered); err != nil {
+			return res, fmt.Errorf("record the migrations whose changes another migration holds: %w", err)
+		}
+	}
+	return res, nil
+}
+
+// withCovered returns the migrations marked as covered by the migration at version by.
+func withCovered(ms []Migration, by string) []Migration {
+	out := make([]Migration, len(ms))
+	for i, m := range ms {
+		m.Covered = by
+		out[i] = m
+	}
+	return out
 }
 
 // ---- schemas and history without running it ---------------------------------------------------
@@ -531,11 +588,21 @@ func (d *pgDatabase) Record(ctx context.Context, ref string, ms []Migration) ([]
 				if !sameMigration(cur, m) {
 					return fmt.Errorf("%w: version %s is already recorded on %s with other content", ErrDiverged, m.Version, ref)
 				}
+				if m.Covered != "" {
+					// the same migration, now known to be covered by another
+					if _, err := tx.Exec(ctx, `update `+migrationsTable+` set created_by = $2 where version = $1`, m.Version, coveredPrefix+m.Covered); err != nil {
+						return err
+					}
+				}
 				continue
 			case !errors.Is(err, pgx.ErrNoRows):
 				return err
 			}
-			if _, err := tx.Exec(ctx, `insert into `+migrationsTable+` (version, name, statements) values ($1, nullif($2, ''), $3)`, m.Version, m.Name, m.Statements); err != nil {
+			marker := ""
+			if m.Covered != "" {
+				marker = coveredPrefix + m.Covered
+			}
+			if _, err := tx.Exec(ctx, `insert into `+migrationsTable+` (version, name, statements, created_by) values ($1, nullif($2, ''), $3, nullif($4, ''))`, m.Version, m.Name, m.Statements, marker); err != nil {
 				return err
 			}
 			done = append(done, m.Version)
