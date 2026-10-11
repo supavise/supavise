@@ -53,18 +53,23 @@ function json(out) {
   try { return JSON.parse(m[0]); } catch { return null; }
 }
 
-async function branchStatus(name, want, timeoutMs = 180000) {
+// A successful create, merge, rebase or reset ends at FUNCTIONS_DEPLOYED (as on hosted), after
+// MIGRATIONS_PASSED while the functions deploy. A walk waits for the end, so the next call does not
+// meet a branch that is still busy.
+const DONE = "FUNCTIONS_DEPLOYED";
+
+async function branchStatus(name, want = DONE, timeoutMs = 180000) {
   const t0 = Date.now();
   for (;;) {
     const { out } = await tool("list_branches", { project_id: ref }, () => true);
     const list = json(out)?.branches ?? [];
     const b = list.find((x) => x.name === name);
     if (b && b.status === want) return b;
-    // A failed operation ends in MIGRATIONS_FAILED: that is a failure of the run, not a state to
-    // accept as "done" (unless the caller waits for it).
-    if (b && b.status === "MIGRATIONS_FAILED") {
+    // A failed operation ends in MIGRATIONS_FAILED (FUNCTIONS_FAILED when only the deploy failed):
+    // that is a failure of the run, not a state to accept as "done" (unless the caller waits for it).
+    if (b && (b.status === "MIGRATIONS_FAILED" || b.status === "FUNCTIONS_FAILED")) {
       failed++;
-      console.log(`FAIL branch ${name} ended MIGRATIONS_FAILED while waiting for ${want}`);
+      console.log(`FAIL branch ${name} ended ${b.status} while waiting for ${want}`);
       return b;
     }
     if (Date.now() - t0 > timeoutMs) { failed++; console.log(`FAIL branch ${name} never reached ${want}`); return b; }
@@ -90,7 +95,7 @@ try {
 
   const name = `mcp-${Date.now().toString(36)}`;
   await tool("create_branch", { project_id: ref, name, confirm_cost_id: conf.confirmation_id });
-  const b = await branchStatus(name, "MIGRATIONS_PASSED");
+  const b = await branchStatus(name);
   if (!b) throw new Error("no branch");
   console.log(`branch ${name}: ref=${b.project_ref} status=${b.status}`);
 
@@ -101,15 +106,15 @@ try {
   await tool("list_tables", { project_id: ref, schemas: ["public"] }, (o) => !o.includes("mcp_branch_table"));
 
   await tool("merge_branch", { branch_id: b.id });
-  await branchStatus(name, "MIGRATIONS_PASSED");
+  await branchStatus(name);
   await tool("list_tables", { project_id: ref, schemas: ["public"] }, (o) => o.includes("mcp_branch_table"));
 
   await tool("rebase_branch", { branch_id: b.id });
-  await branchStatus(name, "MIGRATIONS_PASSED");
+  await branchStatus(name);
 
   await tool("execute_sql", { project_id: b.project_ref, query: "insert into public.items values (777777, 'scratch')" });
   await tool("reset_branch", { branch_id: b.id });
-  await branchStatus(name, "MIGRATIONS_PASSED");
+  await branchStatus(name);
   await tool("execute_sql", { project_id: b.project_ref, query: "select count(*) as n from public.items where id = 777777" }, (o) => /"n"\s*:\s*0|\\"n\\":0/.test(o));
 
   await tool("delete_branch", { branch_id: b.id });
