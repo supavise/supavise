@@ -197,7 +197,7 @@ psql --single-transaction --variable ON_ERROR_STOP=1 \
 
 The restore runs in one transaction, so a failure leaves the project as it was. Fix the cause and run the restore again. If psql stops, look for the message:
 
-- **`relation "..." does not exist` or `column "..." of relation "..." does not exist`, in the `auth` or `storage` schema.** The hosted project runs a newer Auth or Storage than the node. Update the node first (`sudo supavise upgrade`), or delete that table's `COPY` block from `data.sql` (down to the `\.` line) and accept that its rows don't move. `sudo -u supavise supavise projects get <ref> --json | jq .versions` shows the node's versions.
+- **`relation "..." does not exist` or `column "..." of relation "..." does not exist`, in the `auth` or `storage` schema.** If you created the project a moment ago, wait until Auth and Storage have set up their schemas and run the restore again. Otherwise the hosted project runs a newer Auth or Storage than the node. Update the node first (`sudo supavise upgrade`), or delete that table's `COPY` block from `data.sql` (down to the `\.` line) and accept that its rows don't move. `sudo -u supavise supavise projects get <ref> --json | jq .versions` shows the node's versions.
 - **`permission denied`, on a line that sets an owner to `supabase_admin` or on a `GRANT` to `cli_login_postgres`.** Comment that line out.
 - **Any error in the `supabase_functions` schema.** The hosted project uses Database Webhooks. Turn them on for the new project (**Integrations**, **Database Webhooks**) and run the restore again.
 
