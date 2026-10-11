@@ -15,11 +15,11 @@ import (
 
 // Data API exposure, as hosted Supabase has it since 2026-05-30: a table created in "public" is not
 // reachable through PostgREST or GraphQL until a grant says so. The default privileges that used to
-// give select, insert, update and delete on new tables, usage and select on new sequences, and execute
-// on new functions, to anon, authenticated and service_role are revoked for the role postgres (the role
-// the SQL editor, the dashboard and migrations run as). Objects that exist keep their grants. Hosted
-// applies the same change to the projects it already runs on 2026-10-30; Supavise applies it once per
-// project when a node first runs a project on the release that has it (Engine.ConvergeDataAPI).
+// give select, insert, update and delete on new tables, and usage and select on new sequences, to anon,
+// authenticated and service_role are revoked for the role postgres (the role the SQL editor, the
+// dashboard and migrations run as). Objects that exist keep their grants. Hosted applies the same
+// change to the projects it already runs on 2026-10-30; Supavise applies it once per project when a node
+// first runs a project on the release that has it (Engine.ConvergeDataAPI).
 //
 // Sources. The first two statements are the ones hosted's changelog gives, "Breaking change: tables not
 // exposed to Data and GraphQL API automatically",
@@ -28,10 +28,20 @@ import (
 // "Automatically expose new tables" setting under Integrations, Data API; buildDefaultPrivilegesSql
 // ('revoke') in packages/pg-meta/src/sql/studio/database/privileges.ts at the pinned commit), which
 // the create-project form's checkbox of the same name controls and whose telemetry calls it
-// "new tables and functions". Studio reads the switch as off only when the functions are revoked too
-// (getDefaultPrivilegesStateSql counts three default ACL rows). Revoking functions as well is the safe
-// side of the doubt: a migration that works here because it grants execute on its functions also works
-// on hosted, and the reverse would not hold.
+// "new tables and functions". Studio reads the switch as off only when no default ACL row of public
+// (tables, sequences, functions) names one of the three roles any more (getDefaultPrivilegesStateSql),
+// so the third statement is what turns the switch off for Studio.
+//
+// The function statements do not lock functions down. PostgreSQL gives EXECUTE on a new function to
+// PUBLIC globally, and a default privilege limited to one schema can only add to the global default, so
+// "revoke execute on functions from public" in schema public changes nothing (the ALTER DEFAULT
+// PRIVILEGES page uses that very statement as its example of one that has no effect). The third
+// statement removes the per-schema grants the Supabase image gave the three roles, but PUBLIC keeps
+// EXECUTE, so anon can still call a new function through /rest/v1/rpc. The fourth only mirrors Studio's
+// switch, so that the SQL and the rollback are the ones hosted runs. Hosted behaves the same way, and
+// running a global revoke here would make a migration pass on Supavise that hosted rejects, or the
+// reverse, so Supavise does not add one. A user who wants a function private runs
+// "revoke execute on function public.f() from public, anon, authenticated" on it.
 var RevokeDefaultPrivilegesSQL = []string{
 	"alter default privileges for role postgres in schema public revoke select, insert, update, delete on tables from anon, authenticated, service_role",
 	"alter default privileges for role postgres in schema public revoke usage, select on sequences from anon, authenticated, service_role",
@@ -40,8 +50,9 @@ var RevokeDefaultPrivilegesSQL = []string{
 }
 
 // GrantDefaultPrivilegesSQL is the rollback: hosted's page gives the first two statements, Studio's
-// switch the last two. It brings back the grants new objects carried before. Objects created since
-// the revoke need the grants on all tables, sequences and routines of public too (docs/guide.md).
+// switch the last two (the fourth, like its revoke, adds nothing PUBLIC does not already have). It brings
+// back the grants new objects carried before. Objects created since the revoke need the grants on all
+// tables, sequences and routines of public too (docs/guide.md).
 // Supavise never runs it; a test keeps the guide's copy equal to this one.
 var GrantDefaultPrivilegesSQL = []string{
 	"alter default privileges for role postgres in schema public grant select, insert, update, delete on tables to anon, authenticated, service_role",
@@ -117,6 +128,11 @@ func (s DataAPISetup) Statements() []string {
 // restored clone that has not finished): the change is made on the primary and reaches replicas
 // through replication, and a standby refuses the write anyway.
 var ErrNotPrimary = errors.New("lifecycle: the cluster is in recovery, so it is not the primary")
+
+// ErrPeerBehind is returned by a plane router's ApplyDataAPI when the node that runs the project is
+// on an older release that does not know the call (a rolling upgrade of a cluster: the leader goes
+// first). Nothing was changed; the step is tried again at a later pass, once that node is upgraded.
+var ErrPeerBehind = errors.New("lifecycle: the node that runs the project is on an older release that cannot apply the Data API defaults yet")
 
 // DataAPIPlane is the optional capability of a data plane that can run the Data API statements in a
 // project's database; *PostgresPlane has it, and the plane router of internal/placement sends the
@@ -220,7 +236,14 @@ func (e *Engine) dataAPIAtCreate(ctx context.Context, p *registry.Project, keys 
 			return nil // a plane that cannot run it: nothing is recorded, a later pass decides
 		}
 		if err := dp.ApplyDataAPI(ctx, p, setup); err != nil {
-			return err
+			// A home node on an older release cannot revoke yet. The create goes on, unrecorded, and the
+			// first passes of ConvergeDataAPI revoke once that node is upgraded. A caller who asked for a
+			// schema ("api", an exposed list) gets the failure instead, since only the node can make them.
+			if !errors.Is(err, ErrPeerBehind) || setup.APISchema || len(setup.MustExist) > 0 {
+				return err
+			}
+			e.log.Warn("the node that runs the project is on an older release, so the default privileges are not revoked yet; the node revokes them once it is upgraded", "ref", p.Ref, "error", err)
+			return nil
 		}
 	}
 	// PostgREST started on the default schemas, because it will not start on one that does not exist yet
@@ -278,6 +301,7 @@ func (e *Engine) ConvergeDataAPI(ctx context.Context) map[string]error {
 	if e.opts.ReadOnly || registry.DataAPIOf(e.reg) == nil {
 		return failed
 	}
+	store := registry.DataAPIOf(e.reg)
 	ps, err := e.reg.ListProjects(ctx)
 	if err != nil {
 		failed[""] = err
@@ -287,6 +311,14 @@ func (e *Engine) ConvergeDataAPI(ctx context.Context) map[string]error {
 		if listed.Ref == config.SystemRef || !listed.Status.Running() || !e.drives(&listed) {
 			continue
 		}
+		// A project with a row is done for good. Look before taking its lock, so that a pass over a
+		// node of finished projects waits for nobody and opens no connection but the registry's.
+		if _, err := store.GetDataAPI(ctx, listed.Ref); err == nil {
+			continue
+		} else if !errors.Is(err, registry.ErrNotFound) {
+			failed[listed.Ref] = fmt.Errorf("read the Data API choice of %s: %w", listed.Ref, err)
+			continue
+		}
 		if err := e.convergeOne(ctx, listed.Ref); err != nil {
 			failed[listed.Ref] = err
 		}
@@ -294,16 +326,22 @@ func (e *Engine) ConvergeDataAPI(ctx context.Context) map[string]error {
 	return failed
 }
 
-// convergeTimeout bounds the step for one project, so that a project whose lock another operation
-// holds, or whose cluster hangs, does not hold up the others; the next pass tries it again.
+// convergeTimeout bounds the step for one project, so that a project whose cluster hangs does not hold
+// up the others; the next pass tries it again. convergeLockWait bounds the wait for the project's lock
+// inside it: a restore, a resize or an upgrade of that project can hold it for a long time, and the
+// pass moves on to the others (lockWithin honors the deadline, which a plain lock does not).
 const convergeTimeout = 2 * time.Minute
+
+var convergeLockWait = 10 * time.Second
 
 func (e *Engine) convergeOne(ctx context.Context, ref string) error {
 	ctx, cancel := context.WithTimeout(ctx, convergeTimeout)
 	defer cancel()
-	unlock, err := e.lock(ctx, ref)
+	lctx, lcancel := context.WithTimeout(ctx, convergeLockWait)
+	defer lcancel()
+	unlock, err := e.lockWithin(lctx, ref)
 	if err != nil {
-		return err
+		return fmt.Errorf("the project is busy with another operation: %w", err)
 	}
 	defer unlock()
 	// Decide on the row as it is now: a pause or a delete may have landed since the listing.
@@ -341,14 +379,42 @@ func (e *Engine) convergeLocked(ctx context.Context, p *registry.Project) error 
 		if errors.Is(err, ErrNotSupported) {
 			return nil // applied on the home node, which is not this one
 		}
-		e.event(ctx, p.Ref, EventDataAPIFailed, map[string]string{"error": err.Error()})
+		// A cluster still in recovery and a node behind on its release are waiting for something, not
+		// failing: they are returned so that the pass tries again, without an event each time.
+		if !errors.Is(err, ErrNotPrimary) && !errors.Is(err, ErrPeerBehind) {
+			e.dataAPIFailed(ctx, p.Ref, err)
+		}
 		return fmt.Errorf("revoke the default privileges of %s: %w", p.Ref, err)
 	}
+	e.dataAPIFailures.Delete(p.Ref)
 	if err := store.PutDataAPI(ctx, registry.DataAPI{Ref: p.Ref, DefaultPrivileges: registry.PrivilegesRevoked, Source: registry.DataAPIUpgrade}); err != nil {
 		return fmt.Errorf("record the Data API choice of %s: %w", p.Ref, err)
 	}
 	e.event(ctx, p.Ref, EventDataAPIRevoked, map[string]string{"source": registry.DataAPIUpgrade})
 	return nil
+}
+
+// dataAPIFailureEvery is the longest a repeated failure of the same text goes without a new event.
+const dataAPIFailureEvery = time.Hour
+
+type dataAPIFailure struct {
+	msg string
+	at  time.Time
+}
+
+// dataAPIFailed records the failure of the step as an event when it differs from the last one
+// recorded for the project, or when that was an hour ago, so that a project whose Postgres is down
+// does not add an event at every retry.
+func (e *Engine) dataAPIFailed(ctx context.Context, ref string, err error) {
+	now := e.opts.Now()
+	msg := err.Error()
+	if v, ok := e.dataAPIFailures.Load(ref); ok {
+		if last := v.(dataAPIFailure); last.msg == msg && now.Sub(last.at) < dataAPIFailureEvery {
+			return
+		}
+	}
+	e.dataAPIFailures.Store(ref, dataAPIFailure{msg: msg, at: now})
+	e.event(ctx, ref, EventDataAPIFailed, map[string]string{"error": msg})
 }
 
 // ParseExposedSchemas turns the list of data_api_exposed_schemas into the db_schema setting. A nil
