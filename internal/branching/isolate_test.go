@@ -272,7 +272,7 @@ func TestResetRecordsThePolicyThroughTheSetter(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := h.wait(b.Ref)
-	h.mustState(got, registry.BranchMigrationsPassed)
+	h.mustState(got, registry.BranchFunctionsDeployed)
 	if len(sets) != 1 || sets[0] != registry.EgressDenied+">"+registry.EgressPending || got.Egress != registry.EgressPending {
 		t.Fatalf("setter calls = %v, egress = %q", sets, got.Egress)
 	}
@@ -281,7 +281,7 @@ func TestResetRecordsThePolicyThroughTheSetter(t *testing.T) {
 // hookRegistry runs hooks around the registry calls the egress policy goes through.
 type hookRegistry struct {
 	registry.Registry
-	beforeUpdate    func() // before UpdateBranch writes
+	beforeUpdate    func() // before UpdateBranch or UpdateBranchSettings writes
 	beforeSetEgress func() // before SetBranchEgress, once
 	onSetEgress     func(from, to string)
 }
@@ -292,6 +292,14 @@ func (r *hookRegistry) UpdateBranch(ctx context.Context, ref string, b *registry
 		f()
 	}
 	return r.Registry.UpdateBranch(ctx, ref, b)
+}
+
+func (r *hookRegistry) UpdateBranchSettings(ctx context.Context, ref string, b *registry.BranchInfo) error {
+	if f := r.beforeUpdate; f != nil {
+		r.beforeUpdate = nil
+		f()
+	}
+	return r.Registry.UpdateBranchSettings(ctx, ref, b)
 }
 
 func (r *hookRegistry) SetBranchEgress(ctx context.Context, ref, from, to string) error {

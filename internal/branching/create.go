@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/supavise/supavise/internal/backup"
@@ -33,8 +32,13 @@ type CreateInput struct {
 	// Seed is a SQL script applied after the migrations of a schema-only branch. Empty uses
 	// the parent's stored seed (SetSeed), if any.
 	Seed string
-	// IsDefault is accepted so that the request body decodes, and refused when true.
+	// IsDefault asks for the default branch: Create answers with the default branch of the
+	// project (the project itself), creating nothing, and stores GitBranch as the Git branch it
+	// tracks when that is set. Hosted's dashboard sends it when it saves the Production branch.
 	IsDefault bool
+	// Secrets are the branch's Edge Function secrets (CreateBranchBody.secrets). They are never
+	// copied from the parent.
+	Secrets map[string]string
 	// AllowEgress is the opt-out of the isolation a branch with data gets by default (supavise
 	// only: the Management API's create body has no such field, the API takes it as the query
 	// parameter allow_egress=true). Without it, the branch's Postgres unit may reach loopback
@@ -89,9 +93,9 @@ const withDataNotice = "a with_data branch is a copy of production: users' sessi
 // Create starts a new branch of the project ref belongs to and returns it as soon as its
 // project exists (state CREATING_PROJECT). The work continues in the background; poll Get
 // or call WaitIdle.
-func (s *Service) Create(ctx context.Context, ref string, in CreateInput) (*Branch, error) {
+func (s *Service) Create(ctx context.Context, ref string, in CreateInput) (b *Branch, err error) {
 	if in.IsDefault {
-		return nil, invalid("creating a default branch is not supported: the project itself is the default branch")
+		return s.createDefault(ctx, ref, in)
 	}
 	if err := ValidName(in.Name); err != nil {
 		return nil, err
@@ -147,10 +151,15 @@ func (s *Service) Create(ctx context.Context, ref string, in CreateInput) (*Bran
 		info.ExpiresAt = s.expiry(in.TTL)
 	}
 	newRef := secrets.NewRef()
-	r, err := s.begin(newRef, "create")
+	r, err := s.beginRun(ctx, newRef, "create", newRef, p.Ref)
 	if err != nil {
 		return nil, err
 	}
+	defer func() { // the run that builds the branch, which a caller can follow (Branch.RunID)
+		if b != nil {
+			b.RunID = r.id
+		}
+	}()
 	job := &createJob{parent: p, ref: newRef, info: info, in: in, class: class, org: org}
 	failed := make(chan error, 1)
 	s.spawn(r, newRef, p.Ref, func(ctx context.Context) (string, error) {
@@ -250,6 +259,7 @@ type createJob struct {
 
 // doCreate is the body of a branch creation. It returns the detail recorded on success.
 func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
+	s.phase(ctx, StepPull)
 	req := lifecycle.CreateRequest{
 		Name: j.in.Name, OrgSlug: j.org, Region: j.parent.Region, Class: j.class, Ref: j.ref, Branch: j.info, Recreate: j.recreate,
 	}
@@ -269,6 +279,7 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		}
 	}
 	started := s.now()
+	s.phase(ctx, StepHealth)
 	switch method {
 	case MethodSchema:
 		req.Keys = j.keys
@@ -336,6 +347,7 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		// The expiry clock starts when the branch is usable, not when the request came in.
 		s.setState(ctx, j.ref, registry.BranchRunningMigration, detail, func(b *registry.BranchInfo) { b.ExpiresAt = s.expiry(j.in.TTL) })
 	}
+	s.phase(ctx, StepDeploy)
 	payload := map[string]any{"branch": j.ref, "name": j.in.Name, "method": method, "with_data": j.in.WithData, "ms": s.now().Sub(started).Milliseconds()}
 	if stats != nil {
 		payload["clone"] = stats
@@ -495,46 +507,4 @@ func (m stampManager) Create(ctx context.Context, req lifecycle.CreateRequest) (
 		}
 	}
 	return m.Manager.Create(ctx, req)
-}
-
-// replay gives a schema-only branch the parent's migration history, then the seed.
-func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, seeded bool, err error) {
-	parentMigs, err := s.db.Migrations(ctx, j.parent.Ref)
-	if err != nil {
-		return 0, false, fmt.Errorf("read the parent's migration history: %w", err)
-	}
-	if j.upTo != "" {
-		cut := parentMigs[:0:0]
-		found := false
-		for _, m := range parentMigs {
-			if m.Version <= j.upTo {
-				cut = append(cut, m)
-			}
-			found = found || m.Version == j.upTo
-		}
-		if !found {
-			return 0, false, invalid("migration_version %s is not in the parent's migration history", j.upTo)
-		}
-		parentMigs = cut
-	}
-	if len(parentMigs) > 0 {
-		s.setState(ctx, j.ref, registry.BranchRunningMigration, fmt.Sprintf("replaying %d migration(s)", len(parentMigs)), nil)
-		if _, err := s.db.Apply(ctx, j.ref, parentMigs, ApplyOptions{}); err != nil {
-			return 0, false, fmt.Errorf("replay the parent's migrations: %w", err)
-		}
-	}
-	seed := j.in.Seed
-	if strings.TrimSpace(seed) == "" {
-		if seed, err = s.GetSeed(ctx, j.parent.Ref); err != nil {
-			return 0, false, err
-		}
-	}
-	if strings.TrimSpace(seed) != "" {
-		s.setState(ctx, j.ref, registry.BranchRunningMigration, "applying the seed", nil)
-		if err := s.db.RunScript(ctx, j.ref, seed); err != nil {
-			return len(parentMigs), false, fmt.Errorf("apply the seed: %w", err)
-		}
-		return len(parentMigs), true, nil
-	}
-	return len(parentMigs), false, nil
 }

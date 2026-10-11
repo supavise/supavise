@@ -358,6 +358,11 @@ var routeRules = []routeRule{
 	rule("POST", "/v1/projects/{ref}/branches", chk(members.ActCreate, members.ResPreviewBranches)),
 	rule("POST", "/v2/projects/{ref}/branches", chk(members.ActCreate, members.ResPreviewBranches)),
 	rule("DELETE", "/v1/projects/{ref}/branches", chk(members.ActDelete, members.ResPreviewBranches)),
+	// The action runs of a branch operation (hosted: action_runs_read and action_runs_write): reading
+	// follows who may see the branches, and reporting the status of a step needs the right to change
+	// them. A branch ref in {ref} is governed by its parent's roles (scopeRef).
+	rule("R", "/v1/projects/{ref}/actions/**", chk(members.ActRead, members.ResPreviewBranches)),
+	rule("W", "/v1/projects/{ref}/actions/**", chk(members.ActUpdate, members.ResPreviewBranches)),
 	// A branch is named by id or ref and governed by its parent project (authorize).
 	rule("R", "/v1/branches/{branch_id_or_ref}/**", chk(members.ActRead, members.ResPreviewBranches)),
 	rule("DELETE", "/v1/branches/{branch_id_or_ref}", chk(members.ActDelete, members.ResPreviewBranches)),

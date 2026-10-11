@@ -25,6 +25,12 @@ type Branch struct {
 	IsDefault bool
 	GitBranch string
 
+	// Region is the region of the branch's project, which is its parent's.
+	Region string
+	// RunID is the action run that Create started for the branch, "" on a branch read later (list
+	// the runs of a branch with Service.BranchRuns).
+	RunID string
+
 	Persistent bool
 	WithData   bool
 	// State is the Management API's branch status: it follows the last long operation.
@@ -112,7 +118,7 @@ func IsUUID(s string) bool { return uuidRE.MatchString(s) }
 func branchOf(p *registry.Project) *Branch {
 	b := p.Branch
 	return &Branch{
-		ID: b.ID, Name: b.Name, Ref: p.Ref, ParentRef: b.ParentRef, GitBranch: b.GitBranch,
+		ID: b.ID, Name: b.Name, Ref: p.Ref, ParentRef: b.ParentRef, GitBranch: b.GitBranch, Region: p.Region,
 		Persistent: b.Persistent, WithData: b.WithData, State: b.State, ProjectStatus: p.Status,
 		CloneMethod: b.CloneMethod, Detail: b.Detail, Egress: b.Egress, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 		ExpiresAt: b.ExpiresAt, DeletionScheduledAt: b.DeletionScheduledAt, ReviewRequestedAt: b.ReviewRequestedAt, NotifyURL: b.NotifyURL,
@@ -122,7 +128,7 @@ func branchOf(p *registry.Project) *Branch {
 // defaultBranchOf is the synthesized default branch of a parent project.
 func defaultBranchOf(p *registry.Project) *Branch {
 	return &Branch{
-		ID: defaultBranchID(p.Ref), Name: DefaultBranchName, Ref: p.Ref, ParentRef: p.Ref, IsDefault: true, Persistent: true,
+		ID: defaultBranchID(p.Ref), Name: DefaultBranchName, Ref: p.Ref, ParentRef: p.Ref, IsDefault: true, Persistent: true, Region: p.Region,
 		State: registry.BranchMigrationsPassed, ProjectStatus: p.Status, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 	}
 }

@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
+	"time"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	v1 "github.com/supavise/supavise/internal/api/gen/v1"
+	v2 "github.com/supavise/supavise/internal/api/gen/v2"
 	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/registry"
 )
@@ -23,6 +26,7 @@ import (
 func (s *Server) routesBranches(add func(string, handlerFunc)) {
 	add("GET /v1/projects/{ref}/branches", s.listBranches)
 	add("POST /v1/projects/{ref}/branches", s.createBranch)
+	add("POST /v2/projects/{ref}/branches", s.createBranchV2)
 	add("DELETE /v1/projects/{ref}/branches", s.disableBranching)
 	add("GET /v1/projects/{ref}/branches/{name}", s.getBranchByName)
 	add("GET /v1/branches/{branch_id_or_ref}", s.getBranch)
@@ -97,12 +101,17 @@ func (s *Server) noBranching() error {
 	return errf(http.StatusBadRequest, "Branching is not enabled on this node")
 }
 
-// branchOut is the spec's branch response plus supavise's own field: the branch's outbound
-// network policy (denied, pending, allowed or unenforced), so a client can see whether a
-// branch with data can reach the outside world. Clients that decode the spec's shape ignore it.
+// branchOut is the spec's branch response plus supavise's own fields: the branch's outbound
+// network policy (denied, pending, allowed or unenforced), so a client can see whether a branch
+// with data can reach the outside world; what the last operation said (the reason, after a
+// failure); when the sweeper deletes the branch; and the region it runs in (its parent's).
+// Clients that decode the spec's shape ignore them.
 type branchOut struct {
 	*v1.BranchResponseOutput
-	SupaviseEgress string `json:"supavise_egress,omitempty"`
+	SupaviseEgress    string     `json:"supavise_egress,omitempty"`
+	SupaviseDetail    string     `json:"supavise_detail,omitempty"`
+	SupaviseExpiresAt *time.Time `json:"supavise_expires_at,omitempty"`
+	SupaviseRegion    string     `json:"supavise_region,omitempty"`
 }
 
 func branchJSON(b *branching.Branch) (*branchOut, error) {
@@ -135,7 +144,12 @@ func branchJSON(b *branching.Branch) (*branchOut, error) {
 		t := b.ReviewRequestedAt.UTC()
 		out.ReviewRequestedAt = &t
 	}
-	return &branchOut{BranchResponseOutput: out, SupaviseEgress: b.Egress}, nil
+	bo := &branchOut{BranchResponseOutput: out, SupaviseEgress: b.Egress, SupaviseDetail: b.Detail, SupaviseRegion: b.Region}
+	if b.ExpiresAt != nil && !b.Persistent {
+		t := b.ExpiresAt.UTC()
+		bo.SupaviseExpiresAt = &t
+	}
+	return bo, nil
 }
 
 func (s *Server) writeBranch(w http.ResponseWriter, status int, b *branching.Branch) error {
@@ -180,6 +194,19 @@ func (s *Server) branchProjectErr(err error) error {
 	return mapBranchErr(err)
 }
 
+// branchCreate is a branch creation in the terms both create endpoints share: the v1 body
+// (what the CLI, the MCP server and Studio send) and the v2 JSON:API body.
+type branchCreate struct {
+	Name, GitBranch, NotifyURL, Size string
+	IsDefault, Persistent, WithData  bool
+	Secrets                          map[string]string
+	// ReleaseChannel and PostgresEngine are v1 fields; empty when not sent.
+	ReleaseChannel, PostgresEngine string
+}
+
+// maxBranchSecrets bounds the secrets map of a create body.
+const maxBranchSecrets = 100
+
 func (s *Server) createBranch(w http.ResponseWriter, r *http.Request) error {
 	done, err := s.beginOp()
 	if err != nil {
@@ -190,68 +217,190 @@ func (s *Server) createBranch(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(r, &in); err != nil {
 		return err
 	}
+	q := branchCreate{Name: in.BranchName}
+	if in.GitBranch != nil {
+		q.GitBranch = *in.GitBranch
+	}
+	if in.IsDefault != nil {
+		q.IsDefault = *in.IsDefault
+	}
+	if in.Persistent != nil {
+		q.Persistent = *in.Persistent
+	}
+	if in.WithData != nil {
+		q.WithData = *in.WithData
+	}
+	if in.NotifyUrl != nil {
+		q.NotifyURL = *in.NotifyUrl
+	}
+	if in.DesiredInstanceSize != nil {
+		q.Size = string(*in.DesiredInstanceSize)
+	}
+	if in.Secrets != nil {
+		q.Secrets = *in.Secrets
+	}
+	if in.ReleaseChannel != nil {
+		q.ReleaseChannel = string(*in.ReleaseChannel)
+	}
+	if in.PostgresEngine != nil {
+		q.PostgresEngine = string(*in.PostgresEngine)
+	}
+	// region is accepted: a branch runs where its parent runs, and the answer says where (supavise_region).
+	b, err := s.createBranchFrom(r, r.PathValue("ref"), q)
+	if err != nil {
+		return err
+	}
+	return s.writeBranch(w, http.StatusCreated, b)
+}
+
+// createBranchV2 is POST /v2/projects/{ref}/branches: the same creation with a JSON:API body and
+// answer. Nothing in the spec's body or answer carries the status of the branch; a client reads
+// it from the v1 endpoints, as for v1.
+func (s *Server) createBranchV2(w http.ResponseWriter, r *http.Request) error {
+	done, err := s.beginOp()
+	if err != nil {
+		return err
+	}
+	defer done()
+	var in v2.V2CreateBranchRequest
+	if err := decode(r, &in); err != nil {
+		return err
+	}
+	if in.Data.Type != "branch" {
+		return errf(http.StatusBadRequest, `data.type must be "branch"`)
+	}
+	at := in.Data.Attributes
+	if at.DesiredDiskSizeGb != nil {
+		return errf(http.StatusBadRequest, "desired_disk_size_gb is not supported: a branch uses the disk of the node it runs on, which is its parent's")
+	}
+	q := branchCreate{Name: at.Name}
+	if at.GitBranch != nil {
+		q.GitBranch = *at.GitBranch
+	}
+	if at.Persistent != nil {
+		q.Persistent = *at.Persistent
+	}
+	if at.WithData != nil {
+		q.WithData = *at.WithData
+	}
+	if at.NotifyUrl != nil {
+		q.NotifyURL = *at.NotifyUrl
+	}
+	if at.DesiredInstanceSize != nil {
+		q.Size = string(*at.DesiredInstanceSize)
+	}
+	b, err := s.createBranchFrom(r, r.PathValue("ref"), q)
+	if err != nil {
+		return err
+	}
+	var id openapi_types.UUID
+	if err := id.UnmarshalText([]byte(b.ID)); err != nil {
+		return err
+	}
+	var out v2.V2BranchResponseOutput
+	out.Data.Type, out.Data.Id = v2.V2BranchResponseOutputDataTypeBranch, id
+	a := &out.Data.Attributes
+	a.Name, a.ProjectRef, a.ParentProjectRef, a.IsDefault = b.Name, b.Ref, b.ParentRef, b.IsDefault
+	a.Persistent, a.WithData, a.CreatedAt, a.UpdatedAt = b.Persistent, b.WithData, b.CreatedAt.UTC(), b.UpdatedAt.UTC()
+	if b.GitBranch != "" {
+		a.GitBranch = &b.GitBranch
+	}
+	if b.NotifyURL != "" {
+		a.NotifyUrl = &b.NotifyURL
+	}
+	writeJSON(w, http.StatusCreated, &out)
+	return nil
+}
+
+// createBranchFrom is the creation both endpoints share: it refuses what this node cannot honor
+// instead of dropping it silently (the client would believe it got what it asked for), and
+// starts the branch.
+func (s *Server) createBranchFrom(r *http.Request, ref string, q branchCreate) (*branching.Branch, error) {
 	// A branch with data is a copy of production data: Owner or Administrator only. Schema-only
 	// branches stay with the route's own rule (Developer and up).
-	if in.WithData != nil && *in.WithData {
-		p, err := s.loadProject(r.Context(), r.PathValue("ref"))
+	if q.WithData {
+		p, err := s.loadProject(r.Context(), ref)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := s.requireBranchData(r, p); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if s.branches == nil {
-		return s.noBranching()
+		return nil, s.noBranching()
 	}
-	// Fields this node cannot honor are refused instead of silently dropped: the client would
-	// believe it got what it asked for. The CLI and the MCP server never send them.
-	if in.Secrets != nil && len(*in.Secrets) > 0 {
-		return errf(http.StatusBadRequest, "Branch secrets are not supported on this node: set function secrets on the branch once it exists (supabase secrets set --project-ref <branch ref>)")
+	if len(q.Secrets) > maxBranchSecrets {
+		return nil, errf(http.StatusBadRequest, "A branch takes at most %d secrets in its create body", maxBranchSecrets)
 	}
-	if in.ReleaseChannel != nil && *in.ReleaseChannel != "ga" {
-		return errf(http.StatusBadRequest, "release_channel %q is not available on this node (only ga)", string(*in.ReleaseChannel))
+	for name := range q.Secrets {
+		if !secretNameRe.MatchString(name) || strings.HasPrefix(strings.ToUpper(name), "SUPABASE_") {
+			return nil, errf(http.StatusBadRequest, "Invalid secret name %q: letters, digits and underscores, not starting with SUPABASE_", name)
+		}
 	}
-	if in.PostgresEngine != nil {
+	if q.ReleaseChannel != "" && q.ReleaseChannel != "ga" {
+		return nil, errf(http.StatusBadRequest, "release_channel %q is not available on this node (only ga)", q.ReleaseChannel)
+	}
+	if q.PostgresEngine != "" {
 		// A branch is a clone of its parent's cluster, so it runs the parent's Postgres.
-		p, err := s.loadProject(r.Context(), r.PathValue("ref"))
+		p, err := s.loadProject(r.Context(), ref)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if want := pgEngine(p); string(*in.PostgresEngine) != want {
-			return errf(http.StatusBadRequest, "postgres_engine %q is not available: a branch runs its parent's Postgres %s", string(*in.PostgresEngine), want)
+		if want := pgEngine(p); q.PostgresEngine != want {
+			return nil, errf(http.StatusBadRequest, "postgres_engine %q is not available: a branch runs its parent's Postgres %s", q.PostgresEngine, want)
 		}
-	}
-	ci := branching.CreateInput{Name: in.BranchName}
-	if in.GitBranch != nil {
-		ci.GitBranch = *in.GitBranch
-	}
-	if in.IsDefault != nil {
-		ci.IsDefault = *in.IsDefault
-	}
-	if in.Persistent != nil {
-		ci.Persistent = *in.Persistent
 	}
 	// with_data makes the branch a copy of production: users' sessions are removed and the keys supavise
 	// issued are replaced, but node-local credentials users stored in their own tables, function
 	// bodies or Vault entries are not detected and loopback is open on every port. It is for trusted
 	// users and agents (branches are schema-only by default); the branch's detail says so.
-	if in.WithData != nil {
-		ci.WithData = *in.WithData
+	ci := branching.CreateInput{
+		Name: q.Name, GitBranch: q.GitBranch, IsDefault: q.IsDefault, Persistent: q.Persistent, WithData: q.WithData,
+		NotifyURL: q.NotifyURL, DesiredInstanceSize: q.Size, Secrets: q.Secrets,
+		// The Management API has no field for this; the query parameter is ours (like force on merge).
+		AllowEgress: r.URL.Query().Get("allow_egress") == "true",
 	}
-	if in.NotifyUrl != nil {
-		ci.NotifyURL = *in.NotifyUrl
-	}
-	// The Management API has no field for this; the query parameter is ours (like force on merge).
-	ci.AllowEgress = r.URL.Query().Get("allow_egress") == "true"
-	if in.DesiredInstanceSize != nil {
-		ci.DesiredInstanceSize = string(*in.DesiredInstanceSize)
-	}
-	b, err := s.branches.Create(r.Context(), r.PathValue("ref"), ci)
+	b, err := s.branches.Create(r.Context(), ref, ci)
 	if err != nil {
-		return s.branchProjectErr(err)
+		return nil, s.branchProjectErr(err)
 	}
-	return s.writeBranch(w, http.StatusCreated, b)
+	if len(q.Secrets) > 0 && !b.IsDefault {
+		if err := s.storeBranchSecrets(r.Context(), b.Ref, q.Secrets); err != nil {
+			return nil, err
+		}
+	}
+	return b, nil
+}
+
+// storeBranchSecrets writes the secrets map of a create body as the branch's Edge Function
+// secrets. Secrets are per branch: nothing is copied from the parent. The branch's project row
+// exists a moment after Create returns on a node that is slow to start it, so the write waits
+// for it. (The map also reaches the service in CreateInput.Secrets.)
+func (s *Server) storeBranchSecrets(ctx context.Context, ref string, in map[string]string) error {
+	sealed := make(map[string][]byte, len(in))
+	for name, v := range in {
+		b, err := s.sec.Seal([]byte(v))
+		if err != nil {
+			return err
+		}
+		sealed[name] = b
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		err := s.store.PutFunctionSecrets(ctx, ref, sealed)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return errf(http.StatusInternalServerError, "The branch was created but its secrets could not be stored (set them with: supabase secrets set --project-ref %s): %v", ref, err)
+		}
+		select {
+		case <-time.After(250 * time.Millisecond):
+		case <-ctx.Done():
+		}
+	}
+	return s.functionsChanged(ctx, ref)
 }
 
 func (s *Server) disableBranching(w http.ResponseWriter, r *http.Request) error {
@@ -263,7 +412,14 @@ func (s *Server) disableBranching(w http.ResponseWriter, r *http.Request) error 
 	if s.branches == nil {
 		return s.noBranching()
 	}
-	if err := s.branches.DisableBranching(r.Context(), r.PathValue("ref")); err != nil {
+	refs, _ := s.branches.Children(r.Context(), r.PathValue("ref")) // before they go
+	err = s.branches.DisableBranching(r.Context(), r.PathValue("ref"))
+	for _, ref := range refs {
+		if _, gerr := s.reg.GetProject(r.Context(), ref); errors.Is(gerr, registry.ErrNotFound) {
+			s.projectGone(r.Context(), ref)
+		}
+	}
+	if err != nil {
 		return s.branchProjectErr(err)
 	}
 	w.WriteHeader(http.StatusOK)
@@ -345,20 +501,16 @@ func (s *Server) updateBranch(w http.ResponseWriter, r *http.Request) error {
 	if s.branches == nil {
 		return errf(http.StatusNotFound, "Branch not found")
 	}
+	ui := branching.UpdateInput{
+		Name: in.BranchName, GitBranch: in.GitBranch, Persistent: in.Persistent, NotifyURL: in.NotifyUrl, RequestReview: in.RequestReview,
+	}
 	if in.Status != nil {
-		// The status follows the branch's operations; it cannot be set.
-		cur, err := s.branches.Resolve(r.Context(), r.PathValue("branch_id_or_ref"))
-		if err != nil {
-			return mapBranchErr(err)
-		}
-		if string(*in.Status) != string(cur.State) {
-			return errf(http.StatusBadRequest, "status cannot be set: it follows the branch's operations")
-		}
+		// The six statuses of the spec; the service refuses one while an operation owns the status.
+		st := registry.BranchState(*in.Status)
+		ui.State = &st
 	}
 	// reset_on_push is deprecated and "ignored" by the spec itself.
-	b, err := s.branches.Update(r.Context(), r.PathValue("branch_id_or_ref"), branching.UpdateInput{
-		Name: in.BranchName, GitBranch: in.GitBranch, Persistent: in.Persistent, NotifyURL: in.NotifyUrl, RequestReview: in.RequestReview,
-	})
+	b, err := s.branches.Update(r.Context(), r.PathValue("branch_id_or_ref"), ui)
 	if err != nil {
 		return mapBranchErr(err)
 	}
@@ -381,7 +533,7 @@ func (s *Server) deleteBranch(w http.ResponseWriter, r *http.Request) error {
 		return mapBranchErr(err)
 	}
 	if !schedule && b != nil { // a scheduled delete only marks the branch, which goes on running
-		s.forgetUsage(b.Ref)
+		s.projectGone(r.Context(), b.Ref)
 	}
 	writeJSON(w, http.StatusOK, &v1.BranchDeleteResponseOutput{Message: "ok"})
 	return nil
