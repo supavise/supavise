@@ -103,7 +103,7 @@ create table private.secrets (id bigint primary key, v text);
 		}
 	}
 	// The lints computed from the Auth settings come with them.
-	if len(byName(sec, "auth_otp_long_expiry")) != 1 {
+	if len(byName(sec, "auth_leaked_password_protection")) != 1 {
 		t.Errorf("no configuration lint: %v", lintNames(sec))
 	}
 
