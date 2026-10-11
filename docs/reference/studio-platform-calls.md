@@ -315,11 +315,11 @@ A node has no log store and no hosted platform behind it. A stub that answers "s
 |---|---|---|
 | `GET`, `PUT /v1/projects/{ref}/ssl-enforcement` | `400` "This project is not allowed to configure SSL enforcements: ..." | The switch is disabled with "Your project does not have access to SSL enforcement". Studio matches this text. |
 | `GET .../signing-keys/{id}`, `GET`, `DELETE .../third-party-auth/{tpa_id}` | `404` | |
-
-The legacy JWT secret and the other signing-keys calls are in "Legacy JWT secret".
 | `POST .../config/auth/third-party-auth` | `400` | The add dialog's error toast; the list stays empty, which is true |
 | `POST /platform/feedback/send` | `400` pointing to the project's issue tracker | "Failed to submit feedback" (the widget would otherwise say the feedback was sent) |
 | `GET .../analytics/endpoints/auth.metrics` | `400` | The Auth overview's error alert |
+
+The legacy JWT secret and the other signing-keys calls are in "Legacy JWT secret".
 
 Still answered by a stub and therefore empty or inert, unfixed: organization and profile audit logs (`GET /platform/organizations/{slug}/audit`, `/platform/profile/audit`: the pages list no events), email template spam validation (`POST /platform/auth/{ref}/validate/spam`: no rule ever matches), `daily-stats` (the Storage and Database report charts that read it), and the hosted integrations pages (GitHub, Vercel, AWS PrivateLink, replication, log drains, billing), most of which are hidden through `disabled_features`.
 
