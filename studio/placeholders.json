@@ -56,6 +56,22 @@
       "required": false,
       "default": "http://localhost:8080/mcp",
       "doc": "Remote MCP endpoint shown in Connect > MCP, for example https://api.example.com/mcp."
+    },
+    {
+      "env": "NEXT_PUBLIC_GITHUB_INTEGRATION_APP_NAME",
+      "kind": "string",
+      "placeholder": "supavise-placeholder-github-app-name",
+      "required": false,
+      "default": "supavise-github-app-not-configured",
+      "doc": "The name of the server's GitHub App, as in github.com/apps/<name> (lib/github.ts). Studio falls back to Supabase's own App for an empty value, so a server without an App is given a name that belongs to nobody, and hides the GitHub surfaces (feature integrations:github, patch 0007)."
+    },
+    {
+      "env": "NEXT_PUBLIC_GITHUB_INTEGRATION_CLIENT_ID",
+      "kind": "string",
+      "placeholder": "supavise-placeholder-github-client-id",
+      "required": false,
+      "default": "supavise-github-client-not-configured",
+      "doc": "The client id of the server's GitHub App, which the OAuth authorize window sends users to. Like the name it is never empty, because Studio would then use Supabase's own App."
     }
   ]
 }
