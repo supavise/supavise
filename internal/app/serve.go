@@ -193,6 +193,11 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 			return health.CheckUpdate(ctx, cfg, o.Version, health.UpdateSource{}, now)
 		}
 	}
+	// Utilization: the collector of this node's projects, which the Management API's infra-monitoring
+	// and resource-warning routes and the alert checker answer from (metrics.go). The node's id comes
+	// from the cluster membership once the wire has one, so it is read through the variable.
+	var wire *Wire
+	mx := newMetrics(cfg, node, log.With("component", "metrics"), func() string { return selfOf(wire) })
 	apiDeps := api.Deps{
 		Health:   monitor,
 		Registry: node.Registry, Secrets: node.Secrets, Manager: node.Engine, Config: cfg, Branching: bsvc,
@@ -209,6 +214,10 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	}
 	if bs := backups(node); bs != nil { // a nil *backup.Service in the interface would not be nil
 		apiDeps.Backups = bs
+	}
+	if mx != nil { // likewise
+		apiDeps.Metrics = mx
+		checker.Pressure = metricsPressure(mx)
 	}
 	// Edge Functions: the syncer turns the stored deployments and secrets into the files the
 	// runtime (supavise-edge-runtime, started with the other shared services) serves, and bundles
@@ -231,12 +240,15 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 		FunctionsEnabled: cfg.Functions.Enabled,
 		Logger:           log.With("component", "proxy"),
 	}
-	wire := newWire(cfg, log, node, o, &apiDeps, &popts)
+	wire = newWire(cfg, log, node, o, &apiDeps, &popts)
 	defer wire.stop()
 	// What the hooks of the cluster work read: the role decided at boot, the node's health, and the
 	// backup service.
 	Provide(wire, boot)
 	Provide(wire, monitor)
+	if mx != nil {
+		Provide(wire, mx)
+	}
 	if bs := backups(node); bs != nil {
 		Provide(wire, bs)
 	}
@@ -346,6 +358,11 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 		checker.Run(gctx) // alerts on what the health report finds, and the daily update check
 		return nil
 	})
+	if mx != nil {
+		g.Go(func() error {
+			return mx.Run(gctx) // samples the projects homed here once a minute; returns when the daemon stops
+		})
+	}
 	if fnSyncer != nil {
 		g.Go(func() error {
 			fnSyncer.Run(gctx) // keeps the runtime's files in step with the registry; returns when the daemon stops
