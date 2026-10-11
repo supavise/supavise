@@ -32,11 +32,17 @@ import (
 //     are the calls of the data plane, which hosted does not list either and which would flood the table: SQL
 //     (pg-meta, the database query routes), saved snippets and reports (autosaved), log queries, storage
 //     object operations, GraphQL, telemetry, and the POSTs that only read (auditSkip). A request refused by the
-//     role check (403) is recorded: who tried is part of the trail.
+//     role check (403) is recorded: who tried is part of the trail. One user adds at most
+//     auditRefusedPerMinute refused (401, 403, 404) events a minute, so a script that probes cannot push the
+//     real events out of a listing.
 //   - Scope: an organization's page lists the events of requests that concern it (a path with its slug, a
-//     project of it, a branch of one of its projects, a project or organization created in it), matched on the
-//     organization's id; the account page lists the caller's own events. A request that concerns no
-//     organization (a profile change) is in the account page only.
+//     project of it, a branch of one of its projects, a project or organization created in it) and that a
+//     member of it made, matched on the organization's id; the account page lists the caller's own events. A
+//     request that concerns no organization (a profile change), and the attempt of somebody who belongs to the
+//     organization it names, is in the account page only: the slugs of organizations are guessable, so a
+//     stranger's refused request must not appear in the log of the organization it tried.
+//   - Bounds: the request id, the path parameters and the address are cut to a fixed length with their invalid
+//     UTF-8 and NUL bytes removed (auditClip), because the client chooses them.
 //   - Retention: [api] audit_retention_days (90 by default). The API process deletes older rows about once an
 //     hour (Prune).
 //
@@ -91,6 +97,64 @@ const auditLimit = 5000
 // error message for "range exceeded".
 const auditMaxRange = 62*24*time.Hour + 5*time.Minute
 
+// auditRefusedPerMinute is how many refused requests (401, 403, 404) one user can add to the audit log in a
+// minute. Beyond it the attempts are counted in the process log and not stored.
+const auditRefusedPerMinute = 60
+
+// auditValueMax is the longest text of one stored value (a path parameter, an address); a request id is cut to
+// maxRequestID.
+const auditValueMax = 256
+
+// auditClip makes a client-chosen value fit the audit log: NUL bytes and invalid UTF-8 are removed (Postgres
+// refuses both in a text or jsonb value, which would lose the event) and the text is cut to max bytes at a
+// character boundary.
+func auditClip(v string, max int) string {
+	v = strings.ToValidUTF8(strings.ReplaceAll(v, "\x00", ""), "\uFFFD")
+	if len(v) > max {
+		v = strings.ToValidUTF8(v[:max], "")
+	}
+	return v
+}
+
+// auditRefused reports whether status is the answer to a request that was turned away.
+func auditRefused(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound
+}
+
+// auditThrottle counts the refused events of each user in a fixed minute.
+type auditThrottle struct {
+	mu      sync.Mutex
+	windows map[string]auditWindow
+}
+
+type auditWindow struct {
+	start time.Time
+	n     int
+}
+
+// count adds one refused event of user at now and returns how many the user has in the current minute.
+func (t *auditThrottle) count(user string, now time.Time) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.windows == nil {
+		t.windows = map[string]auditWindow{}
+	}
+	if len(t.windows) > 4096 { // forget the users of earlier minutes
+		for u, w := range t.windows {
+			if now.Sub(w.start) >= time.Minute {
+				delete(t.windows, u)
+			}
+		}
+	}
+	w := t.windows[user]
+	if w.start.IsZero() || now.Sub(w.start) >= time.Minute {
+		w = auditWindow{start: now}
+	}
+	w.n++
+	t.windows[user] = w
+	return w.n
+}
+
 // auditSkip lists the route templates ("METHOD /path") whose requests are not recorded.
 var auditSkip = regexp.MustCompile(`^(?:[A-Z]+ )?(?:` + strings.Join([]string{
 	// SQL and schema editing through the dashboard's pg-meta, and the same through the Management API.
@@ -138,8 +202,8 @@ func (s *Server) auditBegin(r *http.Request, key string, p *Principal) func(stat
 	ctx := context.WithoutCancel(r.Context())
 	_, tmpl, _ := strings.Cut(key, " ")
 	e := AuditEvent{
-		At: s.now(), RequestID: requestID(r), UserID: p.UserID, Email: p.Email, TokenType: auditTokenType(p),
-		IP: auditClientIP(r, s.trustForwarded(r)), Method: r.Method, Route: tmpl, Name: s.auditName(key),
+		At: s.now(), RequestID: auditClip(requestID(r), maxRequestID), UserID: p.UserID, Email: p.Email, TokenType: auditTokenType(p),
+		IP: auditClip(auditClientIP(r, s.trustForwarded(r)), auditValueMax), Method: r.Method, Route: tmpl, Name: s.auditName(key),
 	}
 	if p.OAuth != nil {
 		e.OAuthAppID, e.OAuthAppName = p.OAuth.AppID, p.OAuth.AppName
@@ -148,12 +212,21 @@ func (s *Server) auditBegin(r *http.Request, key string, p *Principal) func(stat
 	e.Params = map[string]string{}
 	for _, name := range pathParams(tmpl) {
 		if v := r.PathValue(name); v != "" && !auditSecretParam(name) {
-			e.Params[name] = v
+			e.Params[name] = auditClip(v, auditValueMax)
 		}
 	}
-	s.auditTarget(ctx, r, tmpl, &e)
+	s.auditTarget(ctx, r, p, tmpl, &e)
 	return func(status int) {
 		e.Status = status
+		if auditRefused(status) {
+			if n := s.auditRefusedBy.count(e.UserID, s.now()); n > auditRefusedPerMinute {
+				if n == auditRefusedPerMinute+1 {
+					s.log.Warn("a user's refused requests are not added to the audit log for the rest of the minute",
+						"user", e.UserID, "limit", auditRefusedPerMinute)
+				}
+				return
+			}
+		}
 		s.auditRecord(ctx, e)
 	}
 }
@@ -178,7 +251,11 @@ func auditTokenType(p *Principal) string {
 }
 
 // auditClientIP is the address the request came from: the peer, or the last entry of X-Forwarded-For when the
-// peer is the node's own proxy (trustForwarded, as for the rate limits of the claim flow).
+// peer is the node's own proxy (trustForwarded, as for the rate limits of the claim flow). A request that
+// entered through a follower reaches the leader over the mesh from loopback, and the secret of a node is its
+// own, so with [functions] enabled the leader does not believe the X-Forwarded-For the follower's proxy set
+// and records the loopback address: the first hop. (A secret shared by the nodes or a signed header would fix
+// it, a change of the peer protocol that needs a version gate.)
 func auditClientIP(r *http.Request, trustForwarded bool) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -206,7 +283,9 @@ func pathParams(tmpl string) []string {
 }
 
 // auditTarget fills in the organization and the project the request concerns, the way authorize finds them.
-func (s *Server) auditTarget(ctx context.Context, r *http.Request, tmpl string, e *AuditEvent) {
+// The organization is the event's only when the caller is a member of it (auditMember): the audit runs before
+// the role check, and the slug or the project ref in the path is whatever the caller typed.
+func (s *Server) auditTarget(ctx context.Context, r *http.Request, p *Principal, tmpl string, e *AuditEvent) {
 	setOrg := func(o *registry.Organization) {
 		if o != nil {
 			e.OrgID, e.OrgSlug = o.ID, o.Slug
@@ -241,6 +320,21 @@ func (s *Server) auditTarget(ctx context.Context, r *http.Request, tmpl string, 
 			setOrg(o)
 		}
 	}
+	if e.OrgID != 0 && !s.auditMember(ctx, p, e.OrgID) {
+		// A stranger's attempt is in the caller's own page only. The project stays only as far as the caller
+		// named it: the parent of a branch, found by the lookup, is not theirs to learn.
+		e.OrgID, e.OrgSlug = 0, ""
+		if e.ProjectRef != r.PathValue("ref") && e.ProjectRef != r.PathValue("branch_id_or_ref") {
+			e.ProjectRef = ""
+		}
+	}
+}
+
+// auditMember reports whether the caller belongs to the organization. A caller whose access cannot be loaded
+// does not.
+func (s *Server) auditMember(ctx context.Context, p *Principal, orgID int64) bool {
+	a, err := s.accessOf(ctx, p)
+	return err == nil && a.IsMember(orgID)
 }
 
 // bodyOrganization reads the organization a create-project body names, and puts the body back.

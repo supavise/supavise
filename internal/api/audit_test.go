@@ -320,6 +320,198 @@ func TestAuditLogOfAProjectCreate(t *testing.T) {
 	}
 }
 
+// strangerToken signs in a user who belongs to no organization, or only to the one given.
+func (f *fixture) strangerToken(t *testing.T, id, email string, ownerOf *registry.Organization) string {
+	t.Helper()
+	if ownerOf != nil {
+		if err := f.srv.members.EnsureOwner(context.Background(), members.OrgRef{ID: ownerOf.ID, Slug: ownerOf.Slug}, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f.signJWT(map[string]any{"sub": id, "email": email, "role": "authenticated"})
+}
+
+// The audit runs before the role check, and the slug or the project ref in the path is whatever the caller
+// typed. A user who is not a member of an organization must not write into its log: the attempt is in the
+// caller's own page, without the organization.
+func TestAuditLogIgnoresTheOrganizationOfAStranger(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	other, err := f.reg.CreateOrganization(ctx, "other", "Other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger := "55555555-6666-4777-8888-999999999999"
+	// A member of another organization only, and a member of none.
+	for name, tok := range map[string]string{
+		"a member of another organization": f.strangerToken(t, stranger, "s@example.test", other),
+		"a member of none":                 f.strangerToken(t, "66666666-7777-4888-8999-000000000000", "n@example.test", nil),
+	} {
+		for i := 0; i < 3; i++ {
+			if rec := f.doAs(tok, "PATCH", "/platform/projects/"+testRef, map[string]any{"name": "x"}); rec.Code != http.StatusForbidden {
+				t.Fatalf("%s: rename: %d %s", name, rec.Code, rec.Body)
+			}
+			if rec := f.doAs(tok, "DELETE", "/platform/organizations/default", nil); rec.Code != http.StatusForbidden {
+				t.Fatalf("%s: delete the organization: %d %s", name, rec.Code, rec.Body)
+			}
+		}
+		if rec := f.doAs(tok, "POST", "/platform/projects", map[string]any{"name": "mine", "organization_slug": "default"}); rec.Code != http.StatusForbidden {
+			t.Fatalf("%s: create in the organization: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if rows := f.auditRows(t, orgAudit); len(rows) != 0 {
+		t.Fatalf("the organization's log lists the attempts of strangers: %v", rows)
+	}
+	// They are in the caller's own page, without the organization or the project the lookup found.
+	now := time.Now().UTC()
+	q := url.Values{"iso_timestamp_start": {now.Add(-time.Hour).Format(time.RFC3339)}, "iso_timestamp_end": {now.Add(time.Minute).Format(time.RFC3339)}}
+	rec := f.doAs(f.strangerToken(t, stranger, "s@example.test", nil), "GET", profileAudit+"?"+q.Encode(), nil)
+	if rec.Code != 200 {
+		t.Fatalf("the stranger's page: %d %s", rec.Code, rec.Body)
+	}
+	own := bodyMap(t, rec)["result"].([]any)
+	if len(own) != 7 {
+		t.Fatalf("the stranger's own page lists %d events, want the 7 attempts", len(own))
+	}
+	for _, r := range own {
+		row := r.(map[string]any)
+		if row["organization_slug"] != nil {
+			t.Errorf("the attempt names the organization: %v", row)
+		}
+		act := row["action"].(map[string]any)
+		if act["status"] != float64(403) {
+			t.Errorf("status %v", act["status"])
+		}
+	}
+	// The rows are not under the organization's id in the store either.
+	events, err := f.srv.audit.List(ctx, AuditQuery{OrgID: f.org.ID, From: now.Add(-time.Hour), To: now.Add(time.Minute), Limit: 100})
+	if err != nil || len(events) != 0 {
+		t.Errorf("events of the organization: %v %v", events, err)
+	}
+}
+
+// A member's refused attempt stays in the organization's log, whatever the role, and so does a stranger's
+// request naming a project that does not exist (nothing to attribute).
+func TestAuditLogKeepsTheRefusedAttemptOfAMember(t *testing.T) {
+	f := newFixture(t)
+	dev := "77777777-8888-4999-8aaa-bbbbbbbbbbbb"
+	f.addMember(dev, members.RoleReadOnly)
+	tok := f.signJWT(map[string]any{"sub": dev, "email": "dev2@example.test", "role": "authenticated"})
+	if rec := f.doAs(tok, "DELETE", "/platform/organizations/default", nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("a read-only member deletes the organization: %d", rec.Code)
+	}
+	r := rowFor(f.auditRows(t, orgAudit), "DELETE", "/platform/organizations/{slug}")
+	if r == nil || r["organization_slug"] != "default" || r["actor"].(map[string]any)["user_id"] != dev {
+		t.Errorf("the member's refused attempt: %v", r)
+	}
+}
+
+// The client chooses the request id, the path parameters and the address, so the log bounds them: a header of
+// 200 kB was stored and returned whole.
+func TestAuditLogBoundsWhatTheClientChooses(t *testing.T) {
+	f := newFixture(t)
+	huge := strings.Repeat("a", 200_000)
+	rec := f.do("PATCH", "/platform/projects/"+testRef, map[string]any{"name": "n"}, "X-Request-Id", huge)
+	if got := rec.Header().Get("X-Request-Id"); got == huge || got == "" || len(got) > maxRequestID {
+		t.Errorf("the response echoes a request id of %d bytes", len(got))
+	}
+	for _, id := range []string{"has space", "semi;colon", "ünï", strings.Repeat("b", maxRequestID+1)} {
+		rec := f.do("PATCH", "/platform/projects/"+testRef, map[string]any{"name": "n"}, "X-Request-Id", id)
+		if got := rec.Header().Get("X-Request-Id"); got == id || got == "" {
+			t.Errorf("request id %q is kept: %q", id, got)
+		}
+	}
+	ok := strings.Repeat("c", maxRequestID)
+	if rec := f.do("PATCH", "/platform/projects/"+testRef, map[string]any{"name": "n"}, "X-Request-Id", ok); rec.Header().Get("X-Request-Id") != ok {
+		t.Errorf("a valid id of %d bytes is replaced: %q", maxRequestID, rec.Header().Get("X-Request-Id"))
+	}
+	// A path parameter as long as the request line allows.
+	longRef := strings.Repeat("r", 5000)
+	if rec := f.do("PATCH", "/platform/projects/"+longRef, map[string]any{"name": "n"}); rec.Code != http.StatusNotFound {
+		t.Fatalf("a project that does not exist: %d", rec.Code)
+	}
+	for _, r := range f.auditRows(t, profileAudit) {
+		if id := r["request_id"].(string); len(id) > maxRequestID+8 { // +8: the suffix of a repeated id
+			t.Errorf("a stored request id of %d bytes", len(id))
+		}
+		if params, _ := r["action"].(map[string]any)["params"].(map[string]any); params != nil {
+			for k, v := range params {
+				if len(v.(string)) > auditValueMax {
+					t.Errorf("param %s of %d bytes", k, len(v.(string)))
+				}
+			}
+		}
+	}
+}
+
+func TestAuditClip(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+		max      int
+		want     string
+	}{
+		{"short", "abc", 10, "abc"},
+		{"cut", "abcdef", 3, "abc"},
+		{"NUL removed", "a\x00b", 10, "ab"},
+		{"invalid UTF-8 replaced", "a\xffb", 10, "a\uFFFDb"},
+		{"cut at a character", "aé", 2, "a"}, // é is two bytes: one byte would be half of it
+		{"empty", "", 5, ""},
+	} {
+		if got := auditClip(tc.in, tc.max); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// One user adds at most auditRefusedPerMinute turned-away requests a minute, so a script that probes cannot
+// push the real events out of a listing; a successful change is never dropped.
+func TestAuditLogCapsRefusedAttempts(t *testing.T) {
+	var th auditThrottle
+	t0 := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	for i := 1; i <= auditRefusedPerMinute+5; i++ {
+		if n := th.count("u", t0.Add(time.Duration(i)*time.Millisecond)); n != i {
+			t.Fatalf("count %d, want %d", n, i)
+		}
+	}
+	if n := th.count("other", t0); n != 1 {
+		t.Errorf("another user's count %d", n)
+	}
+	if n := th.count("u", t0.Add(time.Minute+time.Second)); n != 1 {
+		t.Errorf("the count after a minute %d, want 1", n)
+	}
+
+	f := newFixture(t)
+	clock := time.Now().UTC()
+	f.srv.now = func() time.Time { return clock }
+	tok := f.strangerToken(t, "88888888-9999-4aaa-8bbb-cccccccccccc", "p@example.test", nil)
+	for i := 0; i < auditRefusedPerMinute+10; i++ {
+		f.doAs(tok, "PATCH", "/platform/projects/"+testRef, map[string]any{"name": "x"})
+	}
+	list := func() int {
+		events, err := f.srv.audit.List(context.Background(), AuditQuery{UserID: "88888888-9999-4aaa-8bbb-cccccccccccc", From: clock.Add(-time.Hour), To: clock.Add(time.Hour), Limit: 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(events)
+	}
+	if n := list(); n != auditRefusedPerMinute {
+		t.Errorf("%d refused events stored, want %d", n, auditRefusedPerMinute)
+	}
+	// The owner's changes are not refused attempts: always stored.
+	for i := 0; i < auditRefusedPerMinute+10; i++ {
+		f.do("PATCH", "/platform/projects/"+testRef, map[string]any{"name": "ok"})
+	}
+	events, _ := f.srv.audit.List(context.Background(), AuditQuery{UserID: f.userID, From: clock.Add(-time.Hour), To: clock.Add(time.Hour), Limit: 1000})
+	if len(events) != auditRefusedPerMinute+10 {
+		t.Errorf("%d changes stored, want all %d", len(events), auditRefusedPerMinute+10)
+	}
+	clock = clock.Add(2 * time.Minute)
+	f.doAs(tok, "PATCH", "/platform/projects/"+testRef, map[string]any{"name": "x"})
+	if n := list(); n != auditRefusedPerMinute+1 {
+		t.Errorf("%d refused events after the minute, want %d", n, auditRefusedPerMinute+1)
+	}
+}
+
 // testAuditStore is the contract of an AuditStore, run on the memory store and, when CI provides a
 // database, on the one over supavise.audit_events.
 func testAuditStore(t *testing.T, st AuditStore, orgA, orgB int64) {
