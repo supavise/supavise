@@ -15,6 +15,9 @@ type DeleteOptions struct {
 	// that the dashboard offers Restore, and removed after [branching] soft_delete_grace_minutes
 	// unless Restore cancels it.
 	Schedule bool
+	// SkipFinalBackup deletes a persistent branch without the final base backup (the data is gone).
+	// A branch that is not persistent never gets one.
+	SkipFinalBackup bool
 }
 
 // Delete removes a branch: its fleet tenants, units, data and registry row. A branch that
@@ -36,7 +39,7 @@ func (s *Service) Delete(ctx context.Context, idOrRef string, o DeleteOptions) (
 		return s.scheduleDelete(ctx, b)
 	}
 	// A request that gives up must not leave a half-deleted branch.
-	return b, s.deleteNow(context.WithoutCancel(ctx), b, "api")
+	return b, s.deleteWith(context.WithoutCancel(ctx), b, "api", o.SkipFinalBackup)
 }
 
 // scheduleDelete marks b for deletion after the grace period and pauses it. The pause is what makes
@@ -75,6 +78,10 @@ func (s *Service) scheduleDelete(ctx context.Context, b *Branch) (*Branch, error
 }
 
 func (s *Service) deleteNow(ctx context.Context, b *Branch, by string) error {
+	return s.deleteWith(ctx, b, by, false)
+}
+
+func (s *Service) deleteWith(ctx context.Context, b *Branch, by string, skipBackup bool) error {
 	r, err := s.begin(b.Ref, "delete")
 	if err != nil {
 		return err
@@ -82,7 +89,7 @@ func (s *Service) deleteNow(ctx context.Context, b *Branch, by string) error {
 	defer s.end(b.Ref, r)
 	ctx, cancel := context.WithTimeout(ctx, s.opTimeout)
 	defer cancel()
-	if err := s.removeBranch(ctx, b, removeOptions{final: true}); err != nil {
+	if err := s.removeBranch(ctx, b, removeOptions{final: !skipBackup}); err != nil {
 		return err
 	}
 	payload := map[string]any{"branch": b.Ref, "name": b.Name, "by": by}
