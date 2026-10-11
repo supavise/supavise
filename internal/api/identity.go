@@ -17,7 +17,7 @@ import (
 // billing, and the hosted-only infrastructure and integrations supavise does not offer.
 // Keys are Studio's enabled-features keys (packages/common/enabled-features).
 var disabledFeatures = []string{
-	"billing:all", "database:replication", "database:restore_to_new_project", "database:network_restrictions",
+	"billing:all", "database:replication", featureRestoreToNewProject, "database:network_restrictions",
 	featureReadReplicas, "integrations:vercel", "integrations:aws_private_link", "integrations:partners",
 	"project_addons:dedicated_ipv4_address", "project_addons:show_compute_price",
 	"project_creation:show_high_availability", "project_settings:custom_domains", "project_settings:log_drains",
@@ -30,6 +30,10 @@ var disabledFeatures = []string{
 	// the pages would offer buckets that cannot work. Logs and Reports stay: they say what is missing.
 	"storage:analytics", "storage:vectors",
 }
+
+// featureRestoreToNewProject is the key that hides Database > Backups > Restore to new project. It stays in
+// disabledFeatures on a node whose backup service cannot restore as a new project (profileOf).
+const featureRestoreToNewProject = "database:restore_to_new_project"
 
 // featureReadReplicas is the key that hides Studio's read replica screens (the Infrastructure
 // page, the database selector, the replica rows of the reports). It stays in disabledFeatures
@@ -89,6 +93,10 @@ func (s *Server) profileOf(ctx context.Context, u *User) *plat.ProfileResponseOu
 	disabled := append([]string(nil), disabledFeatures...)
 	if s.replicasOffered(ctx) {
 		disabled = slices.DeleteFunc(disabled, func(f string) bool { return f == featureReadReplicas })
+	}
+	// Restore to a new project needs the backup service (clone.go); a node without one hides the page.
+	if s.cloner() != nil {
+		disabled = slices.DeleteFunc(disabled, func(f string) bool { return f == featureRestoreToNewProject })
 	}
 	return &plat.ProfileResponseOutput{
 		Auth0Id: u.UserID, DisabledFeatures: &disabled, FirstName: opt(u.FirstName), LastName: opt(u.LastName),
