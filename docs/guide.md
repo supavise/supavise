@@ -126,7 +126,11 @@ sudo -u supavise supavise status   # one verdict for the node and every project
 curl https://api.<domain>/healthz  # for an uptime monitor; reveals nothing else
 ```
 
-Add an `[alerts]` section to `/etc/supavise/config.toml` to get a webhook or email when a backup fails, disk runs low, a project turns unhealthy, a certificate nears expiry, an update is available, or an upgrade starts, succeeds or fails. With a second server you also get one when a replica is unhealthy or lags, a server stops answering, a failover starts, ends or fails, or a server is fenced. Before planned work, `supavise maintenance announce` shows a notice in the dashboard. The deploy guide's [health and alerts](../deploy/README.md#health-alerts-and-maintenance-notices) section has the details.
+Add an `[alerts]` section to `/etc/supavise/config.toml` to get a webhook or email when a backup fails, disk runs low, the server's memory runs low, a project's disk quota is nearly full, a project turns unhealthy, a certificate nears expiry, an update is available, or an upgrade starts, succeeds or fails. With a second server you also get one when a replica is unhealthy or lags, a server stops answering, a failover starts, ends or fails, or a server is fenced. Before planned work, `supavise maintenance announce` shows a notice in the dashboard. The deploy guide's [health and alerts](../deploy/README.md#health-alerts-and-maintenance-notices) section has the details.
+
+Studio's **Observability > Database** report, its overview cards and the **Compute and Disk** page show what each project uses: CPU, memory, connections, disk size, and the block reads and writes of Postgres. The server measures them once a minute and keeps the minutes of the last 3 days and the hours of the last 92. CPU is a share of the project's CPU quota, and memory is measured against its limit. When a project uses 80% of its disk quota or its CPU quota, or 85% of its memory limit, Studio shows its usual warning above the project; at 90% (95% for memory) the warning is critical. The charts of network traffic, the disk I/O budget, memory commitment, PgBouncer and Realtime have no source on a Supavise server and stay at zero. [`internal/metrics`](../internal/metrics/README.md) has the full list.
+
+A server can run out of memory while every project is under its own limit, because the limits add up to more than the memory (`[compute] overcommit`). You get a `memory_low` alert when under 10% of the memory is available, or when programs wait for memory (`[health] memory_low_percent` sets the percentage; half of it is critical). When a project's disk quota is 80% used, and again at 90%, you get `project_disk_high`. Raise the disk size in Studio under **Settings > Compute and Disk**, or delete data.
 
 ## Read replicas and failover
 
@@ -180,6 +184,7 @@ By default every move is yours to start. `[failover] mode = "project"` or `"serv
 | Point-in-time restore | Not included; you set up backups yourself | Yes, in the dashboard (in place) or with `supavise backups restore` on the server | Yes |
 | Edge Functions | Yes | Yes, on by default | Yes |
 | Team roles and SSO | One shared dashboard login | Owner, Administrator, Developer and Read-only roles; SAML SSO | Yes |
+| Database report: CPU, memory, connections, disk | Not available | Yes, measured on the server and kept for 92 days; network, disk I/O budget and Realtime charts stay at zero | Yes |
 | Read replicas | Not available | Yes, per project on a second Supavise server, added in Studio or with `supavise replicas` | Yes |
 | API load balancer | Not available | Yes, once a project has a replica: reads go to the nearest healthy database | Yes |
 | Failover | Not built in; you set it up yourself | A switchover or failover of one project or the whole server, by hand; automatic on AWS only, with a fence | Managed by Supabase; depends on your plan |

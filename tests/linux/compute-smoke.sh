@@ -17,6 +17,13 @@
 # disk size is set through POST /v1/projects/{ref}/config/disk: the XFS project quota is in force
 # (a write past it fails with ENOSPC while the volume has room).
 #
+# The last section checks the utilization the node measures for Studio's Database report: after some work
+# the project's CPU and memory series are not zero, a request for every attribute Studio asks for gets a
+# series entry for each name (a missing entry blanks a chart), the single-attribute shape has no `series`,
+# the disk series is the XFS quota (statfs on the project's directory when the kernel reports it, else the
+# files), and a project at 85% of its quota shows `disk_space_exhaustion: warning` in
+# GET /platform/projects-resource-warnings and loses it when the data goes.
+#
 # Without SUPAVISE_BIN the script builds supavise with the go toolchain. It needs network access
 # for the artifact downloads. Not run in development (root, systemd and Linux required); CI runs it
 # on an ephemeral Ubuntu 24.04 VM (amd64 and arm64).
@@ -199,4 +206,83 @@ for ((i = 0; i < 60; i++)); do
   sleep 1
 done
 [[ $(sql "$REF" "select label from public.compute_smoke where id = 1") == before ]] || fail "the data did not survive"
+log "utilization: what the node measures is what Studio's Database report draws"
+# The collector samples every minute; CPU needs two readings. Give Postgres some work to be measured.
+for i in 1 2 3; do sql "$REF" "select count(*) from generate_series(1, 30000000)" >/dev/null || fail "cpu load"; done
+infra() { # INTERVAL ATTRIBUTE...: the last hour of the series, to $LOG_DIR/infra.json
+  local interval=$1; shift
+  local attrs; attrs=$(IFS=,; echo "$*")
+  japi GET "/platform/projects/$REF/infra-monitoring?startDate=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)&endDate=$(date -u -d '1 minute' +%Y-%m-%dT%H:%M:%SZ)&interval=$interval&attributes=$attrs" >"$LOG_DIR/infra.json"
+}
+some_above_zero() { # ATTRIBUTE: some point of the last response has a value above zero
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any(float(p["values"].get(sys.argv[2], 0)) > 0 for p in d["data"]) else 1)' "$LOG_DIR/infra.json" "$1"
+}
+last_value() { # ATTRIBUTE: the value of the newest point that has one
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=[p["values"][sys.argv[2]] for p in d["data"] if sys.argv[2] in p["values"]]; print(v[-1] if v else 0)' "$LOG_DIR/infra.json" "$1"
+}
+UTIL_OK=0
+for ((i = 0; i < 20; i++)); do
+  infra 1m cpu_usage_busy_user cpu_usage_busy_system cpu_usage_busy_idle ram_usage_used ram_usage_total pg_stat_database_num_backends
+  if some_above_zero cpu_usage_busy_user && some_above_zero ram_usage_used && some_above_zero pg_stat_database_num_backends; then UTIL_OK=1; break; fi
+  sleep 15
+done
+(( UTIL_OK )) || fail "no CPU, memory or connections in the last hour of infra-monitoring after 5 minutes: $(cat "$LOG_DIR/infra.json")"
+[[ $(last_value ram_usage_total) == 1073741824 ]] || fail "ram_usage_total is $(last_value ram_usage_total), want the project's MemoryMax"
+[[ $(last_value cpu_usage_busy_idle) != 0 ]] || fail "cpu_usage_busy_idle is zero for a project that is mostly idle"
+
+log "utilization: every attribute Studio asks for has a series entry"
+ATTRS=(ram_usage_used ram_usage_cache_and_buffers ram_usage_free ram_usage_total ram_usage_swap ram_commit_used ram_commit_limit swap_usage ram_usage
+  cpu_usage_busy_system cpu_usage_busy_user cpu_usage_busy_iowait cpu_usage_busy_irqs cpu_usage_busy_other cpu_usage_busy_idle avg_cpu_usage max_cpu_usage
+  network_receive_bytes network_transmit_bytes disk_iops_read disk_iops_write disk_bytes_read disk_bytes_written disk_io_budget disk_io_consumption
+  pg_stat_database_num_backends client_connections_postgres client_connections_authenticator client_connections_supabase_admin
+  client_connections_supabase_auth_admin client_connections_supabase_storage_admin client_connections_other client_connections_pgbouncer supavisor_connections_active
+  disk_fs_used_system disk_fs_used_wal pg_database_size disk_fs_size disk_fs_used disk_fs_avail max_db_connections
+  realtime_sum_connections_connected realtime_channel_events realtime_channel_presence_events realtime_channel_db_events realtime_channel_joins
+  realtime_payload_size realtime_replication_connection_lag realtime_read_authorization_rls_execution_time realtime_write_authorization_rls_execution_time)
+infra 1m "${ATTRS[@]}"
+python3 - "$LOG_DIR/infra.json" "${ATTRS[@]}" <<'PY' || fail "the multi-attribute response is not valid: see infra.json in the logs"
+import json, sys
+d = json.load(open(sys.argv[1])); attrs = sys.argv[2:]
+missing = [a for a in attrs if a not in d["series"]]
+assert not missing, "no series entry for %s" % missing
+for a in attrs:
+    m = d["series"][a]
+    assert {"yAxisLimit", "format", "total", "totalAverage"} <= set(m), (a, m)
+assert d["data"], "no points"
+# Some minute has a value for every attribute (a minute in which the project restarted may lack the SQL ones).
+assert any(all(a in p["values"] for a in attrs) for p in d["data"]), "no point has every attribute"
+for p in d["data"]:
+    for a, v in p["values"].items():
+        float(v)
+nosource = {"ram_commit_used", "ram_commit_limit", "network_receive_bytes", "network_transmit_bytes", "disk_io_budget", "disk_io_consumption",
+            "client_connections_pgbouncer"} | {a for a in attrs if a.startswith("realtime_")}
+assert set(d.get("errors", {})) == nosource, "errors for %s, want %s" % (sorted(d.get("errors", {})), sorted(nosource))
+PY
+infra 1h ram_usage
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert "series" not in d and d["format"] == "%" and d["yAxisLimit"] == 100 and all("ram_usage" in p for p in d["data"]), d' "$LOG_DIR/infra.json" \
+  || fail "the single-attribute response is not valid: $(cat "$LOG_DIR/infra.json")"
+
+log "utilization: a project at 85% of its disk quota shows the warning, and loses it when the data goes"
+read -r SB SF SS <<<"$(stat -f -c '%b %f %S' "$SUPAVISE_STATE/projects/$REF")" # blocks, free blocks, block size
+if (( SB * SS == 1073741824 )); then
+  log "statfs on the project's directory reports the quota ($SB blocks of $SS bytes, $SF free)"
+  USED_MB=$(( (SB - SF) * SS / 1048576 ))
+else
+  log "statfs on the project's directory does not report the quota ($SB blocks of $SS bytes): the collector sums the files instead"
+  USED_MB=$(( $(du -sb "$SUPAVISE_STATE/projects/$REF" | cut -f1) / 1048576 ))
+fi
+FILL_MB=$(( 870 - USED_MB )) # 85% of the 1 GiB quota in all: a warning from 80%, critical from 90%
+(( FILL_MB > 0 )) || fail "the project already holds $USED_MB MB of a 1024 MB quota"
+sudo -u "$SUPAVISE_USER" dd if=/dev/zero of="$SUPAVISE_STATE/projects/$REF/util-fill" bs=1M count="$FILL_MB" conv=fsync status=none || fail "could not write $FILL_MB MB"
+warning() { japi GET "/platform/projects-resource-warnings?ref=$REF" | json_get 'd[0]["disk_space_exhaustion"]'; }
+# A sample a minute, and the files are summed only every five minutes where statfs does not report the quota.
+for ((i = 0; i < 40; i++)); do [[ $(warning) == warning ]] && break; sleep 10; done
+[[ $(warning) == warning ]] || { rm -f "$SUPAVISE_STATE/projects/$REF/util-fill"; fail "disk_space_exhaustion is $(warning) at 85% of the quota, want warning"; }
+[[ $(japi GET "/platform/projects-resource-warnings?ref=$REF" | json_get 'd[0]["is_readonly_mode_enabled"]') == False ]] || fail "is_readonly_mode_enabled"
+infra 1m disk_fs_size disk_fs_used disk_fs_used_wal pg_database_size disk_fs_used_system
+[[ $(last_value disk_fs_size) == 1073741824 ]] || fail "disk_fs_size is $(last_value disk_fs_size), want the 1 GiB quota"
+(( $(last_value disk_fs_used) > 800 * 1048576 )) || fail "disk_fs_used is $(last_value disk_fs_used) with $FILL_MB MB written"
+rm -f "$SUPAVISE_STATE/projects/$REF/util-fill"
+for ((i = 0; i < 40; i++)); do [[ $(warning) == None ]] && break; sleep 10; done
+[[ $(warning) == None ]] || fail "disk_space_exhaustion is $(warning) after the data was deleted"
 log "compute smoke: done"
