@@ -49,9 +49,16 @@ func (f *fakeProber) Probe(_ context.Context, t Target) (Probe, error) {
 }
 
 type fakeDisk struct {
-	mu  sync.Mutex
-	use DiskUse
-	err error
+	mu     sync.Mutex
+	use    DiskUse
+	err    error
+	forgot []string
+}
+
+func (f *fakeDisk) Forget(ref string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forgot = append(f.forgot, ref)
 }
 
 func (f *fakeDisk) Usage(context.Context, *registry.Project) (DiskUse, error) {
@@ -397,5 +404,135 @@ func TestServiceSweepsTheHistoryOfDeletedProjects(t *testing.T) {
 	}
 	if us, _ := r.store.Range(testRef, t0, t0.Add(time.Hour)); len(us) == 0 {
 		t.Fatal("the history of a live project was removed")
+	}
+}
+
+// A project this node sampled and that is homed on another node now is not this node's to judge: the
+// flag that says so is cleared by the tick that finds it homed elsewhere, and by the first sample the
+// new home reports. A project that is only paused stays this node's.
+func TestServiceStopsJudgingAProjectThatMovedAway(t *testing.T) {
+	r := newRig(t, func(o *Options) { o.Local = func(p *registry.Project) bool { return p.NodeID == "n1" } })
+	r.units(unitFiles{anon: 1 << 20, memMax: "max"}, unitFiles{}, unitFiles{})
+	r.tick(t0.Add(2 * time.Second))
+	if got := r.svc.Own(); len(got) != 1 || got[0].Ref != testRef {
+		t.Fatalf("Own after a sample = %+v", got)
+	}
+
+	r.lister.ps[0].Status = registry.StatusInactive // paused here
+	r.tick(t0.Add(time.Minute + 2*time.Second))
+	if got := r.svc.Own(); len(got) != 1 {
+		t.Fatalf("a paused project left Own: %+v", got)
+	}
+
+	r.lister.ps[0].Status = registry.StatusActiveHealthy
+	r.lister.ps[0].NodeID = "n2" // moved
+	r.tick(t0.Add(2*time.Minute + 2*time.Second))
+	if got := r.svc.Own(); len(got) != 0 {
+		t.Fatalf("a project homed elsewhere stays in Own: %+v", got)
+	}
+}
+
+func TestServiceIngestEndsTheOwnershipOfAProject(t *testing.T) {
+	r := newRig(t, nil)
+	const gb = float64(1 << 30)
+	r.lister.ps = nil
+	ingestOwn(t, r.svc, testRef, diskSample(t0.Add(time.Minute), 9.5*gb, 10*gb, true))
+	r.clock.Set(t0.Add(2 * time.Minute))
+	if len(r.svc.Pressure()) != 2 || len(r.svc.Own()) != 1 {
+		t.Fatalf("setup: %s, own %d", keysOf(r.svc.Pressure()), len(r.svc.Own()))
+	}
+	// The project moved: its new home reports a sample, and this node stops judging it.
+	if err := r.svc.Ingest(testRef, "demo", diskSample(t0.Add(2*time.Minute), 9.5*gb, 10*gb, true)); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysOf(r.svc.Pressure()); got != "" {
+		t.Errorf("this node still raises %s for a project another node reports", got)
+	}
+	if got := r.svc.Own(); len(got) != 0 {
+		t.Errorf("Own still lists the project: %+v", got)
+	}
+	if _, ok := r.svc.Warnings(testRef); !ok {
+		t.Error("the reported project lost its warnings")
+	}
+}
+
+// A deleted project leaves nothing behind: Forget (the Management API's delete) at once, and a tick
+// for a delete made elsewhere, such as the CLI's.
+func TestServiceForgetsADeletedProject(t *testing.T) {
+	var gone []string
+	r := newRig(t, func(o *Options) { o.Gone = func(ref string) { gone = append(gone, ref) } })
+	r.units(unitFiles{anon: 1 << 20, memMax: "max"}, unitFiles{}, unitFiles{})
+	r.tick(t0.Add(2 * time.Second))
+	if us, _ := r.store.Range(testRef, t0, t0.Add(time.Hour)); len(us) != 1 {
+		t.Fatalf("setup: %d units stored", len(us))
+	}
+
+	r.svc.Forget(testRef)
+	if _, ok := r.svc.Recent(testRef); ok {
+		t.Error("the samples in memory were kept")
+	}
+	if us, _ := r.store.Range(testRef, t0, t0.Add(time.Hour)); len(us) != 0 {
+		t.Errorf("the history on disk was kept: %d units", len(us))
+	}
+	if len(r.disk.forgot) != 1 || r.disk.forgot[0] != testRef {
+		t.Errorf("the disk source was told to forget %v", r.disk.forgot)
+	}
+	if len(gone) != 0 {
+		t.Errorf("Gone was called for a delete the service did itself: %v", gone)
+	}
+
+	// Another process deletes it: the tick finds the ref gone from the registry.
+	r.tick(t0.Add(time.Minute + 2*time.Second))
+	if _, ok := r.svc.Recent(testRef); !ok {
+		t.Fatal("setup: no sample")
+	}
+	r.lister.ps = nil
+	r.tick(t0.Add(2*time.Minute + 2*time.Second))
+	if _, ok := r.svc.Recent(testRef); ok {
+		t.Error("the samples of a project gone from the registry were kept")
+	}
+	if us, _ := r.store.Range(testRef, t0, t0.Add(time.Hour)); len(us) != 0 {
+		t.Errorf("the history of a project gone from the registry was kept: %d units", len(us))
+	}
+	if len(gone) != 1 || gone[0] != testRef {
+		t.Errorf("Gone = %v", gone)
+	}
+}
+
+// A ref used again (supavise projects create --ref) starts with no history, even when the delete and
+// the create fall between two ticks.
+func TestServiceStartsAProjectCreatedAgainFromNothing(t *testing.T) {
+	var gone []string
+	r := newRig(t, func(o *Options) { o.Gone = func(ref string) { gone = append(gone, ref) } })
+	r.lister.ps[0].CreatedAt = t0.Add(-time.Hour)
+	r.units(unitFiles{anon: 1 << 20, memMax: "max"}, unitFiles{}, unitFiles{})
+	r.tick(t0.Add(2 * time.Second))
+	r.tick(t0.Add(time.Minute + 2*time.Second))
+	if us, _ := r.store.Range(testRef, t0, t0.Add(time.Hour)); len(us) != 2 {
+		t.Fatalf("setup: %d units stored", len(us))
+	}
+
+	r.lister.ps[0].CreatedAt = t0.Add(90 * time.Second) // another project, same ref
+	r.tick(t0.Add(2*time.Minute + 2*time.Second))
+	us, _ := r.store.Range(testRef, t0, t0.Add(time.Hour))
+	if len(us) != 1 || !us[0].At.Equal(t0.Add(2*time.Minute)) {
+		t.Errorf("the new project shows %d units, the first at %v: it kept the old one's history", len(us), func() any {
+			if len(us) > 0 {
+				return us[0].At
+			}
+			return nil
+		}())
+	}
+	if rec, _ := r.svc.Recent(testRef); len(rec) != 1 {
+		t.Errorf("the new project holds %d samples in memory", len(rec))
+	}
+	if len(gone) != 1 || gone[0] != testRef {
+		t.Errorf("Gone = %v", gone)
+	}
+
+	// The same project over the following ticks is not taken for a new one.
+	r.tick(t0.Add(3*time.Minute + 2*time.Second))
+	if us, _ := r.store.Range(testRef, t0, t0.Add(time.Hour)); len(us) != 2 || len(gone) != 1 {
+		t.Errorf("a project that did not change lost its history: %d units, Gone = %v", len(us), gone)
 	}
 }

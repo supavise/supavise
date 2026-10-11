@@ -375,9 +375,13 @@ func (s *Server) deleteBranch(w http.ResponseWriter, r *http.Request) error {
 		return errf(http.StatusNotFound, "Branch not found")
 	}
 	// force=false asks for the soft delete with a grace period; anything else is immediate.
-	_, err = s.branches.Delete(r.Context(), r.PathValue("branch_id_or_ref"), branching.DeleteOptions{Schedule: r.URL.Query().Get("force") == "false"})
+	schedule := r.URL.Query().Get("force") == "false"
+	b, err := s.branches.Delete(r.Context(), r.PathValue("branch_id_or_ref"), branching.DeleteOptions{Schedule: schedule})
 	if err != nil {
 		return mapBranchErr(err)
+	}
+	if !schedule && b != nil { // a scheduled delete only marks the branch, which goes on running
+		s.forgetUsage(b.Ref)
 	}
 	writeJSON(w, http.StatusOK, &v1.BranchDeleteResponseOutput{Message: "ok"})
 	return nil

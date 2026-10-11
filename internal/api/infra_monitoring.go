@@ -30,6 +30,8 @@ import (
 type MetricsSource interface {
 	Query(ref string, attrs []string, from, to time.Time, step time.Duration) (metrics.Result, error)
 	Warnings(ref string) (metrics.Warnings, bool)
+	// Forget drops what is kept of a project that was deleted (projectGone).
+	Forget(ref string)
 }
 
 func (s *Server) routesInfraMonitoring(add func(string, handlerFunc)) {

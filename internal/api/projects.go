@@ -374,8 +374,7 @@ func (s *Server) deleteProject(r *http.Request) (*registry.Project, error) {
 	if err := s.mgr.Delete(ctx, p.Ref); err != nil {
 		return nil, mapErr(err)
 	}
-	s.invalidateAdvisors(p.Ref) // nothing of a deleted project stays in memory
-	s.functionsGone(ctx, p.Ref)
+	s.projectGone(ctx, p.Ref)
 	return p, nil
 }
 

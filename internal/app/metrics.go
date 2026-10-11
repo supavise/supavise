@@ -20,14 +20,17 @@ import (
 // Control groups exist only under systemd, so a node with the exec supervisor (development and tests)
 // gets none, and the routes answer with series that have no points.
 //
-// self returns the id of this node; a project is sampled here when its home is this node.
-func newMetrics(cfg *config.Config, node *lifecycle.Node, log *slog.Logger, self func() string) *metrics.Service {
+// self returns the id of this node; a project is sampled here when its home is this node. gone, when
+// set, is called with the ref of a project that was deleted or created again, found by a tick: the
+// request counts of the proxy are dropped through it.
+func newMetrics(cfg *config.Config, node *lifecycle.Node, log *slog.Logger, self func() string, gone func(ref string)) *metrics.Service {
 	if cfg.Supervisor != config.SupervisorSystemd {
 		return nil
 	}
 	return metrics.New(metrics.Options{
 		Cfg: cfg, Projects: node.Registry, Log: log,
 		Local: func(p *registry.Project) bool { return p.NodeID == self() },
+		Gone:  gone,
 		Disk:  &metrics.NodeDisk{Cfg: cfg, Limits: diskquota.New(cfg, node.Supervisor)},
 	})
 }
