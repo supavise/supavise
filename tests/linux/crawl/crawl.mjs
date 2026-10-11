@@ -122,14 +122,25 @@ try {
     groups.get(k).push(v)
   }
   const order = ['', ...[...groups.keys()].filter((k) => k !== '' && k !== '~info'), '~info'].filter((k) => groups.has(k))
+  // A group that cannot even sign in (or a browser that dies) is a failure of the run, not the end of it: the other groups
+  // and the probes still run, and the report says what happened.
+  const crashed = []
   for (const k of order) {
-    const ctx = await openContext(browser, cfg, tracker, { guard: true })
-    const page = await newPage(ctx, tracker)
-    const rec = tracker.begin(`sign-in ${k || 'account'}`)
-    await signIn(page, cfg)
-    results.push({ url: `(sign-in for ${k || 'the account pages'})`, page: '(sign-in)', project: null, informational: null, findings: rec.findings, links: [], calls: rec.calls, stubs: rec.stubs, n4xx: rec.n4xx, n5xx: rec.n5xx, pageErrors: rec.pageErrors, noise: rec.noise, ms: 0 })
-    for (const v of groups.get(k)) await visit(page, v)
-    await ctx.close()
+    let ctx
+    try {
+      ctx = await openContext(browser, cfg, tracker, { guard: true })
+      const page = await newPage(ctx, tracker)
+      const rec = tracker.begin(`sign-in ${k || 'account'}`)
+      await signIn(page, cfg)
+      results.push({ url: `(sign-in for ${k || 'the account pages'})`, page: '(sign-in)', project: null, informational: null, findings: rec.findings, links: [], calls: rec.calls, stubs: rec.stubs, n4xx: rec.n4xx, n5xx: rec.n5xx, pageErrors: rec.pageErrors, noise: rec.noise, ms: 0 })
+      for (const v of groups.get(k)) await visit(page, v)
+    } catch (e) {
+      const msg = String(e?.message ?? e).split('\n')[0].slice(0, 300)
+      log(`FAIL the group '${k || 'account'}' stopped: ${msg}`)
+      crashed.push({ where: `route pass, group '${k || 'account'}'`, kind: 'crash', detail: msg })
+    } finally {
+      await ctx?.close().catch(() => {})
+    }
   }
 
   // ---- the pages that need no session -----------------------------------------------------------------
@@ -166,6 +177,7 @@ try {
     mutationAttempts: tracker.mutationAttempts,
     allowlist: { unseen: allow.unseen(), seenStatic: allow.seenStatic() },
   }
+  report.crashed = crashed
   report.failures = failures(report)
 } finally {
   await browser.close().catch(() => {})

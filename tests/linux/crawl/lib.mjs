@@ -326,6 +326,7 @@ export function failures(report) {
     // what the pages of a probe did is judged like the route pass: a stub or an error nobody listed fails the run
     for (const f of pr.findings ?? []) if (!f.allowed) out.push({ where: `probe ${pr.name}`, ...f })
   }
+  for (const c of report.crashed ?? []) out.push(c)
   for (const n of report.noFixture ?? []) out.push({ where: n.route, kind: 'no-fixture', detail: `no fixture for [${n.params.join('], [')}]` })
   const un = report.allowlist?.unseen ?? { stubs: [], statuses: [], dom: [] }
   for (const [what, list] of Object.entries(un)) for (const e of list) out.push({ where: `allow-list ${what}`, kind: 'unseen', detail: `${e} was never seen in this run: remove the entry` })
