@@ -685,3 +685,53 @@ func TestBranchRunsLimitZeroMeansTheDefault(t *testing.T) {
 		}
 	}
 }
+
+// The default branch reads the failed merge of a branch only while that branch is still failed:
+// deleting it, or a later success, clears the status, and the status falls back to the merge before.
+func TestDefaultBranchFailureEndsWithTheBranch(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	a, b := h.create("a", nil), h.create("b", nil)
+	h.db.migs[a.Ref] = append(h.db.migs[a.Ref], mig("20260110000000", "fa", "create table fa (id int)"))
+	h.db.migs[b.Ref] = append(h.db.migs[b.Ref], mig("20260111000000", "fb", "create table fb (id int)"))
+	if _, err := h.svc.Merge(ctx, a.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	h.mustState(h.wait(a.Ref), registry.BranchFunctionsDeployed)
+	// b was made before a's merge: its history diverges from the parent's now.
+	if _, err := h.svc.Merge(ctx, b.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	h.mustState(h.wait(b.Ref), registry.BranchMigrationsFailed)
+	defState := func() registry.BranchState {
+		t.Helper()
+		def, err := h.svc.Resolve(ctx, parentRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return def.State
+	}
+	if got := defState(); got != registry.BranchMigrationsFailed {
+		t.Fatalf("default branch after the failed merge = %s", got)
+	}
+	// The branch works again: nothing is left to fix.
+	if _, err := h.svc.Update(ctx, b.Ref, UpdateInput{State: ptr(registry.BranchFunctionsDeployed)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := defState(); got != registry.BranchFunctionsDeployed {
+		t.Fatalf("default branch once the branch works = %s (the merge of a before it succeeded)", got)
+	}
+	// Failed again, then the branch is deleted.
+	if _, err := h.svc.Update(ctx, b.Ref, UpdateInput{State: ptr(registry.BranchMigrationsFailed)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := defState(); got != registry.BranchMigrationsFailed {
+		t.Fatalf("default branch with the branch failed again = %s", got)
+	}
+	if _, err := h.svc.Delete(ctx, b.Ref, DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := defState(); got != registry.BranchFunctionsDeployed {
+		t.Fatalf("default branch after the failed branch was deleted = %s", got)
+	}
+}
