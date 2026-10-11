@@ -163,9 +163,10 @@ func (s *Service) createDefault(ctx context.Context, ref string, in CreateInput)
 
 // defaultBranch is the default branch of a project as the Management API shows it: the Git branch
 // it tracks and a status that follows the merges into it. A failed merge reads MIGRATIONS_FAILED
-// (FUNCTIONS_FAILED when only its deploy step failed) and the reason is its detail; a merge in
-// progress reads RUNNING_MIGRATIONS; the status is otherwise FUNCTIONS_DEPLOYED after a merge and
-// MIGRATIONS_PASSED before the first.
+// (FUNCTIONS_FAILED when only its deploy step failed) and the reason is its detail, for as long as
+// the branch that was merged is still there and still failed; deleting that branch, or merging it
+// again, clears it. A merge in progress reads RUNNING_MIGRATIONS; the status is otherwise
+// FUNCTIONS_DEPLOYED after a merge and MIGRATIONS_PASSED before the first.
 func (s *Service) defaultBranch(ctx context.Context, p *registry.Project) *Branch {
 	b := defaultBranchOf(p)
 	st := s.runStore()
@@ -175,21 +176,39 @@ func (s *Service) defaultBranch(ctx context.Context, p *registry.Project) *Branc
 	if g, err := st.GetDefaultBranchGit(ctx, p.Ref); err == nil {
 		b.GitBranch = g
 	}
-	// Merges are the only runs the default branch owns.
-	runs, _, err := st.ListBranchRuns(ctx, p.Ref, 0, 1)
-	if err != nil || len(runs) == 0 {
+	// Merges are the only runs the default branch owns. The newest one decides, except a failure
+	// that nobody can act on any more: a few runs are read to get past those.
+	runs, _, err := st.ListBranchRuns(ctx, p.Ref, 0, 10)
+	if err != nil {
 		return b
 	}
-	switch last := runs[0]; last.Status {
-	case registry.RunRunning:
-		b.State, b.Detail = registry.BranchRunningMigration, "merging "+last.BranchRef
-	case registry.RunFailed:
-		b.State, b.Detail = registry.BranchMigrationsFailed, last.Failure
-		if strings.HasPrefix(last.Failure, StepDeploy+":") {
-			b.State = registry.BranchFunctionsFailed
+	for _, last := range runs {
+		switch last.Status {
+		case registry.RunRunning:
+			b.State, b.Detail = registry.BranchRunningMigration, "merging "+last.BranchRef
+		case registry.RunFailed:
+			if !s.stillFailed(ctx, last.BranchRef) {
+				continue
+			}
+			b.State, b.Detail = registry.BranchMigrationsFailed, last.Failure
+			if strings.HasPrefix(last.Failure, StepDeploy+":") {
+				b.State = registry.BranchFunctionsFailed
+			}
+		case registry.RunSuccess:
+			b.State = registry.BranchFunctionsDeployed
 		}
-	case registry.RunSuccess:
-		b.State = registry.BranchFunctionsDeployed
+		break
 	}
 	return b
+}
+
+// stillFailed reports whether the branch ref exists and ends in a failed state: the merge of it
+// that failed is still something to fix. A branch that was deleted, or that works again (a later
+// push, reset or merge succeeded), is not.
+func (s *Service) stillFailed(ctx context.Context, ref string) bool {
+	p, err := s.reg.GetProject(ctx, ref)
+	if err != nil || p.Branch == nil {
+		return false
+	}
+	return p.Branch.State == registry.BranchMigrationsFailed || p.Branch.State == registry.BranchFunctionsFailed
 }
