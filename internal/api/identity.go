@@ -25,9 +25,6 @@ var disabledFeatures = []string{
 	// services behind them (icebergCatalog and vectorBuckets stay off, internal/fleet/storage.go), so
 	// the pages would offer buckets that cannot work. Logs and Reports stay: they say what is missing.
 	"storage:analytics", "storage:vectors",
-	// Third-party auth (Clerk, Auth0, Firebase and others) is set up by the hosted platform's gateway; a node's
-	// services accept the project's own JWTs only, so the page could not do what it says (unsupported.go).
-	"authentication:third_party_auth",
 }
 
 // featureReadReplicas is the key that hides Studio's read replica screens (the Infrastructure

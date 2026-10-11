@@ -94,13 +94,15 @@ func TestProfileHidesWhatCannotWork(t *testing.T) {
 	for _, d := range prof.DisabledFeatures {
 		have[d] = true
 	}
-	for _, want := range []string{"storage:analytics", "storage:vectors", "authentication:third_party_auth"} {
+	for _, want := range []string{"storage:analytics", "storage:vectors"} {
 		if !have[want] {
 			t.Errorf("disabled_features lacks %s", want)
 		}
 	}
-	// Logs and Reports stay: they say what is missing.
-	for _, keep := range []string{"logs:all", "reports:all"} {
+	// Logs and Reports stay: they say what is missing. Third-party Auth stays too: services could accept
+	// a JWKS (PostgREST, Storage and Realtime take one), hosted offers it to every project, and the page
+	// is not unbuildable, so its "Add provider" answers with the reason (unsupported.go) instead of vanishing.
+	for _, keep := range []string{"logs:all", "reports:all", "authentication:third_party_auth"} {
 		if have[keep] {
 			t.Errorf("disabled_features hides %s", keep)
 		}
