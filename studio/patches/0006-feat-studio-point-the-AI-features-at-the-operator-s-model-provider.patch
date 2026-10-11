@@ -1,4 +1,4 @@
-From c7939f0e81c4319f6bc6d496c16904afc9da7b11 Mon Sep 17 00:00:00 2001
+From 063df6a187d8c098011f9f570371439b35708b74 Mon Sep 17 00:00:00 2001
 From: supavise <supavise@users.noreply.invalid>
 Date: Sun, 11 Oct 2026 13:17:33 -0700
 Subject: [PATCH 6/6] feat(studio): point the AI features at the operator's
@@ -32,17 +32,17 @@ in platform mode too. The model picker shows that model instead of OpenAI's
 three names, and the three messages that told the user to add an
 OPENAI_API_KEY point to the server's administrator instead.
 ---
- .../interfaces/SQLEditor/RenameQueryModal.tsx |  2 +-
- .../ui/AIAssistantPanel/AssistantChat.tsx     |  4 +-
- .../ui/AIAssistantPanel/ModelSelector.tsx     | 11 +++
- .../ui/EditorPanel/SaveSnippetDialog.tsx      |  2 +-
- apps/studio/data/ai/check-api-key-query.ts    | 11 +--
- apps/studio/lib/ai/model.ts                   | 20 ++--
- apps/studio/lib/ai/self-hosted-model.test.ts  | 94 +++++++++++++++++++
- apps/studio/lib/ai/self-hosted-model.ts       | 74 +++++++++++++++
- apps/studio/lib/hosted-api-allowlist.ts       |  1 +
- apps/studio/pages/api/ai/sql/check-api-key.ts |  4 +-
- 10 files changed, 206 insertions(+), 17 deletions(-)
+ .../interfaces/SQLEditor/RenameQueryModal.tsx |   2 +-
+ .../ui/AIAssistantPanel/AssistantChat.tsx     |   4 +-
+ .../ui/AIAssistantPanel/ModelSelector.tsx     |  11 ++
+ .../ui/EditorPanel/SaveSnippetDialog.tsx      |   2 +-
+ apps/studio/data/ai/check-api-key-query.ts    |  11 +-
+ apps/studio/lib/ai/model.ts                   |  20 +++-
+ apps/studio/lib/ai/self-hosted-model.test.ts  | 111 ++++++++++++++++++
+ apps/studio/lib/ai/self-hosted-model.ts       |  74 ++++++++++++
+ apps/studio/lib/hosted-api-allowlist.ts       |   1 +
+ apps/studio/pages/api/ai/sql/check-api-key.ts |   4 +-
+ 10 files changed, 223 insertions(+), 17 deletions(-)
  create mode 100644 apps/studio/lib/ai/self-hosted-model.test.ts
  create mode 100644 apps/studio/lib/ai/self-hosted-model.ts
 
@@ -203,10 +203,10 @@ index 2ff1a6c..ed180fc 100644
      }
 diff --git a/apps/studio/lib/ai/self-hosted-model.test.ts b/apps/studio/lib/ai/self-hosted-model.test.ts
 new file mode 100644
-index 0000000..3ba2cb2
+index 0000000..66a1d56
 --- /dev/null
 +++ b/apps/studio/lib/ai/self-hosted-model.test.ts
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,111 @@
 +import { describe, expect, it } from 'vitest'
 +
 +import {
@@ -234,19 +234,29 @@ index 0000000..3ba2cb2
 +    })
 +  })
 +
-+  it('uses the operator’s models: the chat model for the Assistant, the completion model for the small calls', () => {
-+    const env = { SUPAVISE_AI_MODEL: 'openai/gpt-4o', SUPAVISE_AI_COMPLETION_MODEL: 'openai/gpt-4o-mini' }
++  it('uses the operator’s chat model for the Assistant and completion model for small calls', () => {
++    const env = {
++      SUPAVISE_AI_MODEL: 'openai/gpt-4o',
++      SUPAVISE_AI_COMPLETION_MODEL: 'openai/gpt-4o-mini',
++    }
 +    expect(resolveOpenAICall(assistant, 'gpt-6-luna', base, env).modelId).toBe('openai/gpt-4o')
-+    expect(resolveOpenAICall(DEFAULT_COMPLETION_MODEL, 'gpt-5.4-nano', base, env).modelId).toBe('openai/gpt-4o-mini')
-+    expect(resolveOpenAICall(LOGS_REWRITE_MODEL, 'gpt-5.4-nano', base, env).modelId).toBe('openai/gpt-4o-mini')
++    expect(resolveOpenAICall(DEFAULT_COMPLETION_MODEL, 'gpt-5.4-nano', base, env).modelId).toBe(
++      'openai/gpt-4o-mini'
++    )
++    expect(resolveOpenAICall(LOGS_REWRITE_MODEL, 'gpt-5.4-nano', base, env).modelId).toBe(
++      'openai/gpt-4o-mini'
++    )
 +  })
 +
-+  it('lets the completion model follow the model, and leaves the other alone when only one is set', () => {
++  it('lets the completion model follow the model, but not the other way round', () => {
 +    expect(
-+      resolveOpenAICall(DEFAULT_COMPLETION_MODEL, 'gpt-5.4-nano', base, { SUPAVISE_AI_MODEL: 'llama3.1:8b' }).modelId
++      resolveOpenAICall(DEFAULT_COMPLETION_MODEL, 'gpt-5.4-nano', base, {
++        SUPAVISE_AI_MODEL: 'llama3.1:8b',
++      }).modelId
 +    ).toBe('llama3.1:8b')
 +    expect(
-+      resolveOpenAICall(assistant, 'gpt-6-luna', base, { SUPAVISE_AI_COMPLETION_MODEL: 'small' }).modelId
++      resolveOpenAICall(assistant, 'gpt-6-luna', base, { SUPAVISE_AI_COMPLETION_MODEL: 'small' })
++        .modelId
 +    ).toBe('gpt-6-luna')
 +  })
 +
@@ -265,17 +275,22 @@ index 0000000..3ba2cb2
 +    ).toEqual({ reasoningEffort: 'low' })
 +  })
 +
-+  it('keeps store: false on /responses, and upstream’s effort while the model is upstream’s', () => {
++  it('keeps store: false on /responses, and upstream’s effort for upstream’s model', () => {
 +    const call = resolveOpenAICall(assistant, 'gpt-6-luna', base, { SUPAVISE_AI_API: 'responses' })
 +    expect(call.providerOptions).toEqual({ store: false, reasoningEffort: 'medium' })
 +    expect(
-+      resolveOpenAICall(assistant, 'gpt-6-luna', base, { SUPAVISE_AI_MODEL: 'my-deployment', SUPAVISE_AI_API: 'responses' })
-+        .providerOptions
++      resolveOpenAICall(assistant, 'gpt-6-luna', base, {
++        SUPAVISE_AI_MODEL: 'my-deployment',
++        SUPAVISE_AI_API: 'responses',
++      }).providerOptions
 +    ).toEqual({ store: false })
 +  })
 +
 +  it('does not change the shared base options', () => {
-+    resolveOpenAICall(assistant, 'gpt-6-luna', base, { SUPAVISE_AI_API: 'chat', SUPAVISE_AI_REASONING_EFFORT: 'high' })
++    resolveOpenAICall(assistant, 'gpt-6-luna', base, {
++      SUPAVISE_AI_API: 'chat',
++      SUPAVISE_AI_REASONING_EFFORT: 'high',
++    })
 +    expect(base).toEqual({ store: false })
 +  })
 +
@@ -296,19 +311,20 @@ index 0000000..3ba2cb2
 +describe('getConfiguredAssistantModel', () => {
 +  it('names the operator’s model, and nothing without one', () => {
 +    expect(getConfiguredAssistantModel({})).toBeUndefined()
-+    expect(getConfiguredAssistantModel({ SUPAVISE_AI_MODEL: ' openai/gpt-4o ' })).toBe('openai/gpt-4o')
++    expect(getConfiguredAssistantModel({ SUPAVISE_AI_MODEL: ' openai/gpt-4o ' })).toBe(
++      'openai/gpt-4o'
++    )
 +    expect(getConfiguredAssistantModel({ SUPAVISE_AI_MODEL: '' })).toBeUndefined()
 +    expect(getConfiguredAssistantModel({ SUPAVISE_AI_MODEL: 'a b' })).toBeUndefined()
 +  })
 +})
 diff --git a/apps/studio/lib/ai/self-hosted-model.ts b/apps/studio/lib/ai/self-hosted-model.ts
 new file mode 100644
-index 0000000..5667cb0
+index 0000000..6803dec
 --- /dev/null
 +++ b/apps/studio/lib/ai/self-hosted-model.ts
 @@ -0,0 +1,74 @@
-+import type { OpenAIModelEntry } from './model.utils'
-+import { DEFAULT_COMPLETION_MODEL, LOGS_REWRITE_MODEL } from './model.utils'
++import { DEFAULT_COMPLETION_MODEL, LOGS_REWRITE_MODEL, type OpenAIModelEntry } from './model.utils'
 +
 +/**
 + * The model provider of a self-hosted deployment, from the server's environment.
@@ -372,7 +388,8 @@ index 0000000..5667cb0
 +  const effortOverride = effort && REASONING_EFFORTS.includes(effort) ? effort : undefined
 +
 +  // Upstream: the entry's own effort on top of the base options.
-+  const reasoningEffort = effortOverride ?? (modelOverride ? undefined : modelEntry?.reasoningEffort)
++  const reasoningEffort =
++    effortOverride ?? (modelOverride ? undefined : modelEntry?.reasoningEffort)
 +  // `store: false` keeps OpenAI from retaining a /responses request; /chat/completions stores
 +  // nothing by default, and a gateway may reject a field it does not know.
 +  const options = { ...baseProviderOptions }
@@ -394,7 +411,7 @@ index ba1cc4c..99f4be1 100644
    '/get-utc-time',
    '/get-deployment-commit',
 diff --git a/apps/studio/pages/api/ai/sql/check-api-key.ts b/apps/studio/pages/api/ai/sql/check-api-key.ts
-index 9070268..4b3dcec 100644
+index 9070268..c668fcc 100644
 --- a/apps/studio/pages/api/ai/sql/check-api-key.ts
 +++ b/apps/studio/pages/api/ai/sql/check-api-key.ts
 @@ -1,5 +1,6 @@
@@ -409,7 +426,7 @@ index 9070268..4b3dcec 100644
  const handleGet = async (_req: NextApiRequest, res: NextApiResponse) => {
    if (process.env.OPENAI_API_KEY) {
 -    return res.status(200).json({ hasKey: true })
-+    // [Supavise] `model` is the operator's model, when they chose one: the key never leaves the server.
++    // [Supavise] `model` is the operator's model, when they chose one. The key stays on the server.
 +    return res.status(200).json({ hasKey: true, model: getConfiguredAssistantModel() })
    } else {
      return res.status(200).json({ hasKey: false })
