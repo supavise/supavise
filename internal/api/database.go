@@ -218,13 +218,16 @@ alter table ` + migrationsTable + ` add column if not exists rollback text[];
 // with the same name and the same statements (whitespace and a final semicolon aside), is
 // recorded once and answers 200 again. The statements are never executed here.
 func (s *Server) upsertMigration(w http.ResponseWriter, r *http.Request) error {
-	var in struct {
-		Query    string `json:"query"`
-		Name     string `json:"name"`
-		Rollback string `json:"rollback"`
-	}
-	if err := decode(r, &in); err != nil {
+	var body v1.V1UpsertMigrationBody
+	if err := decode(r, &body); err != nil {
 		return err
+	}
+	in := struct{ Query, Name, Rollback string }{Query: body.Query}
+	if body.Name != nil {
+		in.Name = *body.Name
+	}
+	if body.Rollback != nil {
+		in.Rollback = *body.Rollback
 	}
 	if strings.TrimSpace(in.Query) == "" {
 		return errf(http.StatusBadRequest, "query is required")
