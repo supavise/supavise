@@ -153,6 +153,12 @@ check_round() { # api origin, hosts-regex-literal, mcp url, project-url-host-suf
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$port/api/get-utc-time")"
   [[ "$code" == 200 ]] || fail "/api/get-utc-time returned $code, want 200"
   ok "platform mode: /api/platform/* is 404, allowlisted routes work"
+  # Patch 0006: the key check is on the platform allowlist and wants a signed-in caller. A 404 would
+  # mean the patch is not in this build; the real answer needs a session and is checked by
+  # tests/linux/ai-smoke.sh.
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$port/api/ai/sql/check-api-key")"
+  [[ "$code" == 401 ]] || fail "/api/ai/sql/check-api-key without a token returned $code, want 401 (404 means patch 0006 is not in this build)"
+  ok "AI key check: allowlisted, 401 without a token"
 
   # /api/incident-banner answers 500 here (no incident.io key); supavise's proxy answers it
   # itself on studio.<domain> (internal/proxy), so the artifact carries no fixup for it.
