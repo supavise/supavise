@@ -215,6 +215,9 @@ func matrixCases() []routeCase {
 		rc("YYYYYN", "GET", pp+"/config/secrets/update-status", nil),
 		rc("YYYYYN", "GET", p+"/config/auth/signing-keys/legacy", nil),
 		rc("YYNNNN", "POST", p+"/config/auth/signing-keys", map[string]any{"algorithm": "ES256", "status": "standby"}),
+		// the pgsodium root key opens everything Vault holds
+		rc("YYNNNN", "GET", p+"/pgsodium", nil),
+		rc("YYNNNN", "PUT", p+"/pgsodium", map[string]any{"root_key": strings.Repeat("ab", 32)}),
 		// custom domains: every role reads them; Owners and Administrators change them
 		rc("YYYYYN", "GET", p+"/custom-hostname", nil),
 		rc("YYYYYN", "GET", p+"/vanity-subdomain", nil),
