@@ -39,6 +39,54 @@ const supabase = createClient('https://<ref>.api.<domain>', '<publishable key>')
 
 To serve a project on your own hostname or a short `<name>.api.<domain>` address, use **Project Settings**, **Custom Domains**, or `supabase domains` (see the deploy guide's [custom domains](../deploy/README.md#custom-domains-and-vanity-subdomains)).
 
+### New tables need a grant
+
+As on hosted Supabase, a table you create in `public` is not reachable through the Data API (REST and GraphQL) until you grant it. If you skip the grant, a request to `/rest/v1/<table>` answers `42501` (permission denied). Grant each role what it needs, then turn on row level security:
+
+```sql
+create table public.todos (id bigint generated always as identity primary key, title text not null);
+grant select on public.todos to anon;
+grant select, insert, update, delete on public.todos to authenticated;
+grant all on public.todos to service_role;
+alter table public.todos enable row level security;
+```
+
+A serial column also needs `grant usage, select on sequence public.todos_id_seq to authenticated;`, and a function that clients call through `rpc` needs `grant execute on function public.my_function to authenticated;`. A migration written this way runs unchanged on hosted Supabase.
+
+**New projects.** A project created from the dashboard follows the **Automatically expose new tables** box, which starts unchecked. `supavise projects create` and `POST /v1/projects` revoke the default grants too. To keep them, check the box, pass `--expose-new-tables`, or send `data_api_revoke_default_privileges: false` to `POST /platform/projects`. Behind the box, Supavise runs this once, after the project's database starts:
+
+```sql
+alter default privileges for role postgres in schema public revoke select, insert, update, delete on tables from anon, authenticated, service_role;
+alter default privileges for role postgres in schema public revoke usage, select on sequences from anon, authenticated, service_role;
+alter default privileges for role postgres in schema public revoke execute on functions from anon, authenticated, service_role;
+alter default privileges for role postgres in schema public revoke execute on functions from public;
+```
+
+A branch, a restore as new project and a copy made from a backup follow the project they came from.
+
+**Existing projects.** Hosted applies the same change to its existing projects on 2026-10-30. When you upgrade a node, Supavise does it once to every project that has no recorded choice, after the upgrade ends (a project that is paused gets it when it resumes). Tables that exist keep their grants and keep answering. Supavise records the change in the registry, not in your database, so if you roll it back with the SQL below, no restart or later upgrade revokes it again. The change runs on the project's primary; replicas receive it by replication.
+
+To bring the old behavior back, run this as `postgres`. The first block restores the defaults for new objects, the second grants the objects created since the change:
+
+```sql
+alter default privileges for role postgres in schema public grant select, insert, update, delete on tables to anon, authenticated, service_role;
+alter default privileges for role postgres in schema public grant usage, select on sequences to anon, authenticated, service_role;
+alter default privileges for role postgres in schema public grant execute on functions to anon, authenticated, service_role;
+alter default privileges for role postgres in schema public grant execute on functions to public;
+```
+
+```sql
+grant select, insert, update, delete on all tables in schema public to anon, authenticated, service_role;
+grant usage, select on all sequences in schema public to anon, authenticated, service_role;
+grant execute on all functions in schema public to anon, authenticated, service_role;
+```
+
+To keep one table private afterward, run `revoke all on table public.my_table from anon, authenticated, service_role;`. Supavise revokes the defaults for the role `postgres` only: a table created by another role keeps the grants that role's defaults give.
+
+**GraphQL.** Hosted no longer enables `pg_graphql` in new projects, and neither does Supavise. Until you turn it on in **Database**, **Extensions** (or with `create extension pg_graphql;`), `/graphql/v1` answers that it is not enabled. A project that already has the extension keeps it.
+
+**Other creation fields.** `data_api_exposed_schemas` sets the schemas PostgREST serves (default `public` and `graphql_public`). An empty list is the Data API turned off: a node cannot switch PostgREST off, so the project exposes only `graphql_public`, which holds no table. `data_api_use_api_schema: true` creates a schema `api` that the Data API roles may enter and serves it, as the **Switch the default API schema** dialog in the dashboard's Data API settings does by hand.
+
 ## Use the Supabase CLI
 
 The Supabase CLI reaches a node through a profile file. Print the profile on the node, then save the output as `supavise-profile.yaml` on your machine:
