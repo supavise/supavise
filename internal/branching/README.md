@@ -82,7 +82,9 @@ functions deploy, then `FUNCTIONS_DEPLOYED`, or `MIGRATIONS_FAILED` / `FUNCTIONS
 before these statuses existed keeps `MIGRATIONS_PASSED`; everything that waits for a branch accepts both.
 `preview_project_status` is the project's own status. A busy branch refuses another operation with `409`
 (an in-process table per branch ref plus the registry state, so a push during a merge of the same branch is
-refused). Events `branch.<op>.started`, `.succeeded` and `.failed` (with the run id) go to the branch's and
+refused). The registry state counts as busy while it is `CREATING_PROJECT` or `RUNNING_MIGRATIONS`, and while it
+is `MIGRATIONS_PASSED` with a run still `RUNNING` on the branch (the deploy step), so the CLI and the sweeper of
+another process leave a deploying branch alone; `MIGRATIONS_PASSED` with no run going is a branch at rest. Events `branch.<op>.started`, `.succeeded` and `.failed` (with the run id) go to the branch's and
 the parent's event log. The sweeper marks an operation that no process works on as failed: the process that
 started it (host, pid and service instance in the started event) is gone, or the branch has been busy for
 30 minutes. After a daemon crash the first sweep recovers its interrupted operations at once; an operation
@@ -112,7 +114,9 @@ about. `runs.go` is the recorder; the tables are `supavise.branch_runs` and `sup
   | merge | both histories are read | skipped | same | skipped | the functions |
 * **Log.** Each step has a text log of lines `<time> [<step>] <text>`: the progress text of the operation (what
   `setState` records as `branch_detail`), the final outcome and the error of a failure. A step's log stops at
-  256 KiB. `GET .../actions/{id}/logs` returns the steps' logs in order as `text/plain`.
+  256 KiB (cut at a character boundary; invalid UTF-8 is replaced and NUL bytes dropped, because Postgres
+  refuses both). The run lists (`ListBranchRuns`, `RunningBranchRuns`) return steps without their logs; only
+  `GetBranchRun` reads them. `GET .../actions/{id}/logs` returns the steps' logs in order as `text/plain`.
 * **Owner.** A merge run is listed under the **parent** ref; create, push and reset runs under the branch ref.
   The other ref answers `404` for the run, its log and its status (Studio polls both refs and stops polling the
   one that answers 404). `Service.BranchRuns` gathers a branch's own runs and the merges of it.
@@ -120,7 +124,8 @@ about. `runs.go` is the recorder; the tables are `supavise.branch_runs` and `sup
   running; all `EXITED` or `PAUSED`: success; a `DEAD` step: failed), `DeriveRunStatus` is that rule, and
   `branch_runs.status` (`RUNNING`, `SUCCESS`, `FAILED`) stores the same answer. The default branch's status
   follows the merges into it: `RUNNING_MIGRATIONS` during one, `MIGRATIONS_FAILED` (reason in the detail) after a
-  failed one, `FUNCTIONS_DEPLOYED` after a good one.
+  failed one, `FUNCTIONS_DEPLOYED` after a good one. A failure shows only while the merged branch still exists
+  and is still failed: deleting that branch, or a later push, reset or merge of it that works, clears it.
 * **Recovery.** A run still `RUNNING` whose runner (host, pid, service instance, stored on the run) is gone is
   failed by the next sweep with "interrupted by restart" (`DEAD` open step, `PAUSED` rest) and the branch it left
   busy becomes `MIGRATIONS_FAILED`; a run of an unknown runner is failed after the 30 minutes. Runs older than 30
@@ -162,7 +167,7 @@ before the envelope existed under `supavise`:
 ```
 
 `failure` is present only after a failed run (`<step>: <reason>`; the shape is Supavise's, hosted documents none).
-Step statuses are lowercase. The call carries the Standard Webhooks headers `webhook-id` (`msg_<run id>`),
+Step statuses are lowercase. The call carries the Standard Webhooks headers `webhook-id` (`msg_` and the run id without its dashes, the same for every delivery of a run),
 `webhook-timestamp` (Unix seconds) and `webhook-signature` (`v1,` and the base64 HMAC-SHA256 of
 `<id>.<timestamp>.<body>`), signed with one node-wide secret (`whsec_` and base64) that the node creates when it is
 first needed and keeps sealed under the system project. `supavise branches notify-secret` prints it, `--rotate`
