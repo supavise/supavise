@@ -51,7 +51,7 @@ grant all on public.todos to service_role;
 alter table public.todos enable row level security;
 ```
 
-A serial column also needs `grant usage, select on sequence public.todos_id_seq to authenticated;`, and a function that clients call through `rpc` needs `grant execute on function public.my_function to authenticated;`. A migration written this way runs unchanged on hosted Supabase.
+A serial column also needs `grant usage, select on sequence public.todos_id_seq to authenticated;`, and a function that only signed-in users may call through `rpc` needs `revoke execute on function public.my_function() from public, anon;`, because Postgres gives `execute` on a new function to everyone (`public`) and the default privileges below cannot take that away. A migration written this way runs unchanged on hosted Supabase.
 
 **New projects.** A project created from the dashboard follows the **Automatically expose new tables** box, which starts unchecked. `supavise projects create` and `POST /v1/projects` revoke the default grants too. To keep them, check the box, pass `--expose-new-tables`, or send `data_api_revoke_default_privileges: false` to `POST /platform/projects`. Behind the box, Supavise runs this once, after the project's database starts:
 
@@ -62,7 +62,7 @@ alter default privileges for role postgres in schema public revoke execute on fu
 alter default privileges for role postgres in schema public revoke execute on functions from public;
 ```
 
-A branch or a restore as a new project follows the project it came from.
+The two function statements remove the grants the image gave new functions for those three roles. They don't make functions private: `public` keeps `execute` on every new function, as on hosted. A branch follows its parent. A restore as a new project follows its backup: if the backup was taken before the node upgraded, the new project gets the revoke at its first pass.
 
 **Existing projects.** Hosted applies the same change to its existing projects on 2026-10-30. When you upgrade a node, Supavise does it once to every project that has no recorded choice, after the upgrade ends (a project that is paused gets it when it resumes). Tables that exist keep their grants and keep answering. Supavise records the change in the registry, not in your database, so if you roll it back with the SQL below, no restart or later upgrade revokes it again. The change runs on the project's primary; replicas receive it by replication.
 
