@@ -52,7 +52,8 @@ One file per operation, so that a change to one operation stays in one file:
 | `schemadiff/` | the schema engine: reads a database into a `Snapshot`, plans the DDL between two, merges and syncs snapshots |
 | `update.go` | `Update` (PATCH of a branch) |
 | `delete.go` | `Delete`, `Restore`, `DisableBranching` and `removeBranch` |
-| `migrations.go` | the migration history (`Migration`, `Compare`, `Apply`), `SchemaDatabase` (snapshots and history written without running it) and `replay` into a schema-only branch |
+| `migrations.go` | the migration history (`Migration`, `Compare`, `Apply`, covered migrations), `SchemaDatabase` (snapshots and history written without running it) and `replay` into a schema-only branch |
+| `stmts.go` | which statements of a migration a recorded schema diff holds and which it does not (`carriedStatements`) |
 | `sweep.go`, `notify.go` | the expiry sweeper and the `notify_url` call |
 
 ## Data model
@@ -210,9 +211,11 @@ with `--seed-file`. A failing migration or seed leaves the branch in `MIGRATIONS
 constraints, indexes, policies, triggers, functions, views, types, sequences, extensions, grants, default
 privileges and comments of the user schemas, plus the policies and triggers users added to the tables of the
 managed schemas, such as a policy on `storage.objects` or a trigger on `auth.users`), writes it as one migration
-named `remote_schema`, records it as the **first migration of the parent's history without running it there**
-(under the apply lock, only while the history is empty, with the event `branch.baseline_recorded`) and runs it on
-the branch. The parent now has a history, so a merge has a common ancestor, and the next branch replays it: the
+named `remote_schema`, runs it on the branch and, **only when that worked**, records it as the **first migration of
+the parent's history without running it there** (with the event `branch.baseline_recorded`). The parent's apply lock is held from the look at
+the history to the record, so a second branch made meanwhile waits and then replays the history the first one
+recorded; a baseline that fails on the branch leaves the parent's history empty. The parent now has a history, so a
+merge has a common ancestor, and the next branch replays it: the
 schema is dumped only while the history is empty (hosted does not dump when migrations exist), and a parent that
 has a history plus changes made outside it gives a branch the history only (those changes show up as the parent's
 drift, which a push brings in). The branch applies the parent's Data API default-privilege choice when its project
@@ -220,8 +223,9 @@ is created and the baseline after it, so the baseline's own `ALTER DEFAULT PRIVI
 roles are not captured: a grant, a default privilege or a policy that names a role the branch lacks is left out and
 the run log says which. What the engine does not model (aggregates, operators, casts, rules, event triggers,
 publications, foreign tables and servers, range types, collations, extended statistics, inherited tables, column
-privileges) is named in the run log and is not in the baseline. A parent that has only what a new project has gets
-no baseline.
+privileges) is named in the run log and is not in the baseline, and does not by itself make a schema: a parent with
+only such objects and what a new project has gets no baseline. The stock event triggers of a project (`pgrst_*`,
+`issue_*`, `graphql_watch_*`) and its Realtime publications (`supabase_realtime*`) are never listed as not modeled.
 
 > **A `with_data` branch is a copy of production.** Whoever can run SQL in it can read all of the parent's
 > data. Supavise replaces the credentials it knows about and cuts the branch off from the outside (below), but
@@ -340,13 +344,27 @@ Schema-only branches copy nothing and are not checked.
   skips the versions that differ in content. `migration_version` merges up to and including that version. Changes the branch made
   outside migrations (the Table Editor, the SQL editor) are not merged by this flow, as on hosted.
   *Recorded diff* (Studio's merge page): Studio reads `GET .../diff`, records it with `PUT /v1/projects/{branch}/database/migrations`
-  as `branch_merge_<time>` **without running it**, then calls merge. When the branch has such a migration the parent lacks, the
-  merge (1) fails if the diff holds a change the engine cannot express, (2) computes the diff again and compares its hash with the
-  recorded one, failing with "production or branch changed since the diff was recorded; refresh" when they differ, (3) fails when
-  production and the branch changed the same schema object differently, (4) runs **only that migration** on the parent, in one
-  transaction, and (5) records the branch's other migrations in the parent's history **without running them**, so the histories
-  converge and no statement runs twice (the diff already holds what they did). The same divergence rules as the history flow apply
-  to the parent's own migrations. `force` skips (2) and (3).
+  as `branch_merge_<time>` **without running it**, then calls merge. The merge takes this flow when the newest migration of the
+  branch is such a recording and the parent lacks it (and `migration_version` does not cut it off). It (1) fails if the diff holds a
+  change the engine cannot express, unless `force` (those changes are then not merged, and the result names them), (2) computes the
+  diff again and compares its hash with the recorded one, failing with "production or the branch changed since the diff was recorded;
+  refresh" when they differ (`force` does not merge a diff that is out of date: what would run is not what the user approved),
+  (3) fails when production and the branch changed the same schema object differently, unless `force`, and (4) in **one transaction**
+  runs the recorded migration on the parent, records the branch's other migrations that the parent lacks in the parent's history
+  **as covered by it**, without running their schema changes (the diff holds those), and then runs **the statements of those migrations
+  that a schema diff does not hold**: INSERT, UPDATE and DELETE of data (a lookup table, a bucket), `cron.schedule`,
+  `ALTER PUBLICATION`, roles, and the objects the engine does not model (`stmts.go` decides: DDL of tables, columns, constraints,
+  indexes, views, functions, triggers, policies, types, sequences, extensions, schemas, grants, default privileges and comments is
+  the diff's; `CREATE TABLE ... AS`, a temporary table and DDL on objects of the services' own schemas such as `auth.users` or
+  `storage.objects`, apart from policies and triggers, are not). Anything that fails rolls all of it back, so a retry starts from
+  the same state. The statements run after the diff, in version order, and not in between: a migration whose later DDL changes
+  what an earlier INSERT needs can fail, loudly and with a rollback. A reset, a new branch and a push replay a covered migration the
+  same way (its DDL recorded, the rest run, after the migrations that are not covered). The mark on the branch's own rows is written
+  after the parent merged; if that fails the run log says so and the next merge writes it. A recording that is **not the newest
+  migration** of the branch is out of date: the branch moved on after it (a failed attempt, then `apply_migration` or `db push`).
+  The merge ignores it and all older ones, takes the history flow, and says so; the schema changes it held that no migration made
+  are merged by opening the merge page again. A recorded migration that is covered by an ignored one runs in full. The same divergence
+  rules as the history flow apply to the parent's own migrations; `force` skips them.
   Either way the branch's Edge Functions are deployed to the parent: a function the branch created, or changed since it was made
   (its digest differs from the base), is copied over the parent's; a function only the parent changed is left alone; one **both
   changed** fails the merge before anything runs, naming the slugs (`force` deploys the branch's version); nothing is ever deleted
@@ -359,7 +377,9 @@ Schema-only branches copy nothing and are not checked.
   changes); then the parent's Edge Functions that are new or changed (same slug: the parent's overwrites the branch's, unless only
   the branch changed it; branch-only functions stay; the run log says what was overwritten). It refuses, unless forced, when the
   parent and the branch changed the same schema object differently (`force` takes the parent's version). It never reseeds and
-  never touches data, and it moves the schema base. `migration_version` stops the migrations at that version and skips the rest.
+  never touches data, and it moves the schema base. `migration_version` stops the migrations at that version and skips the rest,
+  including the parent's changes that were never migrations; the base still moves to where the two sides agree, so that the objects
+  the pushed migrations made are not listed in the branch's diff as its own changes.
   A branch with no base (made by v0.3.x) only gets migrations and functions.
 * **Reset** recreates the database from the branch's **own** recorded migration history, not from the parent's: the migrations the
   branch added itself survive, and so do those it got from the parent; tables, rows and any change made outside migrations do not.
@@ -372,8 +392,13 @@ Schema-only branches copy nothing and are not checked.
   credentials can be read). A later failure leaves the branch registered as `MIGRATIONS_FAILED` with `INIT_FAILED` project status under
   the same id, so it can be reset again or deleted. A schema-only branch keeps its credentials, its compute class and its schema
   base; a branch with data gets new credentials as at creation and a new base. Its lifetime is kept, with at least 15 minutes left, and
-  the branch stays resolvable (its `status` is `CREATING_PROJECT` meanwhile). A branch whose cluster cannot be read, or that recorded
-  no history, is reset from the parent's history as a new branch is.
+  the branch stays resolvable (its `status` is `CREATING_PROJECT` meanwhile). A branch that recorded no history, or whose state is
+  not a working one (a failed creation, a failed merge) and whose cluster cannot be read, is reset from the parent's history as a new
+  branch is, and the run log says which history was used. A working branch (`FUNCTIONS_DEPLOYED`, `MIGRATIONS_PASSED`) whose history
+  cannot be read is **not** reset (`500`, nothing is removed): replaying the parent's history would drop the migrations the branch
+  added itself; try again, or pass `force` to reset from the parent's history anyway. Recordings of Studio's merge page that were
+  never merged are replayed as one: the newest runs, and every older recording and tracked migration before it is covered by it
+  (`migration_version` cuts the history first, and a migration whose covering recording is cut away runs in full).
 * **Diff** (`GET /v1/branches/{id}/diff`, `text/plain`) is **what the branch changed in its schema**, as SQL: the statements that would
   take the parent to the branch's schema where the branch moved away from its schema base. It is **empty** when nothing changed
   (Studio shows "No changes detected"), accepts `included_schemas` (comma separated; default: the user schemas and the policies and
@@ -390,13 +415,14 @@ what is new or changed is created or altered in dependency order, with the usual
 is dropped and set again around a type change). Renames are not detected (a rename is a drop and a create, as in Migra: review a
 diff that drops a table). It is used four ways: the **baseline** (the diff from an empty database), the **diff** of a branch (its
 base to its schema), the **three-way merge** of a push (`Merge3`: what the parent changed since the base, minus what the branch
-changed itself) and the **base** that moves with `Sync` (to where both sides agree) after a push or a merge. Properties tests
+changed itself) and the **base** that moves with `Sync` (to where both sides agree, for the objects it does not model too) after a push or a merge. Properties tests
 check: applying a plan to the source database makes it read like the target, for tables, columns, constraints, indexes, policies,
 functions, triggers, views, materialized views, types, sequences, partitions, generated columns, identity columns, grants,
 default privileges and comments (`schemadiff/integration_test.go`, a real Postgres).
 
 Not modeled, and named in the output instead of dropped: aggregates, operators, casts, rules, event triggers, publications, foreign
-tables and servers, range types, collations, extended statistics, inherited tables, column-level privileges. Objects a user creates
+tables and servers, range types, collations, extended statistics, inherited tables, column-level privileges (not the stock event
+triggers and Realtime publications of a project, which every project has). Objects a user creates
 *inside* a managed schema (a function in `auth`, a table in `storage`) are not read either; policies and triggers on the managed
 tables are. Known limits of a plan: it does not drop and recreate the dependents of an object it changes (a view over a column
 whose type changes makes the transaction fail and roll back, loudly), and a new enum value cannot be used by another statement of

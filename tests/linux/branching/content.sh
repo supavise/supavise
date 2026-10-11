@@ -19,7 +19,8 @@
 #     flow: the same shape reaches the parent, production's own drift is not reverted, the histories agree, a
 #     branch made from the merged parent and a reset of the merged branch both replay without creating a table
 #     twice, a second merge is a no-op, and a merge fails with a reason (and runs nothing) when the branch moved
-#     after the diff was recorded;
+#     after the diff was recorded; the row a tracked migration inserted reaches the parent after the diff (and
+#     the replays), and a recorded diff that a newer migration passed is ignored by the merge;
 #   - push takes the parent's untracked changes into a branch and keeps the branch's own;
 #   - Edge Functions are copied at create with their digest, version, update time and verify_jwt; secrets are the
 #     create body's alone; a push overwrites the branch's copy; a merge deploys the branch's new and changed
@@ -244,7 +245,8 @@ if cli and dash:
     ddl = "create table public.flow_{n} (id int primary key, name text not null default 'x')"
     call("POST", f"/v1/projects/{rc}/database/migrations", {"name": "flow_cli", "query": ddl.format(n="cli")})
     time.sleep(2)  # a version is the second it was made in: two branches must not make the same one
-    call("POST", f"/v1/projects/{rd}/database/migrations", {"name": "flow_dash", "query": ddl.format(n="dash")})
+    # (a row too: a schema diff holds the table and not the row, which must still reach the parent)
+    call("POST", f"/v1/projects/{rd}/database/migrations", {"name": "flow_dash", "query": ddl.format(n="dash") + "; insert into public.flow_dash (id) values (1)"})
     sql(rd, "create table public.flow_untracked (id int primary key, dash_id int references public.flow_dash (id)); alter table public.flow_untracked enable row level security")
     sql(PARENT, "create table public.parent_drift (id int)")  # production moved on outside migrations
 
@@ -275,6 +277,7 @@ if cli and dash:
     pt = tables(PARENT)
     check("flow_dash" in pt and "flow_untracked" in pt, f"the dashboard merge brought the tracked and the untracked table ({pt}; {final.get('supavise_detail')})")
     check("parent_drift" in pt and "parent_drift2" in pt, "production's drift was not reverted")
+    check(sql(PARENT, "select count(*) c from public.flow_dash")[0]["c"] == 1, "the row the tracked migration inserted reached the parent, after the diff")
     cols = lambda t: sql(PARENT, f"select column_name c, data_type d, column_default x from information_schema.columns where table_schema = 'public' and table_name = '{t}' order by ordinal_position")
     check(cols("flow_cli") == cols("flow_dash"), "the dashboard result has the shape the CLI flow gives")
     ph, bh = call("GET", f"/v1/projects/{PARENT}/database/migrations")[1], call("GET", f"/v1/projects/{rd}/database/migrations")[1]
@@ -285,10 +288,12 @@ if cli and dash:
     again_b = new_branch(f"replayed-{tag}")
     if again_b:
         check({"flow_cli", "flow_dash", "flow_untracked"} <= set(tables(again_b["project_ref"])), "a new branch replays the merged history without creating a table twice")
+        check(sql(again_b["project_ref"], "select count(*) c from public.flow_dash")[0]["c"] == 1, "and the covered migration's row once")
     # Resetting the merged branch replays its own history, covered rows included.
     code, run = act(dash["id"], "reset")
     wait_status(PARENT, dash["name"], "FUNCTIONS_DEPLOYED")
     check({"flow_dash", "flow_untracked"} <= set(tables(rd)), "a reset of the merged branch rebuilds its tables once")
+    check(sql(rd, "select count(*) c from public.flow_dash")[0]["c"] == 1, "and the covered migration's row once")
     code, diff2 = call("GET", f"/v1/branches/{dash['id']}/diff", raw=True)
     check(code == 200 and diff2 == "", f"nothing is left to merge ({diff2[:200]!r})")
     # Again: the same PUT and merge are a no-op.
@@ -311,6 +316,22 @@ if cli and dash:
         code, b = call("GET", f"/v1/projects/{PARENT}/branches/{late['name']}")
         check("refresh" in (b.get("supavise_detail") or ""), f"the reason is readable ({b.get('supavise_detail')})")
         check("late_one" not in tables(PARENT), "and nothing ran on the parent")
+
+    # A recording the branch moved past (an abandoned Merge click, then a migration) does not decide the merge.
+    time.sleep(2)
+    stale = new_branch(f"stale-{tag}")
+    if stale:
+        rs = stale["project_ref"]
+        call("POST", f"/v1/projects/{rs}/database/migrations", {"name": "stale_a", "query": "create table public.stale_a (id int primary key)"})
+        code, d = call("GET", f"/v1/branches/{stale['id']}/diff", raw=True)
+        call("PUT", f"/v1/projects/{rs}/database/migrations", {"name": "branch_merge_stale", "query": d})
+        call("POST", f"/v1/projects/{rs}/database/migrations", {"name": "stale_b", "query": "create table public.stale_b (id int primary key)"})
+        code, run = act(stale["id"], "merge")
+        got = wait_status(PARENT, stale["name"], "FUNCTIONS_DEPLOYED")
+        pt = tables(PARENT)
+        check("stale_a" in pt and "stale_b" in pt, f"a merge after a newer migration ignores the recorded diff and runs the migrations ({got.get('supavise_detail')})")
+        check("branch_merge_stale" not in {m.get("name") for m in call("GET", f"/v1/projects/{PARENT}/database/migrations")[1]},
+              "and the ignored recording stays out of the parent's history")
 
 # ==== 4. push brings the parent's untracked changes =========================================================
 pb = new_branch(f"push-{tag}")
