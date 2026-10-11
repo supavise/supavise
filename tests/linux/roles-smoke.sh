@@ -15,6 +15,10 @@
 #   Owners, the last Owner cannot be demoted or removed;
 # - the pinned Postgres creates supabase_read_only_user, the user of the read-only connection string
 #   the databases listing hands Studio;
+# - Database Webhooks: a Read-only member is refused "Enable webhooks", a Developer's call creates the
+#   supabase_functions schema and its role, a second call changes nothing, and a webhook that Studio
+#   creates (a trigger on supabase_functions.http_request through pg-meta) answers an insert with a
+#   request that a local HTTP server receives and a net._http_response row with its status;
 # - the MCP server (apply_migration, execute_sql) and, when SUPABASE_CLI is set, the Supabase CLI
 #   (secrets set) list as Read-only and are refused writes; an Owner's can;
 # - [mail] reaches supavise-gotrue@system: an invitation to a new address (GoTrue invite) and to an
@@ -29,12 +33,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TEARDOWN=0
 [[ ${1:-} == --teardown ]] && TEARDOWN=1
 WORK=$(mktemp -d)
-SMTP_PID=""
-trap 'rc=$?; [[ -n $SMTP_PID ]] && kill "$SMTP_PID" 2>/dev/null; collect_logs; [[ $TEARDOWN -eq 1 ]] && teardown; rm -rf "$WORK"; exit $rc' EXIT
+SMTP_PID="" HOOK_PID=""
+trap 'rc=$?; [[ -n $SMTP_PID ]] && kill "$SMTP_PID" 2>/dev/null; [[ -n $HOOK_PID ]] && kill "$HOOK_PID" 2>/dev/null; collect_logs; [[ $TEARDOWN -eq 1 ]] && teardown; rm -rf "$WORK"; exit $rc' EXIT
 
 # Ports away from anything the runner may listen on, as in settings-smoke.sh.
 P_SESSION=15432 P_TRANSACTION=16543 P_REALTIME=14000 P_STORAGE=15000 P_STORAGE_ADMIN=15001 P_PGMETA=18080 P_API=14001 P_STUDIO=13000
-P_SMTP=12526
+P_SMTP=12526 P_HOOK=12527
 PASSWORD=roles-correct-horse-battery
 ORG=default   # the claim keeps the organization the first project created
 
@@ -101,6 +105,23 @@ S(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
 python3 "$WORK/smtp.py" "$P_SMTP" "$WORK/mails.txt" &
 SMTP_PID=$!
+
+# The webhook target: answers 200 to anything and logs each request line, so the test sees that the
+# database's HTTP request arrived.
+cat >"$WORK/hook.py" <<'PY'
+import http.server, sys
+out = sys.argv[2]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n).decode(errors="replace")
+        open(out, "a").write(self.path + " " + body.replace("\n", " ") + "\n")
+        self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"ok")
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+python3 "$WORK/hook.py" "$P_HOOK" "$WORK/hooks.txt" &
+HOOK_PID=$!
 
 log "system init, fleet, one project"
 system_up
@@ -302,6 +323,47 @@ expect 403 "${PAT[ro]}" POST "$CFG/branches" '{"branch_name":"ro-data","with_dat
 # The list has the default branch (the project itself); nothing else may have been made.
 [[ $(body "${PAT[owner]}" GET "$CFG/branches" | json_get 'len([b for b in d if not b.get("is_default")])') == 0 ]] || fail "a refused branch with data was created"
 expect 403 "${PAT[dev]}" POST "/v1/projects" "{\"name\":\"nope\",\"organization_slug\":\"$ORG\",\"db_pass\":\"correct-horse-battery\"}"
+
+log "Database Webhooks: Enable creates the schema, a trigger fires a request, the response is recorded"
+[[ $(sql "select to_regnamespace('supabase_functions') is not null") == f ]] || fail "supabase_functions exists before webhooks were enabled"
+# Enabling needs the right to change triggers: refused for Read-only on both routes, before the database is touched.
+expect 403 "${PAT[ro]}" POST "$CFG/database/webhooks/enable"
+code=$(papi "${JWT[ro]}" POST "/platform/database/$REF/hook-enable")
+[[ $code == 403 ]] || fail "a read-only member enabled webhooks through the dashboard route: $code"
+[[ $(sql "select to_regnamespace('supabase_functions') is not null") == f ]] || fail "a refused call created supabase_functions"
+expect 201 "${PAT[dev]}" POST "$CFG/database/webhooks/enable"
+[[ $(sql "select to_regprocedure('supabase_functions.http_request()') is not null and exists (select 1 from pg_extension where extname = 'pg_net') and exists (select 1 from pg_roles where rolname = 'supabase_functions_admin')") == t ]] \
+  || fail "enabling webhooks left no supabase_functions.http_request(), pg_net or supabase_functions_admin"
+# Studio shows "enabled" when the schema is listed; the function runs as its owner, which is not postgres.
+[[ $(sql "select proowner::regrole::text || ' ' || prosecdef from pg_proc where oid = 'supabase_functions.http_request'::regproc") == 'supabase_functions_admin t' ]] \
+  || fail "http_request() is not a SECURITY DEFINER function of supabase_functions_admin"
+# The artifact's pg_net (0.12 and newer) keeps net.http_post executable by PUBLIC: the script must not have reverted that.
+[[ $(sql "select prosecdef from pg_proc where oid = 'net.http_post(text,jsonb,jsonb,jsonb,integer)'::regprocedure") == f ]] \
+  || fail "enabling webhooks made net.http_post SECURITY DEFINER"
+# A second call (another click, a retry) succeeds and changes nothing.
+before=$(sql "select count(*) from supabase_functions.migrations")
+code=$(papi "${JWT[dev]}" POST "/platform/database/$REF/hook-enable")
+[[ $code == 201 ]] || fail "enabling webhooks a second time answered $code"
+[[ $(sql "select count(*) from supabase_functions.migrations") == "$before" ]] || fail "a second enable added migration rows"
+# What Studio does next: create the webhook as a trigger through pg-meta (the postgres role), here on a table the Developer owns.
+expect 201 "${PAT[dev]}" POST "$CFG/database/query" '{"query":"create table public.hook_t (id int primary key, v text)"}'
+code=$(papi "${JWT[dev]}" POST "/platform/pg-meta/$REF/query" "{\"query\":\"create trigger roles_hook after insert on public.hook_t for each row execute function supabase_functions.http_request('http://127.0.0.1:$P_HOOK/roles-hook', 'POST', '{\\\"Content-Type\\\":\\\"application/json\\\"}', '{}', '5000')\"}")
+[[ $code == 200 || $code == 201 ]] || fail "creating a webhook trigger through pg-meta answered $code: $(head -c 300 "$WORK/last.json")"
+# Studio lists webhooks as the triggers whose function is in supabase_functions.
+[[ $(sql "select count(*) from pg_trigger t join pg_proc p on p.oid = t.tgfoid where not t.tgisinternal and t.tgname = 'roles_hook' and p.pronamespace = 'supabase_functions'::regnamespace") == 1 ]] \
+  || fail "the webhook trigger is not listed under supabase_functions"
+expect 201 "${PAT[dev]}" POST "$CFG/database/query" '{"query":"insert into public.hook_t values (1, '"'"'fires'"'"')"}'
+for i in $(seq 1 30); do
+  [[ $(sql "select count(*) from net._http_response where status_code = 200") -ge 1 ]] && break
+  sleep 1
+done
+[[ $(sql "select count(*) from net._http_response where status_code = 200") -ge 1 ]] \
+  || { sql "select id, status_code, error_msg from net._http_response" >&2; fail "the insert produced no net._http_response row with status 200"; }
+grep -q '^/roles-hook .*"record".*"fires"' "$WORK/hooks.txt" || { cat "$WORK/hooks.txt" >&2; fail "the webhook target did not receive the insert"; }
+[[ $(sql "select count(*) from supabase_functions.hooks where hook_name = 'roles_hook'") == 1 ]] || fail "supabase_functions.hooks has no row for the webhook"
+# Deleting the webhook is a DROP TRIGGER through pg-meta.
+code=$(papi "${JWT[dev]}" POST "/platform/pg-meta/$REF/query" '{"query":"drop trigger roles_hook on public.hook_t"}')
+[[ $code == 200 || $code == 201 ]] || fail "dropping the webhook trigger answered $code"
 
 log "Administrator: settings and members, never Owners"
 # An Administrator passes the permission check of a restore; the time is far outside any window, so
