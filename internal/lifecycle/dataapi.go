@@ -351,21 +351,6 @@ func (e *Engine) convergeLocked(ctx context.Context, p *registry.Project) error 
 	return nil
 }
 
-// DataAPIChoice returns the recorded default privileges of ref: PrivilegesGranted or
-// PrivilegesRevoked, and false when nothing is recorded (a project no pass has looked at, or a
-// registry without the table).
-func (e *Engine) DataAPIChoice(ctx context.Context, ref string) (registry.DefaultPrivileges, bool) {
-	store := registry.DataAPIOf(e.reg)
-	if store == nil {
-		return "", false
-	}
-	d, err := store.GetDataAPI(ctx, ref)
-	if err != nil {
-		return "", false
-	}
-	return d.DefaultPrivileges, true
-}
-
 // ParseExposedSchemas turns the list of data_api_exposed_schemas into the db_schema setting. A nil
 // list keeps the default; an empty list is the Data API off, which a node cannot do (see
 // DisabledDataAPISchema); the names are checked as the PostgREST settings check them. apiSchema
