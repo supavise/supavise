@@ -418,12 +418,13 @@ func TestPermissionsEndpointMatchesEnforcement(t *testing.T) {
 }
 
 // A hand-written route open to every signed-in user is one of a short list (the caller's own
-// account, the lists that filter themselves, an invitation by its token). Anything else, such as
+// account, the lists that filter themselves, an invitation by its token, the feature flags every
+// user gets alike). Anything else, such as
 // a route of a family added later, needs a rule: otherwise a user without a role could use it.
 func TestImplementedRoutesOpenToEveryUserAreAllowlisted(t *testing.T) {
 	// The OAuth endpoints of /v1 are the clients' own: authorize, token and revoke carry no session (they
 	// are authNone, so the rule never decides), and the project-claim stub is open like its siblings.
-	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/v1/oauth/)`)
+	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/platform/telemetry/feature-flags$|/v1/oauth/)`)
 	for key := range newFixture(t).srv.implemented() {
 		m, p, _ := strings.Cut(key, " ")
 		if n := routeNeed(m, p); n.kind == needAny && !open.MatchString(p) {
