@@ -42,7 +42,7 @@ const supabase = createClient('https://<ref>.api.<domain>', '<publishable key>')
 
 `<ref>` is the project ID, shown in the dashboard URL and in **Project Settings**. The URL is the only part that differs from supabase.com. Auth, REST, Realtime, Storage and Edge Functions all answer on it.
 
-To serve a project on your own hostname or a short `<name>.api.<domain>` address, use **Project Settings**, **Custom Domains**, or `supabase domains` (see the deploy guide's [custom domains](../deploy/README.md#custom-domains-and-vanity-subdomains)).
+To serve a project, or a branch, on your own hostname, use **Project Settings**, **General**, **Custom domains**. A short `<name>.api.<domain>` address (a vanity subdomain) has no page in the dashboard: set it with `supabase vanity-subdomains` or the Management API. See the deploy guide's [custom domains](../deploy/README.md#custom-domains-and-vanity-subdomains).
 
 ### New tables need a grant
 
@@ -118,7 +118,15 @@ supabase --profile ./supavise-profile.yaml branches create agent-task-42 --proje
 supabase --profile ./supavise-profile.yaml branches get agent-task-42 --project-ref <ref>
 ```
 
-`branches get` prints the branch's connection details. A branch with data needs the Owner or Administrator role; Developers create schema-only branches (leave out `--with-data`). A branch deletes itself after 7 days unless you mark it persistent.
+`branches get` prints the branch's connection details. A branch with data needs the Owner or Administrator role; Developers create schema-only branches (leave out `--with-data`). A branch has no lifetime by default, as on hosted: it stays until you delete it (`branches delete`, or **Delete branch** in the dashboard). An administrator can give branches a lifetime with `[branching] default_ttl`, and `branches create --ttl 6h` gives one branch a lifetime; a persistent branch never expires.
+
+A branch that nobody uses is paused to free its memory, 30 minutes after its last request or database connection by default (`[branching] idle_pause_after`; `off` disables it). The dashboard shows it as paused, and the next HTTP request or database connection starts it again: the request waits a few seconds, and a database client may need to connect again. A branch you paused yourself stays paused until you resume it, and persistent branches and your production project are never paused for idleness. On a cluster of more than one server nothing is paused this way.
+
+**Delete a branch you might want back.** `supabase branches delete --force=false` (or `DELETE /v1/branches/<id>?force=false`) pauses the branch and deletes it one hour later; **Restore** on the Branches page, or `POST /v1/branches/<id>/restore`, cancels the deletion and starts it. A branch that is paused for any reason has **Resume** on its page.
+
+**Give a branch its own hostname.** A branch is a project, so **Project Settings**, **General**, **Custom domains** works on a branch too: it claims, verifies and activates a hostname of the branch's own, and the CNAME points at the branch's `<branch ref>.api.<domain>`. A branch never inherits its parent's hostname, a reset keeps the branch's (the proxy answers 503 with `Retry-After` while the branch is rebuilt), and deleting the branch frees the hostname and its certificate. A vanity name (`supabase vanity-subdomains`) is cheaper for a preview: it needs no certificate of its own when the wildcard covers it. Orders for new certificates count against the server's limit of 25 in 7 days across all projects and branches. A branch with a hostname that has a lifetime raises `branch.expiring` and posts to its `notify_url` a day before it expires.
+
+**In a cluster.** A branch is homed on its parent's server. A branch with data is cloned from the parent's data on disk, so it can only be created or reset on the server that holds the parent: for a parent on another server the API answers 409 and names the server (create the branch without data, or move the project first). A failover of the server does not move branches, which have no replica.
 
 The same branch is one call to `POST /v1/projects/<ref>/branches` with `{"branch_name": "agent-task-42", "with_data": true}`. The Supabase MCP server's branch tools work when you start it with `--api-url https://api.<domain>` and without `--project-ref`.
 

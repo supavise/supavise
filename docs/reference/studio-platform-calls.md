@@ -141,6 +141,7 @@ These are the documented routes for which an empty stub is not enough: the page 
 | P1 | POST | `/platform/projects/{ref}/restore` | 200 `UnpauseProjectResponse_Output` |
 | P0 | GET | `/platform/projects/{ref}/settings` | 200 `ProjectSettingsResponse_Output` |
 | P0 | GET | `/platform/projects/{ref}/status` | 200 `{"status": "<project status>"}` (the spec documents no body; Studio reads `data.status`) |
+| P1 | GET | `/platform/projects/{ref}/pause/status` | 200 `PauseStatusResponse_Output`: `can_restore: true`, `max_days_till_restore_disabled: 365`, `remaining_days_till_restore_disabled: null` (Studio reads null as no expiry), `latest_downloadable_backup_id: null`, `last_paused_on` (the date the pause began, null while the project runs); see "Paused projects and branches" |
 | P1 | POST | `/platform/projects/{ref}/wake` | 201 `ProjectWakeResponse_Output` (requires `connection_string`, `connection_string_read_only`) |
 | P1 | GET | `/platform/storage/{ref}/buckets` | 200 array of `StorageBucketResponse_Output` |
 | P1 | POST | `/platform/storage/{ref}/buckets` | 201 no body |
@@ -207,6 +208,24 @@ The Branches page, the merge page (`/project/{ref}/merge`) and "View Logs" read 
 | P2 | PATCH | `/v1/branches/{id}` with `request_review` | `true` puts the branch on the merge-request list, `false` removes it (Studio toasts "Merge request closed"); after a merge Studio sends `false` itself when the run finishes under the parent ref, and the node clears the mark as well, so the CLI and MCP merges agree |
 | P1 | POST | `/v1/branches/{id}/merge`, `/push` | `201 {workflow_run_id}`; the page adds it to the query string, shows "Processing" while the run is running and offers "Close branch" when it succeeded. A refusal found while the run works (divergence) is a failed run, not an error status |
 | P1 | POST, PATCH | `/v1/projects/{ref}/branches`, `/v1/branches/{id}` of the default branch | the Production branch form (GitHub integration settings) creates the default branch with `is_default: true` and later patches `git_branch` and `branch_name`; both are accepted and the answer is the default branch with the Git branch stored |
+
+## Paused projects and branches
+
+A project, or a branch, with status `INACTIVE` renders `ProjectPausedState` instead of its pages. The page reads `GET /platform/projects/{ref}/pause/status` (only while the project is `INACTIVE`): with the generic stub the object came back with `can_restore: false`, and Studio then said the project "can no longer be restored" with no Resume button, so the handler (`internal/api/pause_status.go`) answers:
+
+| Field | Value | Why |
+|---|---|---|
+| `can_restore` | `true` | the page offers **Resume** (`POST /platform/projects/{ref}/restore`) whenever it is true; any project the engine accepts a resume for can be restored |
+| `max_days_till_restore_disabled` | `365` | hosted's window (one year); not used by the page when the next field is null |
+| `remaining_days_till_restore_disabled` | `null` | `ProjectPausedState.tsx` shows "You can resume this project from the dashboard" with no date for null; a node keeps a paused project's data until its owner deletes it |
+| `latest_downloadable_backup_id` | `null` | there is no archive download; the "Export your data" menu then says "No backups available for download", and the storage archive call is refused in `backups.go` |
+| `last_paused_on` | RFC 3339, the time the pause began (`supavise.project_pause.paused_at`; the last change of the project for one paused before that table existed) | |
+
+A branch is paused by its owner (Pause in the dashboard, `supabase branches pause`), by a scheduled deletion (`DELETE /v1/branches/{id}?force=false`: Studio enables **Restore** on the Branches page only when `preview_project_status` is `INACTIVE`), or by the node for idleness (`internal/branching/README.md`, "Idle pause"). Resume works for all three: `POST /platform/projects/{ref}/restore` resumes the project and, for a branch whose deletion is scheduled, cancels the deletion too. Only an idle pause also wakes on a request.
+
+Two related answers for a **branch ref**: `GET /v1/projects/{ref}` and `GET /v1/projects/{ref}/branches` answer `404`, as hosted does (the CLI reads the 404 and keeps the parent as the linked project); Studio reads a branch through `GET /platform/projects/{ref}` and lists its family from the parent. `DELETE /v1/projects/{ref}` and `DELETE /platform/projects/{ref}` on a branch go through the branch service, like `DELETE /v1/branches/{id}`.
+
+The Settings > General > Custom domains section renders for a project and for a branch (`project_settings:custom_domains` is not in the profile's `disabled_features`) unless `tls.mode` is `dns01`; its calls are `/v1/projects/{ref}/custom-hostname` and `.../initialize`, `.../reverify`, `.../activate`, and Studio's own `/api/check-cname`, answered by the proxy. Vanity subdomains have no Studio page.
 
 ## Advisors
 
