@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 #!/usr/bin/env bash
 # CI only: the action runs of branch operations on real clusters. Sourced by
 # tests/linux/branching-xfs.sh, which has built "$work/branching.test" and unpacked the artifacts
