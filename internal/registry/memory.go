@@ -50,6 +50,9 @@ type Memory struct {
 	// and defaultGit the Git branch each default branch tracks, by project ref.
 	branchRuns []*BranchRun
 	defaultGit map[string]string
+
+	// github is the GitHub integration's state (github_store_mem.go).
+	github *githubMem
 }
 
 func NewMemory() *Memory {
