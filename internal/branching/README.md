@@ -426,7 +426,7 @@ migration replay of a schema-only create or reset. What copies the parent's data
 or reset **with data** (a copy-on-write clone, or the parent's base backup restored on this server) is refused
 with 409 before anything exists when the parent is homed on another server, naming it and saying what to do
 (create the branch without data, or move the project here first: add a replica with `supavise replicas add`,
-then `supavise failover <ref>`). Failover leaves branches behind (`internal/failover/README.md`): a branch has
+then `supavise projects failover <ref>`). A reset **with data** of a branch whose own cluster is on another server than the parent's data (the parent or the leader moved after the branch was made) is refused the same way, before the old cluster is removed; a reset without data works. Failover leaves branches behind (`internal/failover/README.md`): a branch has
 no replica, so a server move does not move it, and a project move does not move the branches of the project.
 A branch homed on a server that is gone cannot be deleted until the server is back.
 
