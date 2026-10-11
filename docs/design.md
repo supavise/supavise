@@ -207,7 +207,7 @@ Nodes talk over one TCP port, `[node] peer_listen` (7443), with TLS 1.3 and the 
 | `GET`, `POST /peer/v1/join`, `POST .../join/confirm`, `POST .../rejoin` | joining and rejoining |
 | `POST /peer/v1/certs/renew`, `GET /peer/v1/certs` | node certificate renewal; the leader's certificate store, with an ETag |
 | `GET /peer/v1/config` | the cluster-scoped settings |
-| `POST /peer/v1/report` | observed state from a node to the leader |
+| `POST /peer/v1/report` | observed state from a node to the leader: replica instances, the health of its projects and their newest utilization sample |
 | `PUT`, `GET`, `DELETE /peer/v1/instances/{identifier}` and `POST .../{action}` | ensure, observe, remove and operate a replica instance |
 | `POST /peer/v1/projects/{ref}/plane/{method}`, `.../backup/{op}` | a lifecycle plane call or a backup operation for a project homed on the node |
 | `POST /peer/v1/fleet/refresh/{tenant}` | refresh a Supavisor tenant on a follower, after its standby replayed the change |
