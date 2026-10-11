@@ -14,12 +14,12 @@ const (
 	envAIEffort          = "SUPAVISE_AI_REASONING_EFFORT"
 )
 
-// studioAIEnv is the environment of Studio's unit for the [studio.ai] settings ai, or nil when no
+// StudioAIEnv is the environment of Studio's unit for the [studio.ai] settings ai, or nil when no
 // provider is configured, so that Studio answers "API key not set" instead of failing a request.
 // The key is read from api_key_file here, by the daemon: Studio's unit cannot read /etc/supavise,
 // and the key reaches it only through the unit's environment file (mode 0600). A section that does
 // not validate or a key file that cannot be read is an error and renders nothing.
-func studioAIEnv(ai config.StudioAI) (map[string]string, error) {
+func StudioAIEnv(ai config.StudioAI) (map[string]string, error) {
 	if !ai.Enabled() {
 		return nil, nil
 	}

@@ -57,7 +57,7 @@ func TestStudioAIEnv(t *testing.T) {
 			},
 		},
 	} {
-		got, err := studioAIEnv(tc.ai)
+		got, err := StudioAIEnv(tc.ai)
 		if err != nil {
 			t.Errorf("%s: %v", name, err)
 			continue
@@ -84,7 +84,7 @@ func TestStudioAIEnvRefusesWhatItCannotRender(t *testing.T) {
 		"a bad base URL":     {APIKeyFile: aiKeyFile(t, testAIKey), BaseURL: "gw.example.com"},
 		"a bad model":        {APIKeyFile: aiKeyFile(t, testAIKey), Model: "two words"},
 	} {
-		if env, err := studioAIEnv(ai); err == nil || env != nil {
+		if env, err := StudioAIEnv(ai); err == nil || env != nil {
 			t.Errorf("%s: env %v, error %v", name, env, err)
 		}
 	}

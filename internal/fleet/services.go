@@ -101,7 +101,7 @@ func (m *Manager) spec(svc string, c *creds, follower bool) (units.Spec, error) 
 		s.Env = studioEnv(cfg, c.dashboardSSO)
 		// A provider that cannot be rendered (an unreadable key file) must not keep the dashboard
 		// down: Studio starts without AI, which it then reports truthfully, and the log says why.
-		ai, err := studioAIEnv(m.studioAI())
+		ai, err := StudioAIEnv(m.studioAI())
 		if err != nil {
 			m.log.Warn("Studio starts without its AI provider", "error", err)
 		}
