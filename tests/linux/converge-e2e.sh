@@ -81,14 +81,17 @@ else
 fi
 
 # ---- the two binaries ------------------------------------------------------------------------
-# PREV is the checkout as origin/main last had it: a node that main installed is what a v0.1.x node
-# is. NEW is this checkout.
+# PREV is the checkout as origin/main last had it, with this checkout's pins: a node that main
+# installed is what a v0.1.x node is, and a branch that bumps a service must not move it in the
+# upgrade below (the rollback puts back the pins of NEW, not the node's). NEW is this checkout.
 PREV=${SUPAVISE_BIN_PREV:-}
 if [[ -z $PREV ]]; then
   command -v go >/dev/null || fail "no SUPAVISE_BIN_PREV and no go toolchain"
   git fetch --no-tags origin main 2>/dev/null || true
   base=$(git merge-base HEAD FETCH_HEAD 2>/dev/null || git rev-parse HEAD)
   git worktree add --detach "$WORK/prev-tree" "$base" >/dev/null
+  # The previous release pins what this checkout pins (see the converge-e2e job in linux.yml).
+  cp internal/versions/versions.yaml "$WORK/prev-tree/internal/versions/versions.yaml"
   PREV=$WORK/supavise-prev
   (cd "$WORK/prev-tree" && CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=v0.1.1" -o "$PREV" ./cmd/supavise)
   git worktree remove --force "$WORK/prev-tree"

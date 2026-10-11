@@ -7,9 +7,11 @@
 #          pins, as v0.0.1. A main that moved on without this checkout would render the units
 #          differently and restart every project at the first start of the new daemon, which is a
 #          fact about main and not what the test is about.
-#   v2     this checkout, as v0.0.2: the release the node is upgraded to
-#   v4     this checkout, as v0.0.4, pinning a PostgREST release whose launcher the test makes exit
-#   v5     this checkout, as v0.0.5, pinning a newer GoTrue release
+#   v2     this checkout, as v0.0.2: the release the node is upgraded to. Its GoTrue pin is MID_AUTH,
+#          not the checkout's, so that v5 has a newer GoTrue release to move to however new the
+#          checkout's pin is; every other pin is the checkout's
+#   v4     v2 as v0.0.4, pinning a PostgREST release whose launcher the test makes exit
+#   v5     this checkout, as v0.0.5, with the checkout's own GoTrue pin: the newer GoTrue release
 #   v6     this checkout, as v0.0.6, with one PostgREST setting (PGRST_DB_POOL) rendered differently
 #          and the pins of v2: a release that moves no service and still restarts every project's PostgREST
 #   v7     this checkout, as v0.0.10, pinning the GoTrue release of v5 and rendering the PostgreSQL units of
@@ -35,7 +37,15 @@ cd "$here"
 
 OLD_AUTH=auth-v2.195.0-r0 OLD_REST=postgrest-v16.2-r0 OLD_META=pgmeta-v0.99.0-r0 OLD_STORAGE=storage-v1.79.35-r0
 BAD_REST=postgrest-v99.0.0-r0
-NEWER_AUTH=auth-v2.196.0-r0
+# MID_AUTH is the GoTrue release v2 pins (v4, v6 and v8 too): a real slim-services release between OLD_AUTH
+# and the pin of this checkout. NEWER_AUTH is the pin of this checkout, which v5 pins as the "newer" release,
+# so a bump of the GoTrue pin needs no change here. If the pin ever goes back to MID_AUTH or older, pick another release between OLD_AUTH and the pin.
+MID_AUTH=auth-v2.196.0-r0
+NEWER_AUTH=$(awk '/^  auth:/{print $2}' internal/versions/versions.yaml)
+[[ $NEWER_AUTH == auth-v* && $NEWER_AUTH != "$MID_AUTH" && $(printf '%s\n%s\n' "$MID_AUTH" "$NEWER_AUTH" | sort -V | tail -n 1) == "$NEWER_AUTH" ]] || {
+  echo "the GoTrue pin of this checkout ($NEWER_AUTH) must be newer than MID_AUTH ($MID_AUTH): pick a MID_AUTH between $OLD_AUTH and the pin" >&2
+  exit 1
+}
 
 # pins SRC DEST name=tag...: DEST is SRC with these artifact pins.
 pins() {
@@ -75,18 +85,19 @@ build "$work/prev" v0.0.1 "$out/prev"
 
 # This checkout, three times: as it is, and with the two pins the failure and rollback cases need.
 git worktree add --detach "$work/this" HEAD >/dev/null
-cp internal/versions/versions.yaml "$out/v2.versions.yaml"
+pins internal/versions/versions.yaml "$out/v2.versions.yaml" "auth=$MID_AUTH"
+cp "$out/v2.versions.yaml" "$work/this/internal/versions/versions.yaml"
 build "$work/this" v0.0.2 "$out/v2"
-pins internal/versions/versions.yaml "$out/v4.versions.yaml" "postgrest=$BAD_REST"
+pins "$out/v2.versions.yaml" "$out/v4.versions.yaml" "postgrest=$BAD_REST"
 cp "$out/v4.versions.yaml" "$work/this/internal/versions/versions.yaml"
 build "$work/this" v0.0.4 "$out/v4"
 pins internal/versions/versions.yaml "$out/v5.versions.yaml" "auth=$NEWER_AUTH"
 cp "$out/v5.versions.yaml" "$work/this/internal/versions/versions.yaml"
 build "$work/this" v0.0.5 "$out/v5"
 
-# v6: the pins of this checkout, and a PostgREST environment variable the units render differently.
-cp internal/versions/versions.yaml "$work/this/internal/versions/versions.yaml"
-cp internal/versions/versions.yaml "$out/v6.versions.yaml"
+# v6: the pins of v2, and a PostgREST environment variable the units render differently.
+cp "$out/v2.versions.yaml" "$work/this/internal/versions/versions.yaml"
+cp "$out/v2.versions.yaml" "$out/v6.versions.yaml"
 python3 - "$work/this/internal/lifecycle/env.go" <<'PY'
 import re, sys
 path = sys.argv[1]
@@ -114,10 +125,10 @@ open(path, "w").write(s)
 PY
 build "$work/this" v0.0.10 "$out/v7"
 
-# v8: this checkout as it is.
+# v8: this checkout with the pins of v2.
 git -C "$work/this" checkout -- internal/lifecycle/classes.go
-cp internal/versions/versions.yaml "$work/this/internal/versions/versions.yaml"
-cp internal/versions/versions.yaml "$out/v8.versions.yaml"
+cp "$out/v2.versions.yaml" "$work/this/internal/versions/versions.yaml"
+cp "$out/v2.versions.yaml" "$out/v8.versions.yaml"
 build "$work/this" v0.0.11 "$out/v8"
 
 go build -o "$out/releasetool" ./deploy/releasetool

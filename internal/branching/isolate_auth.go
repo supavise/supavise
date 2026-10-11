@@ -19,7 +19,7 @@ import (
 // loses every row that is a bearer secret of the parent's GoTrue.
 //
 // The two lists below cover the auth schema of the GoTrue release pinned in internal/versions/versions.yaml
-// (auth-v2.195.0). A table in neither list is reported in the isolation event
+// (auth-v2.197.0). A table in neither list is reported in the isolation event
 // (auth_tables_not_reviewed), and the integration test fails on it, so a GoTrue upgrade that adds
 // a table gets looked at.
 
@@ -42,9 +42,17 @@ var authWipedTables = []string{
 // and SSO configuration. Nothing in them is a session of the parent's GoTrue, but they are
 // production data: password hashes, TOTP secrets, and the client secrets of third-party identity
 // providers stay in the branch (README, "What a branch with data can and cannot reach").
+//
+// The recovery codes of a user (mfa_recovery_code_sets, mfa_recovery_codes) stay with the MFA
+// factor they belong to, so a user who can sign in to the branch with a second factor can use a
+// recovery code there too: GoTrue stores only argon2id hashes of them, as it does for passwords.
+// The SCIM tables stay with the SSO provider they belong to: scim_users is the provisioned
+// accounts, and scim_tokens holds SHA-256 digests of 160-bit bearer tokens, which cannot be
+// turned back into a token.
 var authKeptTables = []string{
 	"audit_log_entries", "custom_oauth_providers", "identities", "instances", "mfa_factors",
-	"oauth_clients", "oauth_consents", "saml_providers", "schema_migrations", "sso_domains",
+	"mfa_recovery_code_sets", "mfa_recovery_codes", "oauth_clients", "oauth_consents",
+	"saml_providers", "schema_migrations", "scim_tokens", "scim_users", "sso_domains",
 	"sso_providers", "users", "webauthn_credentials",
 }
 
