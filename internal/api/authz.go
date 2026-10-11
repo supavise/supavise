@@ -197,6 +197,9 @@ var routeRules = []routeRule{
 	rule("W", "/platform/organizations/{slug}/members/**", nSelf),
 	rule("W", "/v2/organizations/{slug}/members/**", nSelf),
 	rule("R", "/platform/organizations/{slug}/members/**", chk(members.ActRead, O)),
+	// The organization's audit log: Studio's page checks read on notifications, which every role that
+	// belongs to the organization holds. The profile's own log is open to its owner (profile/**).
+	rule("R", "/platform/organizations/{slug}/audit", chk(members.ActRead, "notifications")),
 	rule("DELETE", "/platform/organizations/{slug}", chk(members.ActDelete, O)),
 	rule("W", "/platform/organizations/{slug}", chk(members.ActUpdate, O)),
 	rule("R", "/platform/organizations/{slug}/billing/**", chk(members.ActBillingRead, "stripe.subscriptions")),
