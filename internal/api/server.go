@@ -511,6 +511,7 @@ func (s *Server) implemented() map[string]route {
 	s.routesInfraMonitoring(add)
 	s.routesFailover(add)
 	s.routesJWTSecret(add)
+	s.routesPgsodium(add)
 	// The OAuth authorization server and the organization's OAuth Apps. Both are registered whether
 	// or not [api] disable_oauth is set; their handlers answer 404 when it is (oauthRoutes).
 	s.routesOAuth(add)
