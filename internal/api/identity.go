@@ -320,10 +320,15 @@ func (s *Server) platformUpdateOrg(w http.ResponseWriter, r *http.Request) error
 	if err := decode(r, &in); err != nil {
 		return err
 	}
+	// upd is what the registry gets. Its tags stay nil unless the body names them: the registry then
+	// leaves the saved tags alone, so a rename cannot write back the tags this handler read before
+	// another Owner changed them.
+	upd := *o
+	upd.OptInTags = nil
 	changed := false
 	if in.Name != nil {
 		if n := strings.TrimSpace(*in.Name); n != "" {
-			o.Name, changed = n, true
+			upd.Name, changed = n, true
 		}
 	}
 	if in.OptInTags != nil {
@@ -331,11 +336,17 @@ func (s *Server) platformUpdateOrg(w http.ResponseWriter, r *http.Request) error
 		if err != nil {
 			return err
 		}
-		o.OptInTags, changed = tags, true
+		upd.OptInTags, changed = tags, true
 	}
 	if changed {
-		if err := s.reg.UpdateOrganization(r.Context(), o); err != nil {
+		if err := s.reg.UpdateOrganization(r.Context(), &upd); err != nil {
 			return mapErr(err)
+		}
+		o.Name = upd.Name
+		if upd.OptInTags != nil {
+			o.OptInTags = upd.OptInTags
+		} else if fresh, err := s.reg.GetOrganizationByID(r.Context(), o.ID); err == nil {
+			o.OptInTags = fresh.OptInTags // answer with what is saved, not with what was read first
 		}
 	}
 	resp := base("PATCH /platform/organizations/{slug}")
