@@ -25,9 +25,10 @@ log() { printf '%s cli: %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 bad() { log "FAIL: $*"; FAILS=$((FAILS + 1)); }
 
 # cli ARGS...: the CLI in the project directory with the node's profile and the token in the
-# environment (never in argv). The keyring and telemetry are off; there is no terminal.
+# environment (never in argv). The keyring and telemetry are off; there is no terminal. The CLI uses
+# SUPABASE_DB_PASSWORD as given, so a step on a branch sets CLI_DBPASS to the branch's own password.
 cli() {
-  (cd "$PROJ" && env HOME="$WORK/cli-home" SUPABASE_ACCESS_TOKEN="$PAT" SUPABASE_DB_PASSWORD="$DBPASS" \
+  (cd "$PROJ" && env HOME="$WORK/cli-home" SUPABASE_ACCESS_TOKEN="$PAT" SUPABASE_DB_PASSWORD="${CLI_DBPASS:-$DBPASS}" \
     SUPABASE_NO_KEYRING=1 DO_NOT_TRACK=1 SUPABASE_DISABLE_UPDATE_CHECK=1 \
     "$SUPABASE_CLI" --profile "$PROFILE" "$@" </dev/null)
 }
@@ -259,6 +260,9 @@ if step branches-create branches create "$BR" --project-ref "$REF" && branch_rea
 
   # Linking a branch by NAME: the branch's project becomes the linked ref, the parent stays cached (GET /v1/projects/{branch}
   # answers 404, which the CLI takes as "this is a branch"), and `branches` still works without --project-ref.
+  # A branch has a database password of its own (the parent's does not open it): link and db push use it.
+  CLI_DBPASS=$(mapi GET "/v1/branches/$BID" | jpy 'd["db_pass"]' 2>/dev/null || true)
+  [[ -n $CLI_DBPASS && $CLI_DBPASS != None ]] || bad "GET /v1/branches/<id> returned no db_pass for the branch"
   step link-branch link "$BR" --yes
   [[ $(cat "$PROJ/supabase/.temp/project-ref" 2>/dev/null) == "$BREF" ]] || bad "link <branch> did not record the branch's project ref"
   cached=$(cat "$PROJ/supabase/.temp/linked-project.json" 2>/dev/null || true)
@@ -276,6 +280,7 @@ if step branches-create branches create "$BR" --project-ref "$REF" && branch_rea
     onparent=$(query "select to_regclass('public.conf_branch_only') is not null as present")
     [[ $onparent == *false* ]] || bad "db push to the branch reached the parent: $onparent"
   fi
+  unset CLI_DBPASS
 
   # functions deploy, secrets set and config push with a [remotes] block, each with the branch's own ref
   BSLUG=cliconfbr
