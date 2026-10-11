@@ -64,8 +64,9 @@ func TestDayBucketsAreUTCDaysSummedFromHours(t *testing.T) {
 func TestRingsForgetWhatIsOlderThanTheirWindow(t *testing.T) {
 	c := New()
 	c.Add("p", Rest, t0)
-	// 180 minutes later the minute slot of t0 is reused by a newer minute.
-	later := t0.Add(180 * time.Minute)
+	// 181 minutes later the minute slot of t0 is reused by a newer minute (the ring holds the last
+	// 3 hours and the minute in progress, which are 181 minutes).
+	later := t0.Add(181 * time.Minute)
 	c.Add("p", Auth, later)
 	m := c.Series("p", t0, t0, Minute)
 	if m[0].Counts.Total() != 0 {
@@ -85,6 +86,27 @@ func TestRingsForgetWhatIsOlderThanTheirWindow(t *testing.T) {
 	c.Add("p", Realtime, t0.Add(200*time.Hour))
 	if got := c.Series("p", t0, t0, Hour)[0].Counts.Total(); got != 0 {
 		t.Errorf("an hour 200 hours old still counts %d", got)
+	}
+}
+
+// A 3hr range, from now minus three hours to now, is 181 minute buckets. The oldest must keep its
+// count and must not share a slot with the minute in progress.
+func TestThreeHourRangeKeepsItsOldestMinute(t *testing.T) {
+	c := New()
+	now := t0.Add(30*time.Minute + 20*time.Second)
+	c.Add("p", Rest, now.Add(-3*time.Hour)) // the same minute as the oldest bucket
+	c.Add("p", Auth, now.Add(-3*time.Hour+time.Minute))
+	c.Add("p", Storage, now)
+	got := c.Series("p", now.Add(-3*time.Hour), now, Minute)
+	if len(got) != 181 {
+		t.Fatalf("buckets = %d, want 181", len(got))
+	}
+	if got[0].Counts != (Counts{Rest: 1}) || got[1].Counts != (Counts{Auth: 1}) || got[180].Counts != (Counts{Storage: 1}) {
+		t.Errorf("oldest, second and newest buckets = %v, %v, %v; want rest 1, auth 1, storage 1", got[0].Counts, got[1].Counts, got[180].Counts)
+	}
+	// One minute on, the oldest bucket of the next range is the old second one, and the first count is gone.
+	if next := c.Series("p", now.Add(-3*time.Hour+time.Minute), now.Add(time.Minute), Minute); next[0].Counts != (Counts{Auth: 1}) {
+		t.Errorf("a minute later the oldest bucket = %v, want auth 1", next[0].Counts)
 	}
 }
 
