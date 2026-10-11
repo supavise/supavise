@@ -152,17 +152,29 @@ func (s *Server) running(ctx context.Context, ref string) (*registry.Project, er
 	}
 	switch p.Status {
 	case registry.StatusActiveHealthy, registry.StatusActiveUnhealthy:
+		s.markUsed(p.Ref)
 		return p, nil
 	case registry.StatusInactive:
 		// A branch the node paused for idleness wakes for the call, like it does for a request to its API: an
 		// agent that runs SQL, applies a migration or deploys to a branch it left alone should not have to
 		// resume it first. One the owner paused is not woken.
 		if np, ok := s.wakeIdleBranch(ctx, p); ok {
+			s.markUsed(np.Ref)
 			return np, nil
 		}
 		return nil, errf(http.StatusConflict, "Project is paused; restore it first")
 	default:
 		return nil, errf(http.StatusServiceUnavailable, "Project is not ready (status %s)", p.Status)
+	}
+}
+
+// markUsed tells the idle pause of branches that a Management API call is working on the project's database
+// (Studio's SQL and table editors, MCP's execute_sql and apply_migration, a migration pushed by the CLI): a
+// session that opens, runs and closes within one call leaves nothing in pg_stat_activity for the sweep to
+// find. It is not counted as a request to the project's API.
+func (s *Server) markUsed(ref string) {
+	if s.requests != nil {
+		s.requests.Touch(ref, s.now())
 	}
 }
 

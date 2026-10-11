@@ -221,6 +221,35 @@ func TestLastIsTheLatestCountToTheNanosecond(t *testing.T) {
 	}
 }
 
+func TestTouchMovesLastWithoutCounting(t *testing.T) {
+	c := New()
+	t0 := time.Unix(1_700_000_000, 0)
+	c.Touch("p", t0)
+	if got, ok := c.Last("p"); !ok || !got.Equal(t0) {
+		t.Fatalf("last after a touch = %v, %v", got, ok)
+	}
+	c.Touch("p", t0.Add(-time.Second)) // late: does not move it back
+	if got, _ := c.Last("p"); !got.Equal(t0) {
+		t.Fatalf("a late touch moved last to %v", got)
+	}
+	c.Add("p", Rest, t0.Add(time.Minute))
+	c.Touch("p", t0.Add(2*time.Minute))
+	if got, _ := c.Last("p"); !got.Equal(t0.Add(2 * time.Minute)) {
+		t.Fatalf("last = %v, want the latest of the touch and the count", got)
+	}
+	if n := c.Series("p", t0, t0.Add(3*time.Minute), Minute); sumBuckets(n) != 1 {
+		t.Fatalf("a touch is counted as a request: %v", n)
+	}
+}
+
+func sumBuckets(bs []Bucket) uint64 {
+	var n uint64
+	for _, b := range bs {
+		n += b.Counts.Total()
+	}
+	return n
+}
+
 func TestActiveCountsRequestsStillBeingServed(t *testing.T) {
 	c := New()
 	if c.Active("p") != 0 {

@@ -300,6 +300,24 @@ func (c *Counter) Last(ref string) (t time.Time, ok bool) {
 	return time.Unix(0, ns), true
 }
 
+// Touch records that ref was used at t without counting a request: a Management API call that ran SQL
+// on a project is use the idle pause of branches should see, and is not a request to the project's API,
+// so it stays out of the dashboard's request charts. Last reports the latest of the Touch and Add times.
+// It is safe for concurrent use.
+func (c *Counter) Touch(ref string, t time.Time) {
+	v, ok := c.projects.Load(ref)
+	if !ok {
+		v, _ = c.projects.LoadOrStore(ref, &project{})
+	}
+	p := v.(*project)
+	for ns := t.UnixNano(); ; {
+		cur := p.lastAt.Load()
+		if cur >= ns || p.lastAt.CompareAndSwap(cur, ns) {
+			return
+		}
+	}
+}
+
 // Begin marks a request to ref as being served and returns the function that marks it done. A
 // WebSocket or a long poll is a request for as long as it lasts, which Active reports: a branch with
 // a client connected is not idle however long ago the client asked.
