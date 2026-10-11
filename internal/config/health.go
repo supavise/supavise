@@ -17,6 +17,12 @@ type Health struct {
 	// GiB is low too, whatever the percentage (a 2 TB volume at 10% still has 200 GB; a 40 GB
 	// one at 10% has 4). 0 means 5.
 	DiskLowGB int `toml:"disk_low_gb"`
+	// MemoryLowPercent is the share of the node's memory that is available (MemAvailable in
+	// /proc/meminfo: free memory plus the page cache and slab the kernel can drop) below which a
+	// memory_low alert is raised. Half of it is critical. The node can run out of memory while
+	// every project is under its own limit, because [compute] overcommit lets the limits add up to
+	// more than the memory. 0 means 10.
+	MemoryLowPercent int `toml:"memory_low_percent"`
 	// BackupStaleHours is how old a project's newest completed base backup may be before it
 	// counts as stale. 0 means the period of [backup] base_backup_on_calendar plus 12 hours
 	// (36 for the default nightly timer): one missed run is a warning, not a flap. Set it for a
@@ -34,10 +40,19 @@ type Health struct {
 const (
 	defaultDiskLowPercent = 10
 	defaultDiskLowGB      = 5
+	defaultMemoryLow      = 10
 	backupStaleSlack      = 12 * time.Hour
 	defaultCertWarnDays   = 14
 	defaultHealthCache    = 20 * time.Second
 )
+
+// MemoryLow returns the percentage of available memory below which the node's memory is low.
+func (h Health) MemoryLow() int {
+	if h.MemoryLowPercent <= 0 {
+		return defaultMemoryLow
+	}
+	return h.MemoryLowPercent
+}
 
 // DiskLow returns the warning thresholds: free percent and free bytes.
 func (h Health) DiskLow() (percent int, bytes int64) {
@@ -109,6 +124,9 @@ func (h Health) Cache() time.Duration {
 func (h Health) validate() error {
 	if h.DiskLowPercent < 0 || h.DiskLowPercent > 90 {
 		return fmt.Errorf("config: health.disk_low_percent must be between 0 and 90, not %d", h.DiskLowPercent)
+	}
+	if h.MemoryLowPercent < 0 || h.MemoryLowPercent > 90 {
+		return fmt.Errorf("config: health.memory_low_percent must be between 0 and 90, not %d", h.MemoryLowPercent)
 	}
 	for name, v := range map[string]int{
 		"disk_low_gb": h.DiskLowGB, "backup_stale_hours": h.BackupStaleHours,
