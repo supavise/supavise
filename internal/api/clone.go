@@ -41,6 +41,8 @@ type ProjectCloner interface {
 	RestoreWith(ctx context.Context, ref string, target time.Time, newRef string, opts backup.RestoreOptions) (*registry.Project, error)
 }
 
+var _ ProjectCloner = (*backup.Service)(nil)
+
 // Events of the source project that carry a clone.
 const (
 	eventCloneRequested = "clone.requested"
