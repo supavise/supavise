@@ -128,7 +128,11 @@ HOSTED_SECRET=$(python3 -c 'import base64,secrets; print(base64.b64encode(secret
 printf '%s\n' "$HOSTED_SECRET" >"$WORK/hosted-secret.txt"
 chmod 0644 "$WORK/hosted-secret.txt"
 OLD_REF=$(rand_ref)
-supavise projects create --name hosted --size micro --ref "$OLD_REF" --jwt-secret-file "$WORK/hosted-secret.txt" --json >/dev/null || fail "creating the project that plays the hosted one"
+# --expose-new-tables keeps the default grants on new tables (a plain create revokes them): the project that plays the hosted
+# one models a hosted project from before that change, whose default privileges give anon, authenticated and service_role
+# everything on a table that postgres creates. The seed and the grant checks below rely on that. The guide's own create step
+# (below) is plain, so the new project has the node's revoked defaults, which is the real migration case.
+supavise projects create --name hosted --size micro --ref "$OLD_REF" --jwt-secret-file "$WORK/hosted-secret.txt" --expose-new-tables --json >/dev/null || fail "creating the project that plays the hosted one"
 supavise fleet ensure-tenant "$OLD_REF" || fail "ensure-tenant"
 host_alias "$OLD_REF"
 OLD_PW=$(project_field "$OLD_REF" 'd["keys"]["db_password"]' --show-keys)
@@ -168,7 +172,7 @@ alter table public.todos enable row level security;
 create policy "owners read" on public.todos for select to authenticated using (owner = auth.uid());
 create policy "anon reads done" on public.todos for select to anon using (done);
 grant usage on schema public to anon, authenticated, app_user;
--- The default privileges gave anon and authenticated everything on todos; tighten that, as a hosted project may.
+-- The default privileges (kept by --expose-new-tables above) gave anon and authenticated everything on todos; tighten that, as a hosted project may.
 revoke all on public.todos from anon, authenticated;
 grant select on public.todos to anon, app_user;
 grant select, insert, update, delete on public.todos to authenticated;
@@ -238,7 +242,12 @@ guide() {
   block=$(guide_block "$name") || fail "docs/guide.md has no block for $name"
   GUIDE_OUT=$WORK/guide-$name-$(basename "$dir").out
   log "guide: $name"
-  (cd "$dir" && bash -euo pipefail -c "$block") >"$GUIDE_OUT" 2>&1 || { tail -60 "$GUIDE_OUT" >&2; fail "the guide's $name commands failed"; }
+  (cd "$dir" && bash -euo pipefail -c "$block") >"$GUIDE_OUT" 2>&1 || {
+    tail -60 "$GUIDE_OUT" >&2
+    # psql names the line of roles.sql it stopped on: show the start of the file as the restore saw it.
+    [[ $name == restore && -f $dir/roles.sql ]] && { echo "--- $dir/roles.sql, first 40 lines ---" >&2; head -40 "$dir/roles.sql" | cat -n >&2; }
+    fail "the guide's $name commands failed"
+  }
 }
 
 guide jwt-secret
@@ -296,6 +305,9 @@ grep -q 'CREATE TABLE IF NOT EXISTS "public"."todos"' "$WORK/hosted/schema.sql" 
 grep -q 'COPY "public"."todos"' "$WORK/hosted/data.sql" || fail "the data dump has no COPY of todos (--use-copy)"
 grep -q 'COPY "auth"."users"' "$WORK/hosted/data.sql" || fail "the data dump has no Auth users"
 grep -q 'CREATE ROLE "app_user"' "$WORK/hosted/roles.sql" || fail "the role dump has no app_user"
+# The role dump lists privileges on configuration parameters (log_min_messages, held by Supabase's own roles), which the
+# postgres role cannot grant; the guide's restore comments those lines out. Show them, so that a run says what it skipped.
+grep -n ' ON PARAMETER ' "$WORK/hosted/roles.sql" >&2 || log "note: the role dump has no privileges on configuration parameters"
 guide restore
 
 nq() { psql "$NEW_DB_URL" -Atc "$1"; }
