@@ -246,9 +246,15 @@ func (s *Server) serveProject(w http.ResponseWriter, r *http.Request, m hostMatc
 		}
 	}
 
-	if !servable(p.status) {
-		w.Header().Set("Retry-After", "5")
-		writeJSON(w, http.StatusServiceUnavailable, "Project is not active ("+string(p.status)+")")
+	switch {
+	case s.idleWaker != nil && p.sleeping():
+		// A branch the node paused because nothing used it wakes for this request, which waits for it.
+		if !s.wake(w, r, p) {
+			return
+		}
+	case !ready(p.status):
+		w.Header().Set("Retry-After", retryAfter(p.status))
+		writeJSON(w, http.StatusServiceUnavailable, notReadyMessage(p.status))
 		return
 	}
 	if rt.svc == svcFunctions && !s.opts.FunctionsEnabled {
@@ -347,6 +353,11 @@ func (s *Server) serveProject(w http.ResponseWriter, r *http.Request, m hostMatc
 			s.log.Warn("proxy: closed a Realtime connection that carried a legacy API key", "ref", p.ref, "reason", reason)
 		}
 	}
+	if s.opts.Stats != nil {
+		// A WebSocket or a long poll is activity for as long as it lasts: the idle pause of branches
+		// does not stop a project that has a client connected (reqstats.Counter.Active).
+		defer s.opts.Stats.Begin(p.ref)()
+	}
 	s.forward(w, r, tg)
 	return route
 }
@@ -358,6 +369,47 @@ func (s *Server) serveProject(w http.ResponseWriter, r *http.Request, m hostMatc
 // Realtime side that keeps the credentials it connected with and that the proxy cannot inspect.
 func isRealtimeWebSocket(r *http.Request, cleaned string, trailingSlash bool) bool {
 	return cleaned == "/realtime/v1/websocket" && !trailingSlash && isWebSocketHandshake(r) && r.ContentLength == 0
+}
+
+// ready reports whether a request may be forwarded to a project in status st: it is servable and
+// not still coming up. A project that is coming up (a create, a resume, the recreation of a reset
+// branch) has no listening upstream yet, so a request would be dialed into nothing and answered 502.
+func ready(st registry.Status) bool { return servable(st) && st != registry.StatusComingUp }
+
+// sleeping reports whether the project is paused for idleness (or waking up from it) and so is woken
+// by a request.
+func (p project) sleeping() bool {
+	return p.idle && (p.status == registry.StatusInactive || p.status == registry.StatusComingUp)
+}
+
+func retryAfter(st registry.Status) string {
+	if st == registry.StatusComingUp {
+		return "2"
+	}
+	return "5"
+}
+
+func notReadyMessage(st registry.Status) string {
+	if st == registry.StatusComingUp {
+		return "Project is starting, retry shortly"
+	}
+	return "Project is not active (" + string(st) + ")"
+}
+
+// wake holds r until the idle project is running and reports whether it is; when it is not, the
+// request has been answered (503 with Retry-After).
+func (s *Server) wake(w http.ResponseWriter, r *http.Request, p project) bool {
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.Branching.IdleWakeTimeout())
+	defer cancel()
+	if err := s.idleWaker.Wake(ctx, p.ref); err != nil {
+		if r.Context().Err() == nil {
+			s.log.Warn("proxy: could not wake an idle project", "ref", p.ref, "err", err)
+		}
+		w.Header().Set("Retry-After", "5")
+		writeJSON(w, http.StatusServiceUnavailable, "Project is waking up, retry shortly")
+		return false
+	}
+	return true
 }
 
 // servable reports whether a project in status st may receive traffic.

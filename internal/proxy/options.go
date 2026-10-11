@@ -28,6 +28,16 @@ type Waker interface {
 	Start(ctx context.Context, ref string) error
 }
 
+// IdleWaker starts a project the node paused because nothing used it (a branch past
+// [branching] idle_pause_after). The proxy calls Wake for a request that reaches such a project,
+// after the request has been authorized and before it is forwarded, and holds the request until Wake
+// returns. Wake must return when ctx ends, with the cause; the wake itself goes on without the
+// request. Wake does nothing for a project that is running, and refuses one the owner paused
+// (an error answers the request with 503 and Retry-After).
+type IdleWaker interface {
+	Wake(ctx context.Context, ref string) error
+}
+
 type noopWaker struct{}
 
 func (noopWaker) Start(context.Context, string) error { return nil }
@@ -43,6 +53,9 @@ type Options struct {
 	APIHandler http.Handler
 	// Waker is called before forwarding; nil means no-op.
 	Waker Waker
+	// IdleWaker wakes a project that was paused for idleness when a request reaches it. Nil: such a
+	// project answers 503 like any paused one.
+	IdleWaker IdleWaker
 	// FunctionsEnabled routes /functions/v1 to the edge runtime on Ports.EdgeRuntime.
 	// While false (v1) the route answers 503 {"message": ...}.
 	FunctionsEnabled bool
