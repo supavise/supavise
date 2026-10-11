@@ -72,6 +72,9 @@ type Service struct {
 	node   NodeSample
 	raised map[string]bool
 	swept  time.Time
+	// warned is when each kind of failure was last logged: a full disk would otherwise write a line
+	// for every project every minute.
+	warned map[string]time.Time
 }
 
 // projState is what the service remembers of one project between two samples.
@@ -116,7 +119,7 @@ func New(o Options) *Service {
 	if o.Store == nil && o.Cfg != nil {
 		o.Store = NewStore(filepath.Join(o.Cfg.StateDir, "system", "metrics"))
 	}
-	return &Service{o: o, proj: map[string]*projState{}, raised: map[string]bool{}}
+	return &Service{o: o, proj: map[string]*projState{}, raised: map[string]bool{}, warned: map[string]time.Time{}}
 }
 
 func (s *Service) now() time.Time {
@@ -124,6 +127,23 @@ func (s *Service) now() time.Time {
 		return s.o.Now()
 	}
 	return time.Now()
+}
+
+// warnEvery is how often a failure of one kind is logged again.
+const warnEvery = 15 * time.Minute
+
+// warn logs a failure at most once per warnEvery for each key.
+func (s *Service) warn(key, msg string, args ...any) {
+	now := s.now()
+	s.mu.Lock()
+	last, seen := s.warned[key]
+	if seen && now.Sub(last) < warnEvery {
+		s.mu.Unlock()
+		return
+	}
+	s.warned[key] = now
+	s.mu.Unlock()
+	s.o.Log.Warn(msg, args...)
 }
 
 // Run samples until ctx ends: once at the start (the first reading of a counter has nothing to
@@ -276,7 +296,7 @@ func (s *Service) sampleProject(ctx context.Context, p registry.Project, now tim
 	}
 	if s.o.Store != nil {
 		if err := s.o.Store.Append(p.Ref, smp); err != nil {
-			s.o.Log.Warn("metrics: cannot store a sample", "ref", p.Ref, "error", err)
+			s.warn("store/"+p.Ref, "metrics: cannot store a sample (logged once in a while)", "ref", p.Ref, "error", err)
 		}
 	}
 	s.mu.Lock()
@@ -330,7 +350,7 @@ func (s *Service) read(ctx context.Context, p registry.Project, now time.Time, s
 			next.units[svc] = u
 		case errors.Is(err, ErrNoUnit):
 		default:
-			s.o.Log.Warn("metrics: cannot read a control group", "ref", p.Ref, "unit", unit, "error", err)
+			s.warn("cgroup/"+unit, "metrics: cannot read a control group (logged once in a while)", "ref", p.Ref, "unit", unit, "error", err)
 		}
 	}
 	pg, up := next.units[config.SvcPostgres]
@@ -367,13 +387,13 @@ func (s *Service) read(ctx context.Context, p registry.Project, now time.Time, s
 			throttled += counterDelta(u.ThrottledUsec, pu.ThrottledUsec)
 			oom += counterDelta(u.OOMKill, pu.OOMKill)
 		}
-		up, sp := 100*user/wallUs, 100*system/wallUs
-		if sum := up + sp; sum > 100 { // each unit has the quota to itself, so the units can add up past it
-			up, sp = up*100/sum, sp*100/sum
+		userPct, systemPct := 100*user/wallUs, 100*system/wallUs
+		if sum := userPct + systemPct; sum > 100 { // each unit has the quota to itself, so the units can add up past it
+			userPct, systemPct = userPct*100/sum, systemPct*100/sum
 		}
-		smp.Set(CPUUser, up)
-		smp.Set(CPUSystem, sp)
-		smp.Set(CPUBusy, up+sp)
+		smp.Set(CPUUser, userPct)
+		smp.Set(CPUSystem, systemPct)
+		smp.Set(CPUBusy, userPct+systemPct)
 		smp.Set(CPUThrottled, math.Min(100*throttled/wallUs, 100))
 		smp.Set(OOMKills, oom)
 	}
@@ -403,14 +423,15 @@ func (s *Service) read(ctx context.Context, p registry.Project, now time.Time, s
 			next.io = pr.IO
 			if prevIO != nil && dt > 0 && dt <= maxGap {
 				secs := dt.Seconds()
-				rate := func(f Field, cur, prev float64, extra float64) {
+				rate := func(f Field, cur, prev float64) {
 					if d, ok := floatDelta(cur, prev); ok {
-						smp.Set(f, (d+extra)/secs)
+						smp.Set(f, d/secs)
 					}
 				}
-				rate(IOReadOps, pr.IO.Reads, prevIO.Reads, 0)
-				rate(IOWriteOps, pr.IO.Writes, prevIO.Writes, 0)
-				rate(IOReadBytes, pr.IO.ReadBytes, prevIO.ReadBytes, 0)
+				rate(IOReadOps, pr.IO.Reads, prevIO.Reads)
+				rate(IOWriteOps, pr.IO.Writes, prevIO.Writes)
+				rate(IOReadBytes, pr.IO.ReadBytes, prevIO.ReadBytes)
+				// Bytes written are the relation blocks and the WAL.
 				if w, ok := floatDelta(pr.IO.WriteBytes, prevIO.WriteBytes); ok {
 					if wal, ok := floatDelta(pr.IO.WALBytes, prevIO.WALBytes); ok {
 						smp.Set(IOWriteBytes, (w+wal)/secs)
