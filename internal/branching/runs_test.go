@@ -609,3 +609,26 @@ func TestCreateReturnsTheRunItStarted(t *testing.T) {
 		t.Fatalf("failed create = %+v, %v", got, err)
 	}
 }
+
+func TestStartRunIsDrivenByTheCaller(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	b := h.create("feat", nil)
+	rec, err := h.svc.StartRun(ctx, "create", b.Ref, b.Ref, parentRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSteps(t, stepStates(t, h, rec.ID()), "CREATED,CREATED,CREATED,CREATED,CREATED,CREATED,CREATED")
+	for _, n := range registry.BranchRunSteps {
+		rec.Phase(n)
+	}
+	rec.Finish(nil)
+	wantSteps(t, stepStates(t, h, rec.ID()), "EXITED,EXITED,EXITED,EXITED,EXITED,EXITED,EXITED")
+	got, _ := h.reg.GetBranchRun(ctx, rec.ID())
+	if got.Status != registry.RunSuccess || got.OwnerRef != b.Ref {
+		t.Fatalf("run = %+v", got)
+	}
+	if after, _ := h.svc.Resolve(ctx, b.Ref); after.State != registry.BranchFunctionsDeployed {
+		t.Fatalf("the service changed the branch's status: %s", after.State)
+	}
+}

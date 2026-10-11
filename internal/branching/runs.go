@@ -11,6 +11,7 @@ import (
 
 	"github.com/supavise/supavise/internal/procutil"
 	"github.com/supavise/supavise/internal/registry"
+	"github.com/supavise/supavise/internal/secrets"
 )
 
 // Action runs. Every create, push, merge and reset of a branch is a run with the seven steps of
@@ -115,6 +116,30 @@ func (s *Service) beginRun(ctx context.Context, ref, op, ownerRef, parentRef str
 	}
 	r.rec = s.newRun(r.id, op, ref)
 	return r, nil
+}
+
+// StartRun records a run that the caller drives itself, step by step with Run.Step and Run.Phase,
+// and ends with Run.Finish: the Git flow of a pull request, which starts clone and configure too.
+// All seven steps start CREATED. The service does not touch the branch's status or tell its
+// notify_url for such a run; the caller does. ownerRef is the project the run is listed under (a
+// merge: the parent; otherwise the branch).
+func (s *Service) StartRun(ctx context.Context, op, branchRef, ownerRef, parentRef string) (*Run, error) {
+	st := s.runStore()
+	if st == nil {
+		return nil, errors.New("branching: this registry keeps no action runs")
+	}
+	s.maintainRuns(ctx)
+	rec := &registry.BranchRun{
+		ID: secrets.NewUUID(), OwnerRef: ownerRef, BranchRef: branchRef, ParentRef: parentRef, Op: op, Status: registry.RunRunning,
+		RunnerHost: s.host, RunnerPID: s.pid, RunnerInstance: s.instance,
+	}
+	for _, n := range registry.BranchRunSteps {
+		rec.Steps = append(rec.Steps, registry.BranchRunStep{Name: n, Status: registry.StepCreated})
+	}
+	if err := st.CreateBranchRun(ctx, rec); err != nil {
+		return nil, fmt.Errorf("record the %s run: %w", op, err)
+	}
+	return s.newRun(rec.ID, op, branchRef), nil
 }
 
 func (s *Service) newRun(id, op, ref string) *Run {
