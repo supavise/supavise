@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/supavise/supavise/internal/procutil"
 	"github.com/supavise/supavise/internal/registry"
 	"github.com/supavise/supavise/internal/secrets"
 )
@@ -28,6 +27,9 @@ type run struct {
 	id, op string
 	done   chan struct{}
 	once   sync.Once
+	// rec records the action run of the operation (runs.go); nil for operations that are not one
+	// (delete), or when the registry keeps no runs.
+	rec *Run
 }
 
 // ---- operation tracking ----------------------------------------------------------------
@@ -116,14 +118,7 @@ func (s *Service) ownerGone(ctx context.Context, ref string) bool {
 		if json.Unmarshal(e.Payload, &pl) != nil || pl.Owner == nil || pl.Owner.PID <= 0 {
 			return false
 		}
-		o := pl.Owner
-		if o.Host != s.host {
-			return false
-		}
-		if o.PID == s.pid {
-			return o.Instance != s.instance // an earlier service of this process cannot still be working
-		}
-		return !procutil.Alive(o.PID)
+		return s.runnerGone(pl.Owner.Host, pl.Owner.PID, pl.Owner.Instance)
 	}
 	return false
 }
@@ -159,7 +154,8 @@ func (s *Service) WaitIdle(ctx context.Context, ref string) (*Branch, error) {
 }
 
 // setState records the state and detail of the branch project ref. A branch that is gone
-// (deleted while the operation ran) is not an error.
+// (deleted while the operation ran) is not an error. While an operation is running its progress
+// text also goes to the log of its run.
 func (s *Service) setState(ctx context.Context, ref string, st registry.BranchState, detail string, mutate func(*registry.BranchInfo)) {
 	p, err := s.reg.GetProject(ctx, ref)
 	if err != nil || p.Branch == nil {
@@ -172,6 +168,15 @@ func (s *Service) setState(ctx context.Context, ref string, st registry.BranchSt
 	}
 	if err := s.reg.UpdateBranch(ctx, ref, &b); err != nil && !errors.Is(err, registry.ErrNotFound) {
 		s.log.Warn("could not record the branch state", "ref", ref, "state", st, "err", err)
+		return
+	}
+	switch st {
+	case registry.BranchMigrationsFailed, registry.BranchFunctionsFailed, registry.BranchFunctionsDeployed:
+		// The end of an operation: the run records it itself.
+	default:
+		if detail != "" {
+			s.logRun(ctx, "%s", detail)
+		}
 	}
 }
 
@@ -182,9 +187,10 @@ func (s *Service) event(ctx context.Context, ref, kind string, payload any) {
 }
 
 // spawn runs fn detached from the caller. It records started/succeeded/failed events on the
-// branch and its parent, sets the branch's State and Detail from fn's outcome, and tells
-// notify_url. It returns the run id (the API's workflow_run_id). A caller that already
-// holds the run (Create) passes it in.
+// branch and its parent, finishes the action run (runs.go), sets the branch's State and Detail
+// from fn's outcome, and tells notify_url. The run id is r.id, the API's workflow_run_id. fn
+// reports its progress to the run with s.phase. A caller that already holds the run (Create)
+// passes it in.
 func (s *Service) spawn(r *run, ref, parentRef string, fn func(ctx context.Context) (string, error)) {
 	s.wg.Add(1)
 	go func() {
@@ -192,17 +198,31 @@ func (s *Service) spawn(r *run, ref, parentRef string, fn func(ctx context.Conte
 		defer s.end(ref, r) // a panic must not leave the branch busy forever
 		ctx, cancel := context.WithTimeout(s.base, s.opTimeout)
 		defer cancel()
+		if r.rec != nil {
+			ctx = context.WithValue(ctx, runCtxKey{}, r.rec)
+		}
 		started := s.now()
-		payload := map[string]any{"run_id": r.id, "operation": r.op, "branch": ref, "parent": parentRef}
+		payload := map[string]any{"run_id": r.id, "operation": r.op, "branch": ref, "parent": parentRef,
+			// Who works on the operation, so that another process can tell it from an abandoned one (ownerGone).
+			"owner": map[string]any{"host": s.host, "pid": s.pid, "instance": s.instance}}
 		s.event(ctx, ref, "branch."+r.op+".started", payload)
 		detail, err := fn(ctx)
 		// Recording the outcome must survive a cancelled operation context.
 		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer rcancel()
 		payload["ms"] = s.now().Sub(started).Milliseconds()
-		state, status := registry.BranchMigrationsPassed, "MIGRATIONS_PASSED"
+		// The run ends before the branch's state changes: a client that sees the state change
+		// finds the run finished.
+		if err == nil {
+			r.rec.Log(detail)
+		}
+		failedStep := r.rec.Finish(err)
+		state := registry.BranchFunctionsDeployed
 		if err != nil {
-			state, status, detail = registry.BranchMigrationsFailed, "MIGRATIONS_FAILED", err.Error()
+			state, detail = registry.BranchMigrationsFailed, err.Error()
+			if failedStep == StepDeploy {
+				state = registry.BranchFunctionsFailed
+			}
 			payload["error"] = detail
 			s.log.Error("branch operation failed", "op", r.op, "ref", ref, "run", r.id, "err", err)
 		} else {
@@ -214,8 +234,14 @@ func (s *Service) spawn(r *run, ref, parentRef string, fn func(ctx context.Conte
 		// The state is the last thing a client can see change, so it comes after the events,
 		// and the branch stops being busy the moment it shows: a client that sees the new
 		// state may start the next operation at once.
-		s.setState(rctx, ref, state, detail, nil)
+		var after func(*registry.BranchInfo)
+		if r.op == "merge" && err == nil {
+			// A merged branch is no longer waiting for review (Studio clears the mark itself when
+			// it sees the run finish; an MCP or CLI merge does not).
+			after = func(bi *registry.BranchInfo) { bi.ReviewRequestedAt = nil }
+		}
+		s.setState(rctx, ref, state, detail, after)
 		s.end(ref, r)
-		s.notify(rctx, ref, r.op, status, detail)
+		s.notify(rctx, ref, r, state, detail)
 	}()
 }

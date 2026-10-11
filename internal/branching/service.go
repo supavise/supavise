@@ -103,9 +103,13 @@ type Service struct {
 
 	mu   sync.Mutex
 	runs map[string]*run // by branch ref
-	wg   sync.WaitGroup
-	base context.Context
-	stop context.CancelFunc
+	// lastPrune is when old action runs were last removed (runs.go).
+	lastPrune time.Time
+	// notifyMu serializes the creation of the notify signing key (notify.go).
+	notifyMu sync.Mutex
+	wg       sync.WaitGroup
+	base     context.Context
+	stop     context.CancelFunc
 }
 
 // New builds the service. It connects to nothing.
@@ -212,7 +216,7 @@ func (s *Service) List(ctx context.Context, ref string) ([]Branch, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := []Branch{*defaultBranchOf(parent)}
+	out := []Branch{*s.defaultBranch(ctx, parent)}
 	for i := range kids {
 		out = append(out, *branchOf(&kids[i]))
 	}
@@ -254,7 +258,7 @@ func (s *Service) Get(ctx context.Context, ref, name string) (*Branch, error) {
 		return nil, err
 	}
 	if name == DefaultBranchName {
-		return defaultBranchOf(parent), nil
+		return s.defaultBranch(ctx, parent), nil
 	}
 	kids, err := s.children(ctx, parent.Ref)
 	if err != nil {
@@ -281,7 +285,7 @@ func (s *Service) Resolve(ctx context.Context, idOrRef string) (*Branch, error) 
 				return branchOf(&all[i]), nil
 			}
 			if all[i].Branch == nil && all[i].Ref != config.SystemRef && strings.EqualFold(defaultBranchID(all[i].Ref), idOrRef) {
-				return defaultBranchOf(&all[i]), nil
+				return s.defaultBranch(ctx, &all[i]), nil
 			}
 		}
 		return nil, fmt.Errorf("%w: id %s", ErrNotFound, idOrRef)
@@ -294,7 +298,7 @@ func (s *Service) Resolve(ctx context.Context, idOrRef string) (*Branch, error) 
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, idOrRef)
 	}
 	if p.Branch == nil {
-		return defaultBranchOf(p), nil
+		return s.defaultBranch(ctx, p), nil
 	}
 	return branchOf(p), nil
 }

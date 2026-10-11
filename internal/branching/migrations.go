@@ -368,6 +368,7 @@ func upTo(ms []Migration, v string) ([]Migration, error) {
 
 // replay gives a schema-only branch the parent's migration history, then the seed.
 func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, seeded bool, err error) {
+	s.phase(ctx, StepMigrate)
 	parentMigs, err := s.db.Migrations(ctx, j.parent.Ref)
 	if err != nil {
 		return 0, false, fmt.Errorf("read the parent's migration history: %w", err)
@@ -399,6 +400,7 @@ func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, see
 		}
 	}
 	if strings.TrimSpace(seed) != "" {
+		s.phase(ctx, StepSeed)
 		s.setState(ctx, j.ref, registry.BranchRunningMigration, "applying the seed", nil)
 		if err := s.db.RunScript(ctx, j.ref, seed); err != nil {
 			return len(parentMigs), false, fmt.Errorf("apply the seed: %w", err)

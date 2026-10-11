@@ -63,12 +63,13 @@ func (s *Service) Reset(ctx context.Context, idOrRef string, in ActionInput) (st
 			keys = nil
 		}
 	}
-	r, err := s.begin(b.Ref, "reset")
+	r, err := s.beginRun(ctx, b.Ref, "reset", b.Ref, parent.Ref)
 	if err != nil {
 		return "", err
 	}
 	s.setState(ctx, b.Ref, registry.BranchCreatingProject, "resetting from "+parent.Ref, nil)
 	s.spawn(r, b.Ref, parent.Ref, func(ctx context.Context) (string, error) {
+		s.phase(ctx, StepPull)
 		if err := s.removeBranch(ctx, b, removeOptions{keepRecord: true}); err != nil {
 			return "", fmt.Errorf("remove the old cluster: %w", err)
 		}

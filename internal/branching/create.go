@@ -32,8 +32,13 @@ type CreateInput struct {
 	// Seed is a SQL script applied after the migrations of a schema-only branch. Empty uses
 	// the parent's stored seed (SetSeed), if any.
 	Seed string
-	// IsDefault is accepted so that the request body decodes, and refused when true.
+	// IsDefault asks for the default branch: Create answers with the default branch of the
+	// project (the project itself), creating nothing, and stores GitBranch as the Git branch it
+	// tracks when that is set. Hosted's dashboard sends it when it saves the Production branch.
 	IsDefault bool
+	// Secrets are the branch's Edge Function secrets (CreateBranchBody.secrets). They are never
+	// copied from the parent.
+	Secrets map[string]string
 	// AllowEgress is the opt-out of the isolation a branch with data gets by default (supavise
 	// only: the Management API's create body has no such field, the API takes it as the query
 	// parameter allow_egress=true). Without it, the branch's Postgres unit may reach loopback
@@ -90,7 +95,7 @@ const withDataNotice = "a with_data branch is a copy of production: users' sessi
 // or call WaitIdle.
 func (s *Service) Create(ctx context.Context, ref string, in CreateInput) (*Branch, error) {
 	if in.IsDefault {
-		return nil, invalid("creating a default branch is not supported: the project itself is the default branch")
+		return s.createDefault(ctx, ref, in)
 	}
 	if err := ValidName(in.Name); err != nil {
 		return nil, err
@@ -146,7 +151,7 @@ func (s *Service) Create(ctx context.Context, ref string, in CreateInput) (*Bran
 		info.ExpiresAt = s.expiry(in.TTL)
 	}
 	newRef := secrets.NewRef()
-	r, err := s.begin(newRef, "create")
+	r, err := s.beginRun(ctx, newRef, "create", newRef, p.Ref)
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +254,7 @@ type createJob struct {
 
 // doCreate is the body of a branch creation. It returns the detail recorded on success.
 func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
+	s.phase(ctx, StepPull)
 	req := lifecycle.CreateRequest{
 		Name: j.in.Name, OrgSlug: j.org, Region: j.parent.Region, Class: j.class, Ref: j.ref, Branch: j.info, Recreate: j.recreate,
 	}
@@ -268,6 +274,7 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		}
 	}
 	started := s.now()
+	s.phase(ctx, StepHealth)
 	switch method {
 	case MethodSchema:
 		req.Keys = j.keys
@@ -335,6 +342,7 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		// The expiry clock starts when the branch is usable, not when the request came in.
 		s.setState(ctx, j.ref, registry.BranchRunningMigration, detail, func(b *registry.BranchInfo) { b.ExpiresAt = s.expiry(j.in.TTL) })
 	}
+	s.phase(ctx, StepDeploy)
 	payload := map[string]any{"branch": j.ref, "name": j.in.Name, "method": method, "with_data": j.in.WithData, "ms": s.now().Sub(started).Milliseconds()}
 	if stats != nil {
 		payload["clone"] = stats
