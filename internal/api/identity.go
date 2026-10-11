@@ -19,8 +19,12 @@ import (
 var disabledFeatures = []string{
 	"billing:all", "database:replication", "database:restore_to_new_project", "database:network_restrictions",
 	featureReadReplicas, "integrations:vercel", "integrations:aws_private_link", "integrations:partners",
-	"organization:show_sso_settings", "project_addons:dedicated_ipv4_address", "project_addons:show_compute_price",
+	"project_addons:dedicated_ipv4_address", "project_addons:show_compute_price",
 	"project_creation:show_high_availability", "project_settings:custom_domains", "project_settings:log_drains",
+	// Supabase Inc.'s own legal and compliance documents (DPA, SOC 2, ISO 27001, HIPAA), the request to
+	// delete an account with Supabase's support desk, and the transfer of a project to another
+	// organization (a project's branches, replicas, domains and roles would have to follow it).
+	"organization:show_legal_documents", "profile:show_account_deletion", "projects:transfer",
 	// Iceberg analytics buckets and vector buckets: Storage runs here without the catalog and vector
 	// services behind them (icebergCatalog and vectorBuckets stay off, internal/fleet/storage.go), so
 	// the pages would offer buckets that cannot work. Logs and Reports stay: they say what is missing.
