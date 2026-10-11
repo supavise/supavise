@@ -535,6 +535,7 @@ func (e *Engine) Create(ctx context.Context, req CreateRequest) (*registry.Proje
 		if err := e.seedSettingsAtCreate(ctx, ref); err != nil {
 			return fail("settings", err)
 		}
+		e.copyInitialSettings(ctx, ref, req)
 	}
 	if err := e.plane.Create(ctx, p, keys, req.Seed); err != nil {
 		return fail("data plane", err)
