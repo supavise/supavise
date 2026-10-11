@@ -207,8 +207,10 @@ func (s *Service) Tick(ctx context.Context) {
 	}
 	wg.Wait()
 
+	// A list with no project at all (the registry always has the system project) is not a reason to
+	// delete every history.
 	s.mu.Lock()
-	due := s.swept.IsZero() || now.Sub(s.swept) >= sweepEvery
+	due := len(live) > 0 && (s.swept.IsZero() || now.Sub(s.swept) >= sweepEvery)
 	if due {
 		s.swept = now
 	}
