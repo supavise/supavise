@@ -143,6 +143,46 @@ func TestSetJWTSecretRestoresOnFailure(t *testing.T) {
 	}
 }
 
+// A rollback that fails too is not reported as a restore: the error says the services may
+// still be on the new secret, so the operator checks them.
+func TestSetJWTSecretReportsAFailedRestore(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	p := h.create(t)
+	// Every restart fails: the one on the new secret and the one back on the old.
+	h.plane.failOn["Reconfigure"] = errors.New("systemd cannot start postgrest")
+	_, err := h.e.SetJWTSecret(ctx, p.Ref, hostedSecret)
+	var je *JWTSecretError
+	if !errors.As(err, &je) || je.Step != KeyStepRestart || !je.NotRestored {
+		t.Fatalf("err = %v, want a JWTSecretError at restart with NotRestored", err)
+	}
+	if !strings.Contains(err.Error(), "could not be restored") || strings.Contains(err.Error(), "previous secret restored") {
+		t.Fatalf("message = %q", err)
+	}
+	if n := len(h.plane.reconf); n != 2 {
+		t.Fatalf("the restart on the previous keys was not tried: %v", h.plane.reconf)
+	}
+	// A rollback that works says so.
+	h2 := newHarness(t)
+	p2 := h2.create(t)
+	h2.plane.failOnce["Reconfigure"] = errors.New("gotrue will not start")
+	_, err = h2.e.SetJWTSecret(ctx, p2.Ref, hostedSecret)
+	if !errors.As(err, &je) || je.NotRestored || !strings.Contains(err.Error(), "previous secret restored") {
+		t.Fatalf("a restored change: %v", err)
+	}
+}
+
+func TestRotateKeysReportsAFailedRestore(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	p := h.create(t)
+	h.plane.failOn["Reconfigure"] = errors.New("systemd cannot start postgrest")
+	_, err := h.e.RotateKeys(ctx, p.Ref)
+	if err == nil || !strings.Contains(err.Error(), "could not be restored") || strings.Contains(err.Error(), "previous keys restored") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestSetJWTSecretPausedOnlyStoresKeys(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
