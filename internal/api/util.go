@@ -154,6 +154,12 @@ func (s *Server) running(ctx context.Context, ref string) (*registry.Project, er
 	case registry.StatusActiveHealthy, registry.StatusActiveUnhealthy:
 		return p, nil
 	case registry.StatusInactive:
+		// A branch the node paused for idleness wakes for the call, like it does for a request to its API: an
+		// agent that runs SQL, applies a migration or deploys to a branch it left alone should not have to
+		// resume it first. One the owner paused is not woken.
+		if np, ok := s.wakeIdleBranch(ctx, p); ok {
+			return np, nil
+		}
 		return nil, errf(http.StatusConflict, "Project is paused; restore it first")
 	default:
 		return nil, errf(http.StatusServiceUnavailable, "Project is not ready (status %s)", p.Status)

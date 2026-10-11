@@ -391,6 +391,11 @@ while `Service.Wake` starts it (one start per branch, shared by everyone who wai
 on the node), the answer is 503 with `Retry-After`, and the start goes on without the request. A TLS handshake
 for the host of a sleeping branch is allowed, because the wake comes after it.
 
+**Wake on a Management API call.** A call that runs SQL on a sleeping branch (`database/query`, a migration, Studio's
+SQL and table editors, MCP's `execute_sql`) wakes it the same way before it runs (`api.Server.running`), so an agent that
+left a branch alone need not resume it first. A branch the owner paused answers 409 "Project is paused; restore it first"
+as before.
+
 **Wake on a database connection.** A sleeping branch's `127.0.0.1:<20000+3n>` port, where Postgres listened and
 where the pooler and every other client dial, is held by a **wake gate** (`idlegate.go`). The first connection
 that sends its first packet makes the gate stop listening so that Postgres can bind the port, start the branch,

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/supavise/supavise/internal/registry"
 )
@@ -97,5 +98,46 @@ func TestResumeOfAScheduledBranchCancelsItsDeletion(t *testing.T) {
 	p, _ = f.reg.GetProject(ctx, ref)
 	if p.Branch.DeletionScheduledAt != nil || !p.Status.Running() {
 		t.Fatalf("after the resume: scheduled %v, status %s", p.Branch.DeletionScheduledAt, p.Status)
+	}
+}
+
+// A call that runs SQL on a branch the node paused for idleness wakes it, so that an agent that left a
+// branch alone does not have to resume it first; a branch the owner paused answers 409 as before.
+func TestSQLCallWakesAnIdleBranchButNotAnOwnersPause(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	ref, _ := makeBranch(t, f, "feat")
+	pause := func(reason string) {
+		t.Helper()
+		if err := f.reg.SetPause(ctx, ref, reason, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.reg.SetProjectStatus(ctx, ref, registry.StatusInactive); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := func() int {
+		return f.do("POST", "/v1/projects/"+ref+"/database/query", map[string]any{"query": "select 1"}).Code
+	}
+	pause("")
+	if code := q(); code != 409 {
+		t.Fatalf("a query on a branch the owner paused: %d", code)
+	}
+	if p, _ := f.reg.GetProject(ctx, ref); p.Status != registry.StatusInactive {
+		t.Fatalf("the owner's pause was undone: %s", p.Status)
+	}
+	pause(registry.PauseIdle)
+	if code := q(); code != 201 && code != 200 {
+		t.Fatalf("a query on an idle-paused branch: %d", code)
+	}
+	if p, _ := f.reg.GetProject(ctx, ref); !p.Status.Running() {
+		t.Fatalf("the idle branch was not woken: %s", p.Status)
+	}
+	// The parent is not a branch: a pause is a pause.
+	if err := f.reg.SetProjectStatus(ctx, testRef, registry.StatusInactive); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.do("POST", "/v1/projects/"+testRef+"/database/query", map[string]any{"query": "select 1"}).Code; code != 409 {
+		t.Fatalf("a query on a paused production project: %d", code)
 	}
 }

@@ -55,3 +55,22 @@ func (s *Server) refuseBranchRef(ctx context.Context, ref string) error {
 	}
 	return nil
 }
+
+// wakeIdleBranch starts p if it is a branch the node paused for idleness, waiting up to the wake timeout,
+// and returns it running. Any other paused project, and a start that fails, are not woken (false).
+func (s *Server) wakeIdleBranch(ctx context.Context, p *registry.Project) (*registry.Project, bool) {
+	if p.Branch == nil || s.branches == nil || s.branches.PauseReason(ctx, p.Ref) != registry.PauseIdle {
+		return nil, false
+	}
+	wctx, cancel := context.WithTimeout(ctx, s.cfg.Branching.IdleWakeTimeout())
+	defer cancel()
+	if err := s.branches.Wake(wctx, p.Ref); err != nil {
+		s.log.Warn("could not wake an idle branch for an API call", "ref", p.Ref, "err", err)
+		return nil, false
+	}
+	np, err := s.reg.GetProject(ctx, p.Ref)
+	if err != nil || !np.Status.Running() {
+		return nil, false
+	}
+	return np, true
+}
