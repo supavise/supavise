@@ -3,10 +3,10 @@ package branching
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/supavise/supavise/internal/branching/schemadiff"
 	"github.com/supavise/supavise/internal/registry"
 )
 
@@ -14,11 +14,23 @@ import (
 // behind traffic would block the traffic behind it.
 const mergeLockTimeout = 30 * time.Second
 
-// Merge applies the migrations the branch has and its parent lacks to the parent, in one
-// transaction where the SQL allows it. It refuses when the histories diverged (the parent
-// has migrations the branch lacks, a version differs in content, or a branch migration is
-// older than the parent's latest) unless Force is set. It runs in the background and
-// returns the run id.
+// Merge brings what the branch added into its parent. It runs in the background and returns the
+// run id.
+//
+// Two flows end here, as on hosted. The CLI and the MCP server record the branch's changes as
+// migrations (`db push`, apply_migration), and a merge applies the ones the parent lacks, in one
+// transaction under the parent's apply lock, refusing when the histories diverged (the parent has
+// migrations the branch lacks, a version differs in content, or a branch migration is older than the
+// parent's latest) unless Force is set. Studio's merge page records the branch's schema diff as one
+// migration without running it (PUT .../database/migrations, named branch_merge_*): when the branch
+// has such a migration the parent lacks, the merge checks that the diff is still what was recorded
+// (it fails with "refresh" when the branch or production moved), runs only that migration on the
+// parent and records the branch's other migrations there without running them, so that the
+// histories end up equal and no statement runs twice.
+//
+// Either way the Edge Functions the branch created or changed since it was made are deployed to
+// the parent (never deleted from it); a function both sides changed makes the merge fail before
+// anything runs, unless Force is set. The branch is kept.
 func (s *Service) Merge(ctx context.Context, idOrRef string, in ActionInput) (string, error) {
 	b, err := s.resolveBranch(ctx, idOrRef, "merge")
 	if err != nil {
@@ -39,120 +51,223 @@ func (s *Service) Merge(ctx context.Context, idOrRef string, in ActionInput) (st
 		return "", err
 	}
 	s.setState(ctx, b.Ref, registry.BranchRunningMigration, "merging into "+parent.Ref, nil)
-	s.spawn(r, b.Ref, parent.Ref, func(ctx context.Context) (string, error) {
-		s.phase(ctx, StepPull)
-		branchMigs, err := s.db.Migrations(ctx, b.Ref)
-		if err != nil {
-			return "", fmt.Errorf("read the branch's migrations: %w", err)
-		}
-		parentMigs, err := s.db.Migrations(ctx, parent.Ref)
-		if err != nil {
-			return "", fmt.Errorf("read the parent's migrations: %w", err)
-		}
-		s.phase(ctx, StepMigrate)
-		s.logRun(ctx, "the branch has %d migration(s) and the parent %d", len(branchMigs), len(parentMigs))
-		plan := Compare(branchMigs, parentMigs)
-		if d := plan.Summary(); d != "" && !in.Force {
-			return "", fmt.Errorf("%w: %s (use force to merge anyway)", ErrDiverged, d)
-		}
-		apply, err := upTo(plan.Apply, in.MigrationVersion)
-		if err != nil {
-			return "", err
-		}
-		if len(apply) == 0 {
-			return "nothing to merge: the parent already has every migration of the branch" + s.functionsNote(ctx, b.Ref, parent.Ref), nil
-		}
-		// The plan was made before Apply took the parent's apply lock. A merge from another
-		// branch may have landed since: judge the history the parent has under the lock, so
-		// that a serial merge and a concurrent one are refused alike.
-		verify := func(current []Migration) error {
-			if d := Compare(branchMigs, current).Summary(); d != "" && !in.Force {
-				return fmt.Errorf("%w: the parent changed while this merge waited: %s (use force to merge anyway)", ErrDiverged, d)
-			}
-			return nil
-		}
-		res, err := s.db.Apply(ctx, parent.Ref, apply, ApplyOptions{Atomic: true, LockTimeout: mergeLockTimeout, Verify: verify})
-		if err != nil {
-			return "", fmt.Errorf("apply to the parent (rolled back where the SQL allows): %w", err)
-		}
-		s.phase(ctx, StepDeploy)
-		detail := fmt.Sprintf("merged %d migration(s) into %s: %s", res.Applied, parent.Ref, versions(apply))
-		if res.NonAtomic {
-			detail += " (not atomic: a statement cannot run inside a transaction)"
-		}
-		if in.Force && len(plan.Conflicts) > 0 {
-			detail += fmt.Sprintf("; skipped %d version(s) with different content", len(plan.Conflicts))
-		}
-		return detail + s.functionsNote(ctx, b.Ref, parent.Ref), nil
-	})
+	s.spawn(r, b.Ref, parent.Ref, func(ctx context.Context) (string, error) { return s.doMerge(ctx, b, parent, in) })
 	return r.id, nil
 }
 
-// functionsNote is the sentence a merge adds when the branch has Edge Functions that the
-// parent lacks or has in another version: a merge carries migrations only, and a client that
-// reads "merged" must not take the functions to be on the parent. Empty when there is nothing
-// to say.
-func (s *Service) functionsNote(ctx context.Context, branchRef, parentRef string) string {
-	if s.fns == nil {
-		return ""
-	}
-	bf, err := s.fns.Digests(ctx, branchRef)
-	if err == nil {
-		var pf map[string]string
-		if pf, err = s.fns.Digests(ctx, parentRef); err == nil {
-			var differ []string
-			for slug, d := range bf {
-				if pd, ok := pf[slug]; !ok || pd != d {
-					differ = append(differ, slug)
-				}
-			}
-			if len(differ) == 0 {
-				return ""
-			}
-			sort.Strings(differ)
-			return fmt.Sprintf("; Edge Functions are NOT merged: %d function(s) of the branch are missing from the parent or differ from it (%s); deploy them to the parent (supabase functions deploy --project-ref %s)",
-				len(differ), strings.Join(differ, ", "), parentRef)
-		}
-	}
-	s.log.Warn("merge: could not compare the Edge Functions of the branch and the parent", "branch", branchRef, "err", err)
-	return "; Edge Functions are not merged (a merge carries migrations only) and could not be compared"
-}
-
-// Diff returns, as SQL text, what Merge would apply: the branch's migrations the parent lacks.
-func (s *Service) Diff(ctx context.Context, idOrRef string) (string, error) {
-	b, err := s.resolveBranch(ctx, idOrRef, "diff")
-	if err != nil {
-		return "", err
-	}
-	if err := s.activeBranch(ctx, b); err != nil {
-		return "", err
-	}
-	parent, err := s.activeParent(ctx, b)
-	if err != nil {
-		return "", err
-	}
+func (s *Service) doMerge(ctx context.Context, b *Branch, parent *registry.Project, in ActionInput) (string, error) {
+	s.phase(ctx, StepPull)
 	branchMigs, err := s.db.Migrations(ctx, b.Ref)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read the branch's migrations: %w", err)
 	}
 	parentMigs, err := s.db.Migrations(ctx, parent.Ref)
 	if err != nil {
+		return "", fmt.Errorf("read the parent's migrations: %w", err)
+	}
+	fm, err := s.planFunctionMerge(ctx, b, parent)
+	if err != nil {
 		return "", err
 	}
-	plan := Compare(branchMigs, parentMigs)
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "-- migrations of branch %s that %s lacks\n", b.Name, parent.Ref)
-	if d := plan.Summary(); d != "" {
-		fmt.Fprintf(&sb, "-- divergence: %s\n", d)
+	if len(fm.conflicts) > 0 && !in.Force {
+		return "", fmt.Errorf("%w: the branch and the parent both changed the Edge Function(s) %s; update the branch (push) or use force to deploy the branch's version",
+			ErrDiverged, strings.Join(fm.conflicts, ", "))
 	}
-	for _, m := range plan.Apply {
-		fmt.Fprintf(&sb, "\n-- migration %s %s\n", m.Version, m.Name)
-		for _, st := range m.Statements {
-			sb.WriteString(strings.TrimRight(st, "; \n\t") + ";\n")
+	s.phase(ctx, StepMigrate)
+	own := withoutPushed(branchMigs)
+	s.logRun(ctx, "the branch has %d migration(s) and the parent %d", len(own), len(parentMigs))
+	plan := Compare(own, parentMigs)
+
+	var detail string
+	if rec := recordedDiff(plan.Apply); rec != nil && s.schemaDB() != nil && (in.MigrationVersion == "" || rec.Version <= in.MigrationVersion) {
+		detail, err = s.mergeRecorded(ctx, b, parent, in, own, plan, rec)
+	} else {
+		detail, err = s.mergeHistory(ctx, b, parent, in, own, plan)
+	}
+	if err != nil {
+		return "", err
+	}
+	s.phase(ctx, StepDeploy)
+	fnNote, err := s.deployFunctions(ctx, b, parent, fm, in.Force)
+	if err != nil {
+		return "", err
+	}
+	if fnNote != "" {
+		if strings.HasPrefix(detail, "nothing to merge") {
+			detail = "no migrations to merge: the parent already has every migration of the branch"
+		}
+		detail += "; " + fnNote
+	}
+	return detail, nil
+}
+
+// withoutPushed drops the migrations a push recorded on the branch for the parent's own schema
+// changes (pushMigrationPrefix): the parent has those changes, and a merge must not run them there.
+func withoutPushed(ms []Migration) []Migration {
+	out := make([]Migration, 0, len(ms))
+	for _, m := range ms {
+		if !strings.HasPrefix(m.Name, pushMigrationPrefix) {
+			out = append(out, m)
 		}
 	}
-	if len(plan.Apply) == 0 {
-		sb.WriteString("-- nothing to merge\n")
+	return out
+}
+
+// recordedDiff returns the newest migration of the plan that Studio's merge page recorded (named
+// branch_merge_*), nil when there is none.
+func recordedDiff(apply []Migration) *Migration {
+	var rec *Migration
+	for i := range apply {
+		if strings.HasPrefix(apply[i].Name, mergeMigrationPrefix) && (rec == nil || apply[i].Version > rec.Version) {
+			rec = &apply[i]
+		}
 	}
-	return sb.String(), nil
+	return rec
+}
+
+// mergeHistory is the merge of the CLI and the MCP server: run the branch's migrations that the
+// parent lacks.
+func (s *Service) mergeHistory(ctx context.Context, b *Branch, parent *registry.Project, in ActionInput, own []Migration, plan Plan) (string, error) {
+	if d := plan.Summary(); d != "" && !in.Force {
+		return "", fmt.Errorf("%w: %s (use force to merge anyway)", ErrDiverged, d)
+	}
+	apply, err := upTo(plan.Apply, in.MigrationVersion)
+	if err != nil {
+		return "", err
+	}
+	if len(apply) == 0 {
+		return "nothing to merge: the parent already has every migration of the branch", nil
+	}
+	// The plan was made before Apply took the parent's apply lock. A merge from another
+	// branch may have landed since: judge the history the parent has under the lock, so
+	// that a serial merge and a concurrent one are refused alike.
+	verify := func(current []Migration) error {
+		if d := Compare(own, current).Summary(); d != "" && !in.Force {
+			return fmt.Errorf("%w: the parent changed while this merge waited: %s (use force to merge anyway)", ErrDiverged, d)
+		}
+		return nil
+	}
+	res, err := s.db.Apply(ctx, parent.Ref, apply, ApplyOptions{Atomic: true, LockTimeout: mergeLockTimeout, Verify: verify})
+	if err != nil {
+		return "", fmt.Errorf("apply to the parent (rolled back where the SQL allows): %w", err)
+	}
+	detail := fmt.Sprintf("merged %d migration(s) into %s: %s", res.Applied, parent.Ref, versions(apply))
+	if res.NonAtomic {
+		detail += " (not atomic: a statement cannot run inside a transaction)"
+	}
+	if in.Force && len(plan.Conflicts) > 0 {
+		detail += fmt.Sprintf("; skipped %d version(s) with different content", len(plan.Conflicts))
+	}
+	s.syncBase(ctx, b, parent, "merge")
+	return detail, nil
+}
+
+// mergeRecorded is the merge of Studio's merge page, which recorded the branch's schema diff as one
+// migration (rec) without running it.
+func (s *Service) mergeRecorded(ctx context.Context, b *Branch, parent *registry.Project, in ActionInput, own []Migration, plan Plan, rec *Migration) (string, error) {
+	sd := s.schemaDB()
+	// The parent having migrations the branch lacks, or a version differing, means the branch is not
+	// up to date; the order of the branch's own migrations does not matter here, they are not run.
+	div := plan
+	div.OutOfOrder = nil
+	if d := div.Summary(); d != "" && !in.Force {
+		return "", fmt.Errorf("%w: %s (update the branch, or use force to merge anyway)", ErrDiverged, d)
+	}
+	if schemadiff.HasUnsupported(rec.sql()) {
+		return "", fmt.Errorf("the recorded schema diff %s holds changes this node cannot express as SQL (%s); apply them to the parent by hand and record the rest",
+			rec.Version, strings.Join(unsupportedLines(rec.sql()), "; "))
+	}
+	// The diff must still be what the page showed and the user approved.
+	res, branchSnap, err := s.schemaChanges(ctx, b, parent, schemadiff.ReadOptions{})
+	if err != nil {
+		return "", err
+	}
+	if scriptHash(res.SQL()) != scriptHash(rec.sql()) && !in.Force {
+		return "", fmt.Errorf("%w: production or branch changed since the diff was recorded; refresh", ErrDiverged)
+	}
+	if base, ok, err := s.getBase(ctx, b.Ref); err != nil {
+		return "", err
+	} else if ok {
+		parentSnap, err := sd.Snapshot(ctx, parent.Ref, schemadiff.ReadOptions{})
+		if err != nil {
+			return "", fmt.Errorf("read the schema of the parent: %w", err)
+		}
+		if _, conflicts := schemadiff.Merge3(base, parentSnap, branchSnap, false); len(conflicts) > 0 && !in.Force {
+			return "", fmt.Errorf("%w: production and the branch both changed %s (use force to merge anyway)", ErrDiverged, strings.Join(conflicts, "; "))
+		}
+	}
+	s.logRun(ctx, "the recorded schema diff %s is current; running it on the parent", rec.Version)
+	verify := func(current []Migration) error {
+		c := Compare(own, current)
+		c.OutOfOrder = nil
+		if d := c.Summary(); d != "" && !in.Force {
+			return fmt.Errorf("%w: the parent changed while this merge waited: %s (use force to merge anyway)", ErrDiverged, d)
+		}
+		return nil
+	}
+	applied, err := s.db.Apply(ctx, parent.Ref, []Migration{*rec}, ApplyOptions{Atomic: true, LockTimeout: mergeLockTimeout, Verify: verify})
+	if err != nil {
+		return "", fmt.Errorf("apply to the parent (rolled back where the SQL allows): %w", err)
+	}
+	// The branch's other migrations are part of what the diff ran: they only join the parent's history.
+	var others []Migration
+	for _, m := range plan.Apply {
+		if m.Version != rec.Version {
+			others = append(others, m)
+		}
+	}
+	if len(others) > 0 {
+		if _, err := sd.Record(ctx, parent.Ref, others); err != nil {
+			return "", fmt.Errorf("record the branch's other migrations in the parent's history: %w", err)
+		}
+	}
+	s.syncBase(ctx, b, parent, "merge")
+	detail := fmt.Sprintf("merged the recorded schema diff %s into %s", rec.Version, parent.Ref)
+	if applied.NonAtomic {
+		detail += " (not atomic: a statement cannot run inside a transaction)"
+	}
+	if len(others) > 0 {
+		detail += fmt.Sprintf("; recorded %d other migration(s) of the branch in the parent's history without running them: %s", len(others), versions(others))
+	}
+	return detail, nil
+}
+
+// unsupportedLines returns the unsupported-change markers of a script, without the marker.
+func unsupportedLines(script string) []string {
+	var out []string
+	for _, l := range strings.Split(script, "\n") {
+		if rest, ok := strings.CutPrefix(l, schemadiff.UnsupportedMarker); ok {
+			out = append(out, strings.TrimSpace(rest))
+		}
+	}
+	return out
+}
+
+// syncBase advances the schema base of the branch after the two sides exchanged changes: what the
+// branch and its parent now have in the same form becomes the base. A failure only costs the
+// precision of the next diff, and is logged.
+func (s *Service) syncBase(ctx context.Context, b *Branch, parent *registry.Project, source string) {
+	sd := s.schemaDB()
+	if sd == nil || registry.BranchContentOf(s.reg) == nil {
+		return
+	}
+	err := func() error {
+		branchSnap, err := sd.Snapshot(ctx, b.Ref, schemadiff.ReadOptions{})
+		if err != nil {
+			return err
+		}
+		parentSnap, err := sd.Snapshot(ctx, parent.Ref, schemadiff.ReadOptions{})
+		if err != nil {
+			return err
+		}
+		base, _, err := s.getBase(ctx, b.Ref)
+		if err != nil {
+			return err
+		}
+		return s.putBase(ctx, b.Ref, schemadiff.Sync(base, branchSnap, parentSnap), source)
+	}()
+	if err != nil {
+		s.log.Warn("could not advance the schema base of a branch", "ref", b.Ref, "err", err)
+		s.logRun(ctx, "could not advance the schema base of the branch: %v", err)
+	}
 }
