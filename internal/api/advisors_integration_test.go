@@ -21,6 +21,8 @@ create role service_role nologin bypassrls;
 create schema if not exists extensions;
 create schema if not exists auth;
 create table auth.users (id uuid primary key, email text);
+create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+create function auth.jwt() returns jsonb language sql stable as $$ select '{}'::jsonb $$;
 create schema if not exists storage;
 create table storage.buckets (id text primary key, name text not null, public boolean default false);
 create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text references storage.buckets (id), name text);
@@ -142,6 +144,43 @@ create table private.secrets (id bigint primary key, v text);
 	}
 	if got := byName(sec, "rls_enabled_no_policy"); len(got) != 1 || got[0]["level"] != "INFO" {
 		t.Errorf("rls_enabled_no_policy: %v", got)
+	}
+
+	// Policies: one that calls auth.uid() for every row, a second permissive one for the same role
+	// and action, and one that trusts the user's own metadata.
+	sql(`
+create policy by_author on public.notes for select to authenticated using (author = auth.uid());
+create policy by_author_select on public.notes for select to authenticated using (author = (select auth.uid()));
+create policy admins on public.notes for update to authenticated using ((auth.jwt() -> 'user_metadata' ->> 'role') = 'admin');
+`)
+	sec = lints(p+"/advisors/security", false)
+	perf = lints(p+"/advisors/performance", false)
+	// by_author and admins call auth functions per row; by_author_select wraps the call in a select.
+	hasPolicy := func(ls []lintObj, policy string) bool {
+		for _, l := range ls {
+			if strings.Contains(l["detail"].(string), "`"+policy+"`") {
+				return true
+			}
+		}
+		return false
+	}
+	initplan := byName(perf, "auth_rls_initplan")
+	if !hasPolicy(initplan, "by_author") || !hasPolicy(initplan, "admins") || hasPolicy(initplan, "by_author_select") {
+		t.Errorf("auth_rls_initplan: %v", initplan)
+	}
+	for _, l := range initplan {
+		if l["level"] != "WARN" || l["metadata"].(map[string]any)["name"] != "notes" {
+			t.Errorf("auth_rls_initplan finding: %v", l)
+		}
+	}
+	if got := byName(perf, "multiple_permissive_policies"); len(got) == 0 {
+		t.Errorf("multiple_permissive_policies: %v", lintNames(perf))
+	}
+	if got := byName(sec, "rls_references_user_metadata"); len(got) != 1 || got[0]["level"] != "ERROR" {
+		t.Errorf("rls_references_user_metadata: %v", lintNames(sec))
+	}
+	if got := byName(sec, "rls_enabled_no_policy"); len(got) != 0 {
+		t.Errorf("rls_enabled_no_policy is reported for a table with policies: %v", got)
 	}
 
 	// The schemas PostgREST exposes decide what is reported.
