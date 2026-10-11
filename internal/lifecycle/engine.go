@@ -473,7 +473,7 @@ func (e *Engine) Create(ctx context.Context, req CreateRequest) (*registry.Proje
 		// databases then run on one server (placement.go).
 		p.NodeID = e.homeOfParent(ctx, b.ParentRef)
 	}
-	releaseCap, err := e.holdCapacity(ctx, req, size)
+	releaseCap, err := e.holdCapacity(ctx, req, size, e.capacityHome(ctx, req, p))
 	if err != nil {
 		return nil, err
 	}

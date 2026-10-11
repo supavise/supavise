@@ -103,6 +103,11 @@ const portWait = 3 * time.Second
 // which may be another process's. A port nothing listens on (every other project) costs one refused
 // connection. After portWait it goes on and lets the start report what holds the port.
 func (e *Engine) awaitDatabasePort(ctx context.Context, p *registry.Project) {
+	if !e.homedHere(p) {
+		// The gate and any leftover listener are on the project's home. Here the port is the mesh forwarder
+		// to it, which listens whatever the status, so waiting for it to go would only run out the clock.
+		return
+	}
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(e.cfg.PortsFor(p.Ref, p.Seq).Postgres))
 	deadline := time.Now().Add(portWait)
 	for {
