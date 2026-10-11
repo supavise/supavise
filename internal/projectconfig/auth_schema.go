@@ -103,6 +103,20 @@ func fInt(name, env string, def any, min, max float64) Field {
 
 const maxInt32 = 2147483647
 
+// NewProjectAuth returns the Auth settings a project is created with where a new hosted project
+// differs from the schema defaults, which are GoTrue's own: mailer_otp_exp is 3600, one hour (the
+// default of the Supabase docs and of the CLI's config template), where GoTrue's is 86400.
+//
+// The schema default stays 86400 on purpose. A project with no saved value renders nothing for
+// the setting, so its GoTrue has always run on its own default, and changing the default here
+// would shorten the OTP of every existing project at its next restart. Instead the lifecycle
+// engine saves these values once, when it creates a project, so only a new project starts on
+// them and an existing one keeps what it runs. A branch and a restore as new are new projects: they
+// start as a new project does, since settings are not copied from the source.
+func NewProjectAuth() map[string]any {
+	return map[string]any{"mailer_otp_exp": int64(3600)}
+}
+
 func buildAuthSchema() *Schema {
 	var f []Field
 	add := func(fs ...Field) { f = append(f, fs...) }

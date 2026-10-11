@@ -7,7 +7,10 @@ project's PostgreSQL, GoTrue and PostgREST as units of a `units.Supervisor`.
 ## Create
 
 1. Registry row `COMING_UP`; credentials generated (or `CreateRequest.Keys` reused) and
-   sealed into `project_secrets`.
+   sealed into `project_secrets`. Then the settings a new project starts with are saved
+   (`projectconfig.NewProjectAuth`: `mailer_otp_exp` 3600, hosted's hour, where GoTrue's own default
+   is a day), so that the units render them at their first start. A failed create that is created
+   again (`Recreate`) keeps what its row has, and an Engine without a settings store skips the step.
 2. `PostgresPlane.Create`: directories, `pg_hba.conf` and the pgsodium root key outside
    PGDATA (0600), then `bin/supabase-postgres-start` with these server arguments:
    `-p <port>`, `listen_addresses=127.0.0.1`, `unix_socket_directories=<project>/postgres/sock`
@@ -350,6 +353,11 @@ value removes a variable), the cluster's server arguments (only the settings tha
 sizing; see `SplitPostgresSettings`), and the Storage and Realtime `TenantSpec`. A settings source that
 cannot be read fails the render rather than falling back to defaults. The system project never reads
 user settings.
+
+A project's saved settings begin at its creation with the values of `projectconfig.NewProjectAuth`,
+and a project created before them has no saved `mailer_otp_exp`, so its GoTrue runs on its own
+default of 86400 as it always did. The schema default is not changed for that reason: it would
+shorten the OTP of every existing project at its next restart.
 
 `Engine.ApplyConfig(ref, service, opts)` (the `Reconfigurer` capability the Management API uses) makes a
 saved change take effect and touches only what the service owns: GoTrue or PostgREST re-render and

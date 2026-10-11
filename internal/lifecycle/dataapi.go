@@ -191,6 +191,23 @@ type SettingsWriter interface {
 	Patch(ctx context.Context, ref string, svc projectconfig.Service, patch map[string]any, cx projectconfig.CrossContext) (*projectconfig.Change, error)
 }
 
+// seedSettingsAtCreate saves the settings a new project starts with where hosted's differ from the
+// schema defaults (projectconfig.NewProjectAuth: an email OTP that lives an hour), so that GoTrue
+// starts on them. It runs before the data plane starts the units, which render the saved settings.
+// A project created before the settings existed, or one that is created again after a failed create
+// (its row, and so any saved setting, is kept), is not touched: what it has stays what it runs. An
+// Engine without a settings store creates the project on the services' own defaults.
+func (e *Engine) seedSettingsAtCreate(ctx context.Context, ref string) error {
+	w, ok := e.opts.Settings.(SettingsWriter)
+	if !ok {
+		return nil
+	}
+	if _, err := w.Patch(ctx, ref, projectconfig.Auth, projectconfig.NewProjectAuth(), projectconfig.CrossContext{}); err != nil {
+		return fmt.Errorf("save the settings of a new project: %w", err)
+	}
+	return nil
+}
+
 // Events of the Data API step.
 const (
 	EventDataAPIRevoked = "project.data_api_defaults_revoked"

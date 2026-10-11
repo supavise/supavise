@@ -185,6 +185,76 @@ func TestCreateWithTheAPISchemaAndExposedSchemas(t *testing.T) {
 	}
 }
 
+// settingsProbePlane records the GoTrue variable the saved settings render at the moment the data plane
+// creates the project, which is when its units are rendered for the first time.
+type settingsProbePlane struct {
+	*dataAPIPlane
+	set    *projectconfig.Manager
+	otpExp map[string]string
+}
+
+func (p *settingsProbePlane) Create(ctx context.Context, pr *registry.Project, k *secrets.ProjectKeys, seed DataSeeder) error {
+	env, err := p.set.AuthEnv(ctx, pr.Ref, "")
+	if err != nil {
+		return err
+	}
+	p.otpExp[pr.Ref] = env["GOTRUE_MAILER_OTP_EXP"]
+	return p.dataAPIPlane.Create(ctx, pr, k, seed)
+}
+
+// A new project starts with an email OTP that lives an hour, as a new hosted project does, and GoTrue is
+// first rendered with it. A project with no saved value, one that exists from before, keeps the day its
+// GoTrue runs on, through a pause and a resume of the engine that saves the value for new projects.
+func TestCreateSavesAnHourOfOTPExpiryAndAnExistingProjectKeepsItsDay(t *testing.T) {
+	h := newDataAPIHarness(t)
+	ctx := context.Background()
+	probe := &settingsProbePlane{dataAPIPlane: h.dp, set: h.set, otpExp: map[string]string{}}
+	e := NewEngine(h.cfg, h.reg, h.sec, fakeArts{}, probe, Options{Fleet: fleet.Fleet{h.tenant}, Backup: h.backup, Settings: h.set})
+
+	p, err := e.Create(ctx, CreateRequest{Name: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := probe.otpExp[p.Ref]; got != "3600" {
+		t.Fatalf("GoTrue was first rendered with GOTRUE_MAILER_OTP_EXP=%q, want 3600", got)
+	}
+	st, err := h.set.Get(ctx, p.Ref, projectconfig.Auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.Effective.Int("mailer_otp_exp"); got != 3600 || len(st.Set) != 1 {
+		t.Fatalf("a new project has mailer_otp_exp %d and saved %v, want 3600 and nothing else", got, st.Set)
+	}
+
+	// A project created before: no saved value, whatever the engine does with it afterwards.
+	old, err := NewEngine(h.cfg, h.reg, h.sec, fakeArts{}, h.plane, Options{Fleet: fleet.Fleet{h.tenant}, Backup: h.backup}).Create(ctx, CreateRequest{Name: "old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Pause(ctx, old.Ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Resume(ctx, old.Ref); err != nil {
+		t.Fatal(err)
+	}
+	st, err = h.set.Get(ctx, old.Ref, projectconfig.Auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.Effective.Int("mailer_otp_exp"); got != 86400 || st.Version != 0 {
+		t.Fatalf("an existing project has mailer_otp_exp %d at version %d, want 86400 at version 0", got, st.Version)
+	}
+	if env, _ := h.set.AuthEnv(ctx, old.Ref, ""); env["GOTRUE_MAILER_OTP_EXP"] != "" {
+		t.Fatalf("an existing project renders GOTRUE_MAILER_OTP_EXP=%q", env["GOTRUE_MAILER_OTP_EXP"])
+	}
+
+	// A create without a settings store (or one that cannot save) has nothing to save and goes on.
+	bare := NewEngine(h.cfg, h.reg, h.sec, fakeArts{}, h.plane, Options{Fleet: fleet.Fleet{h.tenant}, Backup: h.backup})
+	if _, err := bare.Create(ctx, CreateRequest{Name: "bare"}); err != nil {
+		t.Fatalf("create without a settings store: %v", err)
+	}
+}
+
 // A schema the caller asked to expose has to exist, or PostgREST would not start on it.
 func TestCreateFailsWhenAnExposedSchemaDoesNotExist(t *testing.T) {
 	h := newDataAPIHarness(t)
