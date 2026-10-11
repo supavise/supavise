@@ -95,7 +95,7 @@ async function visit(page, v, { anonymousVisit = false } = {}) {
       if (!(await waitText(page, e.text, 15_000))) tracker.add({ kind: 'expect', allowed: false, detail: `the page does not show "${e.text}": ${e.why}` })
     }
     res.clicks = await safeClicks(page, rec)
-    await settle(page, { ms: 600, idle: 8_000 })
+    await settle(page, { quiet: 800, max: 6_000 })
     text = `${text}\n${await pageText(page)}`
     for (const f of domFindings(v.page, text, allow)) tracker.add(f)
     res.screenshot = await shot(page, join(OUT, 'screenshots'), `${String(++seq).padStart(3, '0')}-${v.url}`)
@@ -125,8 +125,9 @@ try {
   for (const k of order) {
     const ctx = await openContext(browser, cfg, tracker, { guard: true })
     const page = await newPage(ctx, tracker)
-    tracker.begin(`sign-in ${k || 'account'}`)
+    const rec = tracker.begin(`sign-in ${k || 'account'}`)
     await signIn(page, cfg)
+    results.push({ url: `(sign-in for ${k || 'the account pages'})`, page: '(sign-in)', project: null, informational: null, findings: rec.findings, links: [], calls: rec.calls, stubs: rec.stubs, n4xx: rec.n4xx, n5xx: rec.n5xx, pageErrors: rec.pageErrors, noise: rec.noise, ms: 0 })
     for (const v of groups.get(k)) await visit(page, v)
     await ctx.close()
   }

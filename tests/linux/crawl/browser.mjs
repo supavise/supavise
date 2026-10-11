@@ -70,6 +70,10 @@ export class Tracker {
   attach(page) {
     const domain = this.cfg.domain
     page.on('dialog', (d) => d.dismiss().catch(() => {})) // a dialog is never confirmed
+    page.__lastRequest = Date.now()
+    page.on('request', () => {
+      page.__lastRequest = Date.now()
+    })
     page.on('response', (r) => {
       const req = r.request()
       let u
@@ -216,10 +220,15 @@ export async function signIn(page, cfg, who = cfg.owner) {
   await page.waitForURL((u) => !u.pathname.startsWith('/sign-in'), { timeout: 60_000 })
 }
 
-// settle waits for the page to go quiet: the network idle (Studio polls, so with a ceiling) and a moment for React.
-export async function settle(page, { ms = 1200, idle = 20_000 } = {}) {
-  await page.waitForLoadState('networkidle', { timeout: idle }).catch(() => {})
-  await page.waitForTimeout(ms)
+// settle waits for the page to go quiet: the load event, then no new request for `quiet` ms (Studio polls the health of
+// the project every few seconds and keeps sockets open, so network idle is never reached), with a ceiling of `max` ms.
+export async function settle(page, { quiet = 1500, max = 12_000 } = {}) {
+  const start = Date.now()
+  await page.waitForLoadState('load', { timeout: max }).catch(() => {})
+  while (Date.now() - start < max) {
+    if (Date.now() - (page.__lastRequest ?? 0) >= quiet) break
+    await page.waitForTimeout(200)
+  }
 }
 
 export const pageText = (page) => page.evaluate(() => document.body?.innerText ?? '')
@@ -237,7 +246,7 @@ export async function waitText(page, text, timeout = 20_000) {
 // safeClicks clicks tabs, summaries, menu triggers and links that stay on the page, unless the label is on the deny
 // list, and never confirms what opens: a dialog, a menu or a popover is closed with Escape. It lists the other links of
 // the page in rec.links, which is where the route pass looks for pages it does not know.
-export async function safeClicks(page, rec, budget = 10) {
+export async function safeClicks(page, rec, budget = 6) {
   const found = await page.evaluate(() => {
     const vis = (el) => {
       const r = el.getBoundingClientRect()
@@ -273,7 +282,7 @@ export async function safeClicks(page, rec, budget = 10) {
       if (!(await loc.isVisible())) continue
       await loc.click({ timeout: 3000, noWaitAfter: true })
       clicked++
-      await page.waitForTimeout(500)
+      await page.waitForTimeout(350)
       if (new URL(page.url()).pathname !== here.pathname) {
         await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => {})
         await page.waitForTimeout(500)
