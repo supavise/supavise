@@ -89,7 +89,7 @@ func (s *Service) deleteWith(ctx context.Context, b *Branch, by string, skipBack
 	defer s.end(b.Ref, r)
 	ctx, cancel := context.WithTimeout(ctx, s.opTimeout)
 	defer cancel()
-	if err := s.removeBranch(ctx, b, removeOptions{final: !skipBackup}); err != nil {
+	if err := s.removeBranch(ctx, b, removeOptions{final: true, skipFinalBackup: skipBackup}); err != nil {
 		return err
 	}
 	payload := map[string]any{"branch": b.Ref, "name": b.Name, "by": by}
@@ -101,6 +101,9 @@ type removeOptions struct {
 	// final lets a persistent branch keep its final base backup and its archive (a delete);
 	// a reset removes the archive whatever the branch is.
 	final bool
+	// skipFinalBackup deletes a persistent branch without the final base backup, and keeps its archive: the
+	// older backups and the WAL stay available for a restore to a new project.
+	skipFinalBackup bool
 	// keepRecord keeps the registry row (lifecycle.DeleteOptions.KeepRecord).
 	keepRecord bool
 }
@@ -112,7 +115,7 @@ func (s *Service) removeBranch(ctx context.Context, b *Branch, o removeOptions) 
 	keepBackup := b.Persistent && o.final
 	// A reset (the only caller that keeps the record) starts the branch with no objects, so the
 	// files of the old cluster, in the bucket or on disk, go with it.
-	if err := s.eng.DeleteWith(ctx, b.Ref, lifecycle.DeleteOptions{SkipFinalBackup: !keepBackup, KeepRecord: o.keepRecord, PurgeObjects: o.keepRecord}); err != nil {
+	if err := s.eng.DeleteWith(ctx, b.Ref, lifecycle.DeleteOptions{SkipFinalBackup: !keepBackup || o.skipFinalBackup, KeepRecord: o.keepRecord, PurgeObjects: o.keepRecord}); err != nil {
 		return err
 	}
 	if !keepBackup {

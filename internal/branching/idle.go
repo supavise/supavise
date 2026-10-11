@@ -160,7 +160,15 @@ func (s *Service) IdleSweep(ctx context.Context) (*IdleResult, error) {
 		if t, ok := s.activity.Last(p.Ref); (ok && now.Sub(t) < idleAfter) || s.activity.Active(p.Ref) > 0 {
 			continue
 		}
-		if err := pauser.PauseWith(ctx, p.Ref, lifecycle.PauseOptions{Reason: registry.PauseIdle}); err != nil {
+		// Held as an operation while the branch stops, so that a merge or a reset that starts in this
+		// process meanwhile is told the branch is busy instead of finding its database going away.
+		r, err := s.begin(p.Ref, "pause")
+		if err != nil {
+			continue
+		}
+		err = pauser.PauseWith(ctx, p.Ref, lifecycle.PauseOptions{Reason: registry.PauseIdle})
+		s.end(p.Ref, r)
+		if err != nil {
 			s.log.Warn("could not pause an idle branch", "ref", p.Ref, "name", b.Name, "err", err)
 			res.Failed[p.Ref] = err.Error()
 			continue
