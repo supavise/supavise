@@ -9,6 +9,7 @@ import (
 
 	plat "github.com/supavise/supavise/internal/api/gen/platform"
 	v1 "github.com/supavise/supavise/internal/api/gen/v1"
+	"github.com/supavise/supavise/internal/metrics"
 	"github.com/supavise/supavise/internal/registry"
 	"github.com/supavise/supavise/internal/reqstats"
 )
@@ -239,5 +240,41 @@ func TestLogsMessageNamesTheProjectsNodeOnACluster(t *testing.T) {
 	rec := f.do("GET", "/platform/projects/"+testRef+"/analytics/endpoints/auth.metrics", nil)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "On the server that hosts this project (node east), run `supavise logs "+testRef+" --service auth`") {
 		t.Errorf("auth.metrics on a cluster: %d %s, want the node named", rec.Code, rec.Body)
+	}
+}
+
+// forgetting is a MetricsSource that records the refs it was told to forget.
+type forgetting struct{ refs []string }
+
+func (*forgetting) Query(string, []string, time.Time, time.Time, time.Duration) (metrics.Result, error) {
+	return metrics.Result{}, nil
+}
+func (*forgetting) Warnings(string) (metrics.Warnings, bool) { return metrics.Warnings{}, false }
+func (f *forgetting) Forget(ref string)                      { f.refs = append(f.refs, ref) }
+
+// Deleting a project through the API drops its request counts and its utilization history at once, so
+// that a ref used again (the CLI's --ref) starts with nothing of the deleted project's.
+func TestDeletingAProjectDropsItsUsage(t *testing.T) {
+	now := time.Date(2026, 10, 10, 12, 30, 20, 0, time.UTC)
+	f := newFixture(t)
+	stats, mx := reqstats.New(), &forgetting{}
+	srv, err := NewServer(Deps{Registry: f.reg, Secrets: f.mgr.sec, Manager: f.mgr, Config: f.cfg, PGMetaURL: f.meta.URL,
+		Requests: stats, Metrics: mx, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv = srv
+	f.ownerOn(srv)
+	stats.Add(testRef, reqstats.Rest, now)
+	stats.Add("bbbbbbbbbbbbbbbbbbbb", reqstats.Rest, now)
+
+	if rec := f.do("DELETE", "/v1/projects/"+testRef, nil); rec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	if stats.Len() != 1 {
+		t.Errorf("%d projects still have request counts, want only the other one", stats.Len())
+	}
+	if len(mx.refs) != 1 || mx.refs[0] != testRef {
+		t.Errorf("the collector was told to forget %v", mx.refs)
 	}
 }

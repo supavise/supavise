@@ -198,10 +198,11 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	// and resource-warning routes and the alert checker answer from (metrics.go). The node's id comes
 	// from the cluster membership once the wire has one, so it is read through the variable.
 	var wire *Wire
-	mx := newMetrics(cfg, node, log.With("component", "metrics"), func() string { return selfOf(wire) })
 	// The proxy counts the requests it serves to each project's API; the Management API reads the
-	// counts for the dashboard's request charts.
+	// counts for the dashboard's request charts. The collector drops the counts of a project it finds
+	// deleted (a delete through the API does it at once).
 	requests := reqstats.New()
+	mx := newMetrics(cfg, node, log.With("component", "metrics"), func() string { return selfOf(wire) }, requests.Forget)
 	apiDeps := api.Deps{
 		Requests: requests,
 		Health:   monitor,
