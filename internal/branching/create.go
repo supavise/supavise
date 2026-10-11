@@ -118,7 +118,15 @@ func (s *Service) Create(ctx context.Context, ref string, in CreateInput) (b *Br
 	if p.Status != registry.StatusActiveHealthy && p.Status != registry.StatusActiveUnhealthy {
 		return nil, conflict("project %s is %s; it must be running to be branched", p.Ref, p.Status)
 	}
-	class, err := s.classFor(in.DesiredInstanceSize)
+	size := in.DesiredInstanceSize
+	if size == "" && in.WithData {
+		// A copy of the parent's data needs what the parent's data needed (hosted: the branch's compute
+		// matches production's when the request does not say).
+		if n, ok := lifecycle.ParseSize(p.Class); ok {
+			size = n
+		}
+	}
+	class, err := s.classFor(size)
 	if err != nil {
 		return nil, err
 	}
@@ -255,6 +263,10 @@ type createJob struct {
 	// recreate builds the cluster over the branch's existing registry row, which a reset keeps
 	// (lifecycle.DeleteOptions.KeepRecord), so that a failure leaves the branch registered.
 	recreate bool
+	// history, with useHistory, is the migration history a reset of a schema-only branch replays:
+	// the branch's own, read before its cluster was removed. Without it the parent's is replayed.
+	history    []Migration
+	useHistory bool
 }
 
 // doCreate is the body of a branch creation. It returns the detail recorded on success.
@@ -267,6 +279,11 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 	// new cluster and gets the same revoke or grant before its migrations replay, and a branch
 	// made from the parent's data holds the parent's own default privileges and copies the row.
 	req.DataAPI = lifecycle.DataAPIOptions{ExposeNewTables: s.parentExposesNewTables(ctx, j.parent.Ref), CopyFrom: j.parent.Ref}
+	if !j.recreate {
+		// The branch starts on the parent's saved settings (providers, SMTP, MFA, PostgREST, Storage and
+		// Realtime limits, non-sizing Postgres settings), not on defaults; a reset keeps its own.
+		req.SettingsFrom = j.parent.Ref
+	}
 	method := MethodSchema
 	var stats *CloneStats
 	var reason string
@@ -336,6 +353,16 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		detail = fmt.Sprintf("data cloned by %s in %d ms (%d files, %s apparent, %s of new disk, %d WAL segments)",
 			method, stats.TotalMillis, stats.Files, lifecycle.HumanBytes(stats.Bytes), lifecycle.HumanBytes(stats.ExtraDiskByte), stats.WALSegments)
 	}
+	if !j.recreate || j.in.WithData {
+		// What the branch and its parent agree on now: the diff later shows what the branch changed
+		// from here. A reset of a schema-only branch keeps the base it has; one that copies data again
+		// starts a new one.
+		src := "create"
+		if j.recreate {
+			src = "reset"
+		}
+		s.recordBase(ctx, j.ref, src)
+	}
 	egress := ""
 	if j.in.WithData && method != MethodSchema {
 		if p, err := s.reg.GetProject(ctx, j.ref); err == nil && p.Branch != nil {
@@ -348,6 +375,13 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		s.setState(ctx, j.ref, registry.BranchRunningMigration, detail, func(b *registry.BranchInfo) { b.ExpiresAt = s.expiry(j.in.TTL) })
 	}
 	s.phase(ctx, StepDeploy)
+	if !j.recreate {
+		// The deploy step is where a branch gets its Edge Functions: the parent's, copied, and the
+		// secrets of the create body.
+		if err := s.carryAtCreate(ctx, j.parent.Ref, j.ref, j.in.Secrets); err != nil {
+			return "", err
+		}
+	}
 	payload := map[string]any{"branch": j.ref, "name": j.in.Name, "method": method, "with_data": j.in.WithData, "ms": s.now().Sub(started).Milliseconds()}
 	if stats != nil {
 		payload["clone"] = stats
@@ -398,6 +432,9 @@ func (s *Service) cloneSeeder(parent *registry.Project, method string, out **Clo
 		if err := writeQuarantine(dataDir); err != nil {
 			return fmt.Errorf("write the first-start settings of the branch: %w", err)
 		}
+		if err := dropSizing(dataDir); err != nil {
+			return fmt.Errorf("drop the parent's sizing from the branch: %w", err)
+		}
 		s.log.Info("cloned the parent's data directory", "parent", parent.Ref, "method", st.Method, "fs", st.FS,
 			"files", st.Files, "cloned", st.Cloned, "copied", st.Copied, "bytes", st.Bytes, "extra_disk", st.ExtraDiskByte, "ms", st.TotalMillis)
 		return nil
@@ -418,7 +455,11 @@ func (s *Service) cloneParent(ctx context.Context, parentRef, method, dstData st
 // plus all archived WAL as a new project (internal/backup), then make it a branch.
 func (s *Service) createFromBackup(ctx context.Context, j *createJob) error {
 	// The restore creates its project through this Manager, which stamps it as a branch.
-	bs := s.bk.WithManager(stampManager{Manager: s.eng, info: j.info, class: j.class, recreate: j.recreate})
+	sm := stampManager{Manager: s.eng, info: j.info, class: j.class, recreate: j.recreate}
+	if !j.recreate {
+		sm.settingsFrom = j.parent.Ref
+	}
+	bs := s.bk.WithManager(sm)
 	if _, err := bs.RestoreWith(ctx, j.parent.Ref, s.now(), j.ref, backup.RestoreOptions{Latest: true, IntoFailedRow: j.recreate, SkipFiles: true}); err != nil {
 		return fmt.Errorf("restore the parent's base backup: %w", err)
 	}
@@ -489,12 +530,15 @@ type stampManager struct {
 	info     *registry.BranchInfo
 	class    string
 	recreate bool
+	// settingsFrom is the project whose saved settings the restored branch starts on ("" for a reset).
+	settingsFrom string
 }
 
 func (m stampManager) Create(ctx context.Context, req lifecycle.CreateRequest) (*registry.Project, error) {
 	b := *m.info
 	req.Branch = &b
 	req.Recreate = m.recreate
+	req.SettingsFrom = m.settingsFrom
 	if m.class != "" {
 		req.Class = m.class
 	}
@@ -503,7 +547,10 @@ func (m stampManager) Create(ctx context.Context, req lifecycle.CreateRequest) (
 			if err := seed(ctx, p, dataDir); err != nil {
 				return err
 			}
-			return writeQuarantine(dataDir)
+			if err := writeQuarantine(dataDir); err != nil {
+				return err
+			}
+			return dropSizing(dataDir)
 		}
 	}
 	return m.Manager.Create(ctx, req)

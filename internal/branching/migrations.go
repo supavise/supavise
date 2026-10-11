@@ -2,6 +2,8 @@ package branching
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/supavise/supavise/internal/branching/schemadiff"
 	"github.com/supavise/supavise/internal/registry"
 )
 
@@ -366,32 +369,51 @@ func upTo(ms []Migration, v string) ([]Migration, error) {
 	return out, nil
 }
 
-// replay gives a schema-only branch the parent's migration history, then the seed.
+// replay gives a schema-only branch its migration history, then the seed. A new branch gets the
+// parent's history, or, when the parent has none (it was built in the SQL editor), a baseline of the
+// parent's schema (baselineFor). A reset replays the branch's own history instead (createJob.history).
+// upTo limits it to a version; "0" is an empty database and runs no seed.
 func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, seeded bool, err error) {
 	s.phase(ctx, StepMigrate)
-	parentMigs, err := s.db.Migrations(ctx, j.parent.Ref)
-	if err != nil {
-		return 0, false, fmt.Errorf("read the parent's migration history: %w", err)
+	var hist []Migration
+	if j.useHistory {
+		hist = j.history
+	} else {
+		if hist, err = s.db.Migrations(ctx, j.parent.Ref); err != nil {
+			return 0, false, fmt.Errorf("read the parent's migration history: %w", err)
+		}
+		if len(hist) == 0 && j.upTo != "0" {
+			if hist, err = s.baselineFor(ctx, j); err != nil {
+				return 0, false, err
+			}
+		}
 	}
-	if j.upTo != "" {
-		cut := parentMigs[:0:0]
+	switch j.upTo {
+	case "":
+	case "0":
+		hist = nil
+	default:
+		cut := hist[:0:0]
 		found := false
-		for _, m := range parentMigs {
+		for _, m := range hist {
 			if m.Version <= j.upTo {
 				cut = append(cut, m)
 			}
 			found = found || m.Version == j.upTo
 		}
 		if !found {
-			return 0, false, invalid("migration_version %s is not in the parent's migration history", j.upTo)
+			return 0, false, invalid("migration_version %s is not in the migration history", j.upTo)
 		}
-		parentMigs = cut
+		hist = cut
 	}
-	if len(parentMigs) > 0 {
-		s.setState(ctx, j.ref, registry.BranchRunningMigration, fmt.Sprintf("replaying %d migration(s)", len(parentMigs)), nil)
-		if _, err := s.db.Apply(ctx, j.ref, parentMigs, ApplyOptions{}); err != nil {
-			return 0, false, fmt.Errorf("replay the parent's migrations: %w", err)
+	if len(hist) > 0 {
+		s.setState(ctx, j.ref, registry.BranchRunningMigration, fmt.Sprintf("replaying %d migration(s)", len(hist)), nil)
+		if _, err := s.db.Apply(ctx, j.ref, hist, ApplyOptions{}); err != nil {
+			return 0, false, fmt.Errorf("replay the migrations: %w", err)
 		}
+	}
+	if j.upTo == "0" {
+		return 0, false, nil
 	}
 	seed := j.in.Seed
 	if strings.TrimSpace(seed) == "" {
@@ -403,9 +425,160 @@ func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, see
 		s.phase(ctx, StepSeed)
 		s.setState(ctx, j.ref, registry.BranchRunningMigration, "applying the seed", nil)
 		if err := s.db.RunScript(ctx, j.ref, seed); err != nil {
-			return len(parentMigs), false, fmt.Errorf("apply the seed: %w", err)
+			return len(hist), false, fmt.Errorf("apply the seed: %w", err)
 		}
-		return len(parentMigs), true, nil
+		return len(hist), true, nil
 	}
-	return len(parentMigs), false, nil
+	return len(hist), false, nil
+}
+
+// ---- schemas and history without running it ---------------------------------------------------
+
+// SchemaDatabase is what a Database adds when it can read a project's schema and write its
+// migration history without running it. The pgx Database implements it; a Database that does
+// not leaves the branching operations that need it (the baseline, the schema diff, the base a
+// branch is compared with) out.
+type SchemaDatabase interface {
+	// Snapshot reads the schema of ref's database.
+	Snapshot(ctx context.Context, ref string, o schemadiff.ReadOptions) (*schemadiff.Snapshot, error)
+	// Roles returns the names of the roles of ref's cluster.
+	Roles(ctx context.Context, ref string) (map[string]bool, error)
+	// Record puts migrations into the history of ref without running them, under the lock Apply
+	// takes. A version that is already there with the same content is left; with other content it is
+	// an error. It returns the versions it recorded.
+	Record(ctx context.Context, ref string, ms []Migration) ([]string, error)
+	// InitHistory records m as the first migration of ref, without running it, only when the
+	// history has none. It reports whether it did.
+	InitHistory(ctx context.Context, ref string, m Migration) (bool, error)
+}
+
+// schemaDB returns the Database's schema abilities, nil when it has none.
+func (s *Service) schemaDB() SchemaDatabase {
+	sd, _ := s.db.(SchemaDatabase)
+	return sd
+}
+
+const applyLockSQL = `select pg_advisory_lock(hashtext('supavise.branching.apply'))`
+
+// Snapshot implements SchemaDatabase.
+func (d *pgDatabase) Snapshot(ctx context.Context, ref string, o schemadiff.ReadOptions) (*schemadiff.Snapshot, error) {
+	c, err := d.conn(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	defer closeConn(c)
+	tx, err := c.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	// Qualified names in everything the catalog functions print, whatever the role's search_path is.
+	if _, err := tx.Exec(ctx, `set local search_path = pg_catalog`); err != nil {
+		return nil, err
+	}
+	return schemadiff.Read(ctx, tx, o)
+}
+
+// Roles implements SchemaDatabase.
+func (d *pgDatabase) Roles(ctx context.Context, ref string) (map[string]bool, error) {
+	c, err := d.conn(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	defer closeConn(c)
+	rows, err := c.Query(ctx, `select rolname from pg_roles`)
+	if err != nil {
+		return nil, err
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out, nil
+}
+
+// Record implements SchemaDatabase.
+func (d *pgDatabase) Record(ctx context.Context, ref string, ms []Migration) ([]string, error) {
+	if len(ms) == 0 {
+		return nil, nil
+	}
+	c, err := d.conn(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	defer closeConn(c)
+	if _, err := c.Exec(ctx, ensureMigrationsTable); err != nil {
+		return nil, fmt.Errorf("prepare %s: %w", migrationsTable, err)
+	}
+	if _, err := c.Exec(ctx, applyLockSQL); err != nil {
+		return nil, fmt.Errorf("wait for other migrations on %s: %w", ref, err)
+	}
+	var done []string
+	err = pgx.BeginFunc(ctx, c, func(tx pgx.Tx) error {
+		for _, m := range ms {
+			var have []string
+			var name *string
+			switch err := tx.QueryRow(ctx, `select statements, name from `+migrationsTable+` where version = $1`, m.Version).Scan(&have, &name); {
+			case err == nil:
+				cur := Migration{Version: m.Version, Statements: have}
+				if name != nil {
+					cur.Name = *name
+				}
+				if !sameMigration(cur, m) {
+					return fmt.Errorf("%w: version %s is already recorded on %s with other content", ErrDiverged, m.Version, ref)
+				}
+				continue
+			case !errors.Is(err, pgx.ErrNoRows):
+				return err
+			}
+			if _, err := tx.Exec(ctx, `insert into `+migrationsTable+` (version, name, statements) values ($1, nullif($2, ''), $3)`, m.Version, m.Name, m.Statements); err != nil {
+				return err
+			}
+			done = append(done, m.Version)
+		}
+		return nil
+	})
+	return done, err
+}
+
+// InitHistory implements SchemaDatabase.
+func (d *pgDatabase) InitHistory(ctx context.Context, ref string, m Migration) (bool, error) {
+	c, err := d.conn(ctx, ref)
+	if err != nil {
+		return false, err
+	}
+	defer closeConn(c)
+	if _, err := c.Exec(ctx, ensureMigrationsTable); err != nil {
+		return false, fmt.Errorf("prepare %s: %w", migrationsTable, err)
+	}
+	if _, err := c.Exec(ctx, applyLockSQL); err != nil {
+		return false, fmt.Errorf("wait for other migrations on %s: %w", ref, err)
+	}
+	inserted := false
+	err = pgx.BeginFunc(ctx, c, func(tx pgx.Tx) error {
+		var n int
+		if err := tx.QueryRow(ctx, `select count(*) from `+migrationsTable).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `insert into `+migrationsTable+` (version, name, statements) values ($1, nullif($2, ''), $3)`, m.Version, m.Name, m.Statements); err != nil {
+			return err
+		}
+		inserted = true
+		return nil
+	})
+	return inserted, err
+}
+
+// scriptHash identifies a diff: the SHA-256 of its text with whitespace folded, so that a diff
+// recorded through the API and one computed again compare equal.
+func scriptHash(script string) string {
+	sum := sha256.Sum256([]byte(normalizeSQL(script)))
+	return hex.EncodeToString(sum[:])
 }

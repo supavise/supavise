@@ -40,6 +40,10 @@ type fakeEngine struct {
 	// failBeforeRow makes Create fail before it writes or touches the registry row.
 	failBeforeRow error
 	hold          chan struct{} // when set, Create waits for it to close (after the row exists)
+	// onCreate runs when Create has made the row (a test that needs a real database makes it here), and
+	// onDelete when DeleteWith has removed the cluster (before the row goes, if it goes).
+	onCreate func(req lifecycle.CreateRequest)
+	onDelete func(ref string, o lifecycle.DeleteOptions)
 }
 
 func newFakeEngine(reg registry.Registry, sec secrets.Secrets) *fakeEngine {
@@ -72,6 +76,9 @@ func (f *fakeEngine) Create(ctx context.Context, req lifecycle.CreateRequest) (*
 	} else if err := f.reg.CreateProject(ctx, p); err != nil {
 		return nil, err
 	}
+	if f.onCreate != nil {
+		f.onCreate(req)
+	}
 	if f.hold != nil {
 		<-f.hold
 	}
@@ -101,6 +108,9 @@ func (f *fakeEngine) DeleteWith(ctx context.Context, ref string, o lifecycle.Del
 	f.skipped[ref] = o.SkipFinalBackup
 	f.keptRecord[ref] = o.KeepRecord
 	f.mu.Unlock()
+	if f.onDelete != nil {
+		f.onDelete(ref, o)
+	}
 	if o.KeepRecord {
 		return f.reg.SetProjectStatus(ctx, ref, registry.StatusInitFailed)
 	}

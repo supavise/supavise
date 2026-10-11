@@ -15,17 +15,20 @@ import (
 // resetMinLife is the shortest remaining lifetime of a non-persistent branch after a reset.
 const resetMinLife = 15 * time.Minute
 
-// Reset recreates the branch from its parent: a schema-only branch gets the parent's
-// migrations (up to MigrationVersion when set) and seed, a with_data branch a fresh copy of
-// the parent's data. The branch keeps its id, name, ref and settings. A schema-only branch
-// also keeps its credentials; a with_data branch gets new ones, as at creation. Anything
-// written to the branch is gone, and so is the archive of a persistent branch (its WAL and
-// base backups: the recreated cluster reuses the ref, and its WAL would collide with the old).
+// Reset recreates the branch's database. A schema-only branch replays its own recorded migration
+// history (up to MigrationVersion when set, which may name a migration only the branch has; "0"
+// gives an empty database) and then the seed: the migrations the branch added itself survive, and
+// the tables and data that never became migrations do not. A with_data branch gets a fresh copy of
+// the parent's data. The branch keeps its id, name, ref, Edge Functions, function secrets and saved
+// settings. A schema-only branch also keeps its credentials; a with_data branch gets new ones, as
+// at creation. Anything else written to the branch is gone, and so is the archive of a persistent
+// branch (its WAL and base backups: the recreated cluster reuses the ref, and its WAL would collide
+// with the old).
 //
 // Everything that can fail without touching the branch is checked first (the parent is
-// running, a with_data branch has a way to get its data). The old cluster is then removed but
-// the branch's registry row is kept, so a failure later leaves the branch registered as
-// MIGRATIONS_FAILED: it can be reset again or deleted.
+// running, the migration version exists, a with_data branch has a way to get its data). The old
+// cluster is then removed but the branch's registry row is kept, so a failure later leaves the
+// branch registered as MIGRATIONS_FAILED: it can be reset again or deleted.
 func (s *Service) Reset(ctx context.Context, idOrRef string, in ActionInput) (string, error) {
 	b, err := s.resolveBranch(ctx, idOrRef, "reset")
 	if err != nil {
@@ -54,6 +57,12 @@ func (s *Service) Reset(ctx context.Context, idOrRef string, in ActionInput) (st
 		org = o.Slug
 	}
 	if err := s.preflightReset(ctx, b, parent, old); err != nil {
+		return "", err
+	}
+	// The branch's own history is read now, while its cluster exists, and the version is judged
+	// against it before anything is removed.
+	history, useHistory, err := s.resetHistory(ctx, b, parent, in.MigrationVersion)
+	if err != nil {
 		return "", err
 	}
 	var keys *secrets.ProjectKeys
@@ -109,6 +118,7 @@ func (s *Service) Reset(ctx context.Context, idOrRef string, in ActionInput) (st
 			j.keys = keys
 		}
 		j.upTo = in.MigrationVersion
+		j.history, j.useHistory = history, useHistory
 		j.keepExpiry = true
 		return s.doCreate(ctx, j)
 	})
@@ -146,4 +156,39 @@ func (s *Service) preflightReset(ctx context.Context, b *Branch, parent, old *re
 		}
 	}
 	return nil
+}
+
+// resetHistory reads the migration history a reset of a schema-only branch replays: the branch's own,
+// and checks that migration_version ("0" for an empty database) is in it. A branch whose cluster
+// cannot be read, or has recorded nothing (a creation that failed early), is reset from the
+// parent's history as a new branch would be, and the version is looked for there.
+func (s *Service) resetHistory(ctx context.Context, b *Branch, parent *registry.Project, version string) ([]Migration, bool, error) {
+	if b.WithData {
+		return nil, false, nil
+	}
+	own, err := s.db.Migrations(ctx, b.Ref)
+	use := err == nil && len(own) > 0
+	pool := own
+	if !use {
+		pool = nil
+		if version != "" && version != "0" {
+			if pool, err = s.db.Migrations(ctx, parent.Ref); err != nil {
+				return nil, false, fmt.Errorf("read the parent's migrations: %w", err)
+			}
+		}
+	}
+	if version != "" && version != "0" {
+		found := false
+		for _, m := range pool {
+			found = found || m.Version == version
+		}
+		if !found {
+			where := "the migration history of the branch"
+			if !use {
+				where = "the migration history of the parent (the branch has recorded none)"
+			}
+			return nil, false, invalid("migration_version %s is not in %s", version, where)
+		}
+	}
+	return own, use, nil
 }
