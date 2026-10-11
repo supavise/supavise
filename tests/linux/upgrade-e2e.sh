@@ -126,11 +126,14 @@ SV=/usr/local/bin/supavise
 STATE=$SUPAVISE_STATE
 RELEASES=/usr/local/lib/supavise/releases
 OLD_AUTH=auth-v2.195.0-r0 OLD_REST=postgrest-v16.2-r0 OLD_META=pgmeta-v0.99.0-r0 OLD_STORAGE=storage-v1.79.35-r0
-NEW_AUTH=$(awk '/^  auth:/{print $2}' internal/versions/versions.yaml)
-NEW_REST=$(awk '/^  postgrest:/{print $2}' internal/versions/versions.yaml)
-NEW_META=$(awk '/^  pgmeta:/{print $2}' internal/versions/versions.yaml)
-NEW_STORAGE=$(awk '/^  storage:/{print $2}' internal/versions/versions.yaml)
-NEWER_AUTH=auth-v2.196.0-r0
+# The pins of v2 (upgrade-e2e-build.sh): the checkout's, except for a GoTrue release older than the
+# checkout's, which is the one v5 pins.
+NEW_AUTH=$(awk '/^  auth:/{print $2}' "$BINS/v2.versions.yaml")
+NEW_REST=$(awk '/^  postgrest:/{print $2}' "$BINS/v2.versions.yaml")
+NEW_META=$(awk '/^  pgmeta:/{print $2}' "$BINS/v2.versions.yaml")
+NEW_STORAGE=$(awk '/^  storage:/{print $2}' "$BINS/v2.versions.yaml")
+NEWER_AUTH=$(awk '/^  auth:/{print $2}' "$BINS/v5.versions.yaml")
+[[ -n $NEW_AUTH && -n $NEWER_AUTH && $NEW_AUTH != "$NEWER_AUTH" ]] || fail "v2 and v5 pin the same GoTrue release ($NEW_AUTH / $NEWER_AUTH): run tests/linux/upgrade-e2e-build.sh again"
 BAD_REST=postgrest-v99.0.0-r0
 USER_EMAIL=upgrade-e2e@example.com USER_PASSWORD=upgrade-correct-horse-battery
 

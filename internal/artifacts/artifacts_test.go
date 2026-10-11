@@ -155,7 +155,7 @@ func TestFetchVerifiesUnpacksAndCaches(t *testing.T) {
 	tag := "auth-v2.195.0-r1"
 	srv, downloads := release(t, tag, "linux-arm64", makeArchive(t, goodEntries), "")
 	cfg := testConfig(t, srv.URL)
-	s, err := New(cfg)
+	s, err := New(cfg, WithVersions(testVersions(tag)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestFetchRejectsWrongDigest(t *testing.T) {
 	tag := "auth-v2.195.0-r1"
 	srv, _ := release(t, tag, "linux-arm64", makeArchive(t, goodEntries), strings.Repeat("a", 64))
 	cfg := testConfig(t, srv.URL)
-	s, _ := New(cfg)
+	s, _ := New(cfg, WithVersions(testVersions(tag)))
 	_, err := s.Fetch(context.Background(), config.SvcGoTrue)
 	if err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("err = %v, want digest mismatch", err)

@@ -476,6 +476,10 @@ jobs:
             git fetch --no-tags origin main
             base=$(git merge-base HEAD FETCH_HEAD)
             git worktree add --detach /tmp/prev-tree "$base"
+            # The previous release pins what this checkout pins: a branch that bumps a service would
+            # otherwise move it in the upgrade below, and the rollback of that upgrade puts back the
+            # pins of v0.2.0 (this checkout), not the ones the node was installed with.
+            cp internal/versions/versions.yaml /tmp/prev-tree/internal/versions/versions.yaml
             (cd /tmp/prev-tree && CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=v0.1.1" -o /tmp/supavise-prev ./cmd/supavise)
             CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=v0.2.0" -o /tmp/supavise-new ./cmd/supavise
             CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=v0.2.1" -o /tmp/supavise-next ./cmd/supavise

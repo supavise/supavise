@@ -17,7 +17,7 @@ import (
 // there ("DB_USER ... Requires a superuser" in ENVS.md); hosted and self-hosted both use
 // supabase_admin, so does this. Tenants are managed through POST /api/tenants (create or
 // update), authenticated with a JWT signed with the server's API_JWT_SECRET. Creating a
-// tenant also runs the 88 tenant migrations in the project's database, which takes a few
+// tenant also runs the 91 tenant migrations in the project's database, which takes a few
 // seconds, so the HTTP timeout is long.
 const (
 	realtimeSlotName    = "supabase_realtime_replication_slot"
