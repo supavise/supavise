@@ -1,13 +1,16 @@
 package branching
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,8 +90,15 @@ func TestScheduledDeleteTurnsAnIdlePauseIntoTheOwners(t *testing.T) {
 	if err := h.eng.PauseWith(ctx, b.Ref, lifecycle.PauseOptions{Reason: registry.PauseIdle}); err != nil {
 		t.Fatal(err)
 	}
+	select {
+	case <-h.svc.idle.kick:
+	default:
+	}
 	if _, err := h.svc.Delete(ctx, b.Ref, DeleteOptions{Schedule: true}); err != nil {
 		t.Fatal(err)
+	}
+	if len(h.svc.idle.kick) != 1 {
+		t.Fatal("the wake gate of the branch was not told that its pause is the owner's now")
 	}
 	if h.svc.PauseReason(ctx, b.Ref) != "owner" {
 		t.Fatalf("pause reason = %q", h.svc.PauseReason(ctx, b.Ref))
@@ -268,6 +278,52 @@ func TestSweepWarnsOnceBeforeABranchWithAHostnameExpires(t *testing.T) {
 	// A dry run warns nobody.
 	if res, _ := h.svc.Sweep(ctx, true); len(res.Warned) != 0 {
 		t.Fatalf("dry run warned: %+v", res)
+	}
+}
+
+// The warnings of one pass are posted together, so that branches created at the same time with a
+// notify_url that does not answer cannot hold the sweep for as many posts' timeouts. At most
+// maxNotifyPosts go at once, and the sweep returns after the last.
+func TestExpiryWarningsArePostedTogetherAndWithinABound(t *testing.T) {
+	h, rec := expiringHarness(t)
+	ctx := context.Background()
+	if err := h.reg.CreateProject(ctx, &registry.Project{Ref: config.SystemRef, Name: "system", Status: registry.StatusActiveHealthy}); err != nil {
+		t.Fatal(err)
+	}
+	var inflight, peak atomic.Int32
+	inner := rec.handler()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if !bytes.Contains(body, []byte(`"branch.expiring"`)) { // the creates' own completion posts
+			inner.ServeHTTP(w, r)
+			return
+		}
+		n := inflight.Add(1)
+		defer inflight.Add(-1)
+		for old := peak.Load(); n > old && !peak.CompareAndSwap(old, n); old = peak.Load() {
+		}
+		time.Sleep(150 * time.Millisecond)
+		inner.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	const branches = maxNotifyPosts + 1
+	for i := 0; i < branches; i++ {
+		b := h.create(fmt.Sprintf("preview-%d", i), func(in *CreateInput) { in.NotifyURL = srv.URL })
+		if err := h.reg.PutVanitySubdomain(ctx, b.Ref, fmt.Sprintf("preview-%d", i), h.cfg.VanityHost(fmt.Sprintf("preview-%d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.advance(25 * time.Hour) // 23 hours left
+	res, err := h.svc.Sweep(ctx, false)
+	if err != nil || len(res.Warned) != branches {
+		t.Fatalf("sweep: %+v %v", res, err)
+	}
+	if rec.n() != branches {
+		t.Fatalf("%d of %d warnings were posted by the time the sweep returned", rec.n(), branches)
+	}
+	if got := peak.Load(); got < 2 || got > maxNotifyPosts {
+		t.Fatalf("%d posts at once, want between 2 and %d", got, maxNotifyPosts)
 	}
 }
 

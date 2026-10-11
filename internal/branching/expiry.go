@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/supavise/supavise/internal/registry"
@@ -37,8 +38,35 @@ func (s *Service) hostnames(ctx context.Context, ref string) []string {
 	return out
 }
 
-// warnExpiring sends the warning for b if it is due, and reports whether it did.
-func (s *Service) warnExpiring(ctx context.Context, b *Branch, now time.Time) bool {
+// expiryNotice is a warning to post to a branch's notify_url once the sweep's deletions are done.
+type expiryNotice struct {
+	b     *Branch
+	names []string
+}
+
+// maxNotifyPosts bounds the expiry warnings a sweep posts at the same time.
+const maxNotifyPosts = 8
+
+// sendExpiryNotices posts the warnings together, at most maxNotifyPosts at a time, and returns when all
+// are done. Branches created together share an expiry and are warned in one pass; posted one after the
+// other, a handful of dead notify_url addresses would hold the sweep for as many times the post's timeout.
+func (s *Service) sendExpiryNotices(ctx context.Context, notices []expiryNotice) {
+	slots := make(chan struct{}, maxNotifyPosts)
+	var wg sync.WaitGroup
+	for _, n := range notices {
+		slots <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-slots; wg.Done() }()
+			s.notifyExpiring(ctx, n.b, n.names)
+		}()
+	}
+	wg.Wait()
+}
+
+// warnExpiring records the warning for b if it is due and reports whether it did. The post to the branch's
+// notify_url, if it has one, is added to notices for the caller to send (sendExpiryNotices).
+func (s *Service) warnExpiring(ctx context.Context, b *Branch, now time.Time, notices *[]expiryNotice) bool {
 	if b.Persistent || b.ExpiresAt == nil {
 		return false
 	}
@@ -71,7 +99,9 @@ func (s *Service) warnExpiring(ctx context.Context, b *Branch, now time.Time) bo
 	s.event(ctx, b.Ref, "branch.expiring", payload)
 	s.event(ctx, b.ParentRef, "branch.expiring", payload)
 	s.log.Warn("a branch with a hostname expires soon", "ref", b.Ref, "name", b.Name, "expires_at", b.ExpiresAt.UTC().Format(time.RFC3339), "hostnames", strings.Join(names, ","))
-	s.notifyExpiring(ctx, b, names)
+	if b.NotifyURL != "" {
+		*notices = append(*notices, expiryNotice{b: b, names: names})
+	}
 	return true
 }
 
