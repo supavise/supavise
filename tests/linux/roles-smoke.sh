@@ -383,7 +383,7 @@ json_get 'd["error"]' < <(body "${PAT[owner]}" GET "$CFG/analytics/endpoints/log
 
 # supavise logs runs as root here: the supavise user may not read the system journal.
 SVLOG=/usr/local/bin/supavise
-$SVLOG logs "$REF" --service postgres -n 200 >"$WORK/pglog.txt" 2>"$WORK/pglog.err" || { cat "$WORK/pglog.err" >&2; fail "supavise logs --service postgres failed"; }
+$SVLOG logs "$REF" --service postgres -n 20000 >"$WORK/pglog.txt" 2>"$WORK/pglog.err" || { cat "$WORK/pglog.err" >&2; fail "supavise logs --service postgres failed"; }
 [[ -s $WORK/pglog.txt ]] || { cat "$WORK/pglog.err" >&2; fail "supavise logs printed no Postgres line"; }
 grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z postgres +' "$WORK/pglog.txt" || { head -5 "$WORK/pglog.txt" >&2; fail "supavise logs lines are not '<time> postgres <message>'"; }
 grep -q "ready to accept connections" "$WORK/pglog.txt" || { tail -5 "$WORK/pglog.txt" >&2; fail "supavise logs does not show the Postgres start"; }
