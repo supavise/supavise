@@ -281,13 +281,36 @@ runs supavise-pgmeta.service "$OLD_META"
 runs supavise-storage.service "$OLD_STORAGE"
 runs supavise-gotrue@system.service "$OLD_AUTH"
 intact "$REF"; intact "$REF2"
-# The previous release grants new tables by default: a table with no grant answers.
+# The previous release is origin/main as this checkout last merged it (upgrade-e2e-build.sh). Built from a
+# main before the Data API change, it grants new tables by default, and the upgrade below must revoke that
+# once. On main itself the previous release is this release, so its projects start with hosted's revoked
+# defaults (decision "revoked:create") and the upgrade has nothing to revoke. PREV_GRANTS says which one ran;
+# either way a table that exists before the upgrade must still answer after it.
+PREV_GRANTS=
 for r in "$REF" "$REF2"; do
   project_keys "$r"
   open_table "$r" old_open
-  wait_rest "$r" "$PUB" old_open 200
-  [[ $(default_grants "$r") -gt 0 ]] || fail "$r: the previous release has no default grants on tables of public"
+  for ((i = 0; i < 30; i++)); do
+    code=$(rest_code "$r" "$PUB" old_open)
+    [[ $code == 200 || $code == 401 ]] && break
+    sleep 2
+  done
+  if [[ $code == 200 ]]; then
+    [[ ${PREV_GRANTS:-1} == 1 ]] || fail "$r: the previous release granted a new table on one project and not on the other"
+    PREV_GRANTS=1
+    [[ $(default_grants "$r") -gt 0 ]] || fail "$r: the previous release has no default grants on tables of public"
+  elif [[ $code == 401 && $(cat "$WORK/rest.body") == *42501* ]]; then
+    [[ ${PREV_GRANTS:-0} == 0 ]] || fail "$r: the previous release granted a new table on one project and not on the other"
+    PREV_GRANTS=0
+    [[ $(default_grants "$r") == 0 ]] || fail "$r: a new table got no grant, yet the default privileges of public give the Data API roles access"
+    [[ $(decision "$r") == revoked:create ]] || fail "$r: the previous release revokes, but recorded $(decision "$r")"
+    dbq "$r" "grant select on public.old_open to anon; notify pgrst, 'reload schema';" >/dev/null || fail "$r: grant on old_open"
+    wait_rest "$r" "$PUB" old_open 200
+  else
+    fail "$r: public.old_open answered $code $(cat "$WORK/rest.body" 2>/dev/null), want 200 or 401"
+  fi
 done
+log "the previous release $( ((PREV_GRANTS)) && echo grants new tables by default || echo already revokes the defaults, as this release does)"
 
 # ---- 1. --check and --plan change nothing ----------------------------------------------------
 make_release v0.0.2 "$B/v2" "$BINS/v2.versions.yaml" latest
@@ -409,11 +432,12 @@ unchanged "second upgrade"
 # and every table that exists keeps its grants.
 log "data api: the upgrade revokes the default privileges of the existing projects once and leaves their tables alone"
 for r in "$REF" "$REF2"; do
+  if ((PREV_GRANTS)); then want=revoked:upgrade; else want=revoked:create; fi
   for ((i = 0; i < 60; i++)); do
-    [[ $(decision "$r") == revoked:upgrade ]] && break
+    [[ $(decision "$r") == "$want" ]] && break
     sleep 5
   done
-  [[ $(decision "$r") == revoked:upgrade ]] || { journalctl --no-pager -u supavise.service | tail -40 >&2; fail "$r: no revoked:upgrade decision in the registry: $(decision "$r")"; }
+  [[ $(decision "$r") == "$want" ]] || { journalctl --no-pager -u supavise.service | tail -40 >&2; fail "$r: no $want decision in the registry: $(decision "$r")"; }
   [[ $(default_grants "$r") == 0 ]] || fail "$r: the default privileges of public still give the Data API roles access to new tables"
   project_keys "$r"
   [[ $(rest_code "$r" "$PUB" old_open) == 200 ]] || fail "$r: a table that existed before the upgrade stopped answering: $(cat "$WORK/rest.body")"
@@ -426,7 +450,9 @@ for ((i = 0; i < 30; i++)); do
   sleep 2
 done
 [[ $(rest_code "$REF" "$PUB" new_closed) == 401 && $(cat "$WORK/rest.body") == *42501* ]] || fail "a table created after the upgrade without a grant answered $(rest_code "$REF" "$PUB" new_closed) $(cat "$WORK/rest.body"), want 401 with 42501 (hosted's default)"
-[[ $(reg "select count(*) from supavise.events where ref = '$REF' and kind = 'project.data_api_defaults_revoked'") == 1 ]] || fail "$REF: the upgrade recorded no project.data_api_defaults_revoked event, or more than one"
+# The upgrade revokes once when the previous release granted, and not at all when it already revoked.
+REVOKES=$(reg "select count(*) from supavise.events where ref = '$REF' and kind = 'project.data_api_defaults_revoked'")
+[[ $REVOKES == "$PREV_GRANTS" ]] || fail "$REF: the upgrade recorded $REVOKES project.data_api_defaults_revoked event(s), want $PREV_GRANTS"
 
 # A user who rolls the change back with the SQL hosted publishes keeps the rollback: the decision is
 # recorded, so a restart of the daemon does not revoke again.
@@ -443,7 +469,7 @@ sleep 30 # the pass runs as soon as the projects are up
 project_keys "$REF"
 open_table "$REF" after_rollback
 wait_rest "$REF" "$PUB" after_rollback 200
-[[ $(reg "select count(*) from supavise.events where ref = '$REF' and kind = 'project.data_api_defaults_revoked'") == 1 ]] || fail "$REF: a second revoke was recorded"
+[[ $(reg "select count(*) from supavise.events where ref = '$REF' and kind = 'project.data_api_defaults_revoked'") == "$REVOKES" ]] || fail "$REF: a second revoke was recorded"
 [[ $(pg_pid "$REF") == "$PG_PID" && $(pg_pid "$REF2") == "$PG_PID2" ]] || fail "a project's PostgreSQL was restarted by the daemon's restart"
 
 # ---- 4. a daemon that dies --------------------------------------------------------------------
