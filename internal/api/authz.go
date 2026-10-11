@@ -240,6 +240,10 @@ var routeRules = []routeRule{
 	rule("R", "/platform/projects/{ref}/service-versions", chk(members.ActRead, P)),
 	// Restores overwrite production data: Owners and Administrators (the resources Studio checks
 	// before it offers the Restore button of a listed backup and the point-in-time form).
+	// Restore to a new project (clone.go): the dialog is offered to whoever may restore, and reads the
+	// physical backups like the Backups page does.
+	rule("POST", "/platform/database/{ref}/clone", chk(members.ActInfraExecute, "queue_job.restore.prepare")),
+	rule("R", "/platform/database/{ref}/clone/**", chk(members.ActRead, "physical_backups")),
 	rule("POST", "/platform/database/{ref}/backups/restore", chk(members.ActInfraExecute, "queue_job.restore.prepare")),
 	rule("POST", "/platform/database/{ref}/backups/restore-physical", chk(members.ActInfraExecute, "queue_job.restore.prepare")),
 	rule("POST", "/v1/projects/{ref}/database/backups/restore", chk(members.ActInfraExecute, "queue_job.restore.prepare")),

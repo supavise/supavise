@@ -214,6 +214,9 @@ type Server struct {
 	audit       AuditStore
 	auditPruned atomic.Int64
 
+	// clones are the restores to a new project this process is running (clone.go).
+	clones cloneTracker
+
 	handler http.Handler
 }
 
@@ -549,6 +552,7 @@ func (s *Server) implemented() map[string]route {
 	s.routesRestGraphQL(add)
 	s.routesAuthExtras(add)
 	s.routesAudit(add)
+	s.routesClone(add)
 	// Read replicas and failover: one registration function per file, so that each part of the
 	// work adds its routes without editing this one.
 	s.routesReplicas(add)
