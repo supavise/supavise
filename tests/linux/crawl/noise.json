@@ -1,5 +1,5 @@
 {
- "_comment": "Browser output the crawl does not count. Third parties and library noise only: a pattern that hides a Supavise problem does not belong here. The ConfigCat 'flag key does not exist' lines are deliberately absent: the node serves a flag document that lists every key Studio reads, so such a line is a regression.",
+ "_comment": "Browser output the crawl does not count. Third parties and library noise only: a pattern that hides a Supavise problem does not belong here. The ConfigCat 'flag key does not exist' lines are deliberately absent: the Studio build has no ConfigCat key (docs/reference/studio-platform-calls.md, Disable levers), so it never asks ConfigCat for a flag and such a line would mean the build changed, not that a flag is missing.",
  "console": [
   {
    "pattern": "usercentrics",
