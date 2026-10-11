@@ -992,6 +992,11 @@ func TestOnlyExpectedRoutesAreAuthNone(t *testing.T) {
 		"GET /v1/oauth/authorize":              true,
 		"POST /v1/oauth/token":                 true,
 		"POST /v1/oauth/revoke":                true,
+		// The GitHub integration: the page that posts the App's manifest and the redirect back from
+		// GitHub carry a one-time state, the webhook a signature.
+		"GET /supavise/v1/github/app/new":      true,
+		"GET /supavise/v1/github/app/callback": true,
+		"POST /hooks/github":                   true,
 	}
 	f := newFixture(t)
 	impl := f.srv.implemented()

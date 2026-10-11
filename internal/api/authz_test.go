@@ -374,7 +374,7 @@ func TestRouteTableCoversTheSpecs(t *testing.T) {
 
 // userWritePaths are the writes open to every signed-in user: their own profile, tokens,
 // telemetry and feedback, and the invitation they hold the token of.
-var userWritePaths = regexp.MustCompile(`^/(platform/(profile|cli/login|notifications|telemetry|feedback|support|reset-password|update-email|signup|organizations/(preview-creation|onboarding-survey|\{slug\}/members/invitations/\{token\}))|v1/oauth)`)
+var userWritePaths = regexp.MustCompile(`^/(platform/(profile|cli/login|notifications|telemetry|feedback|support|reset-password|update-email|signup|integrations/github/authorization|organizations/(preview-creation|onboarding-survey|\{slug\}/members/invitations/\{token\}))|v1/oauth|hooks/github)`)
 
 func allowedUserWrite(path string) bool { return userWritePaths.MatchString(path) }
 
@@ -454,7 +454,7 @@ func TestImplementedRoutesOpenToEveryUserAreAllowlisted(t *testing.T) {
 	// are authNone, so the rule never decides), the project-claim stub is open like its siblings, and the
 	// feedback form answers every user with the same refusal (unsupported.go).
 	// The resource warnings are a list too: they name only the projects the caller can see.
-	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/platform/feedback/send$|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/platform/telemetry/feature-flags$|/v1/oauth/)`)
+	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/platform/feedback/send$|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/platform/telemetry/feature-flags$|/v1/oauth/|/platform/integrations/github/(authorization|repositories)|/supavise/v1/github/app/|/hooks/github$)`)
 	for key := range newFixture(t).srv.implemented() {
 		m, p, _ := strings.Cut(key, " ")
 		if n := routeNeed(m, p); n.kind == needAny && !open.MatchString(p) {
