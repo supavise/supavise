@@ -1,0 +1,2373 @@
+{
+ "generator": "studio/scan-calls.mjs",
+ "studio": {
+  "commit": "94b8b06eb294cf6b217c68d30357566cc8f146d9",
+  "tag": "2026.10.05-sha-94b8b06"
+ },
+ "scanned_files": 4310,
+ "calls": [
+  {
+   "method": "GET",
+   "path": "/platform/auth/{ref}/config",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/auth-config-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/auth/{ref}/config",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/auth-config-update-mutation.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/auth/{ref}/config/hooks",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/auth-hooks-update-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/auth/{ref}/invite",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/user-invite-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/auth/{ref}/magiclink",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/user-send-magic-link-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/auth/{ref}/otp",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/user-send-otp-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/auth/{ref}/recover",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/user-reset-password-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/auth/{ref}/templates/{template}/reset",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/auth-template-reset-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/auth/{ref}/users",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/user-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/auth/{ref}/users/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/user-delete-mutation.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/auth/{ref}/users/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/user-update-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/auth/{ref}/users/{id}/factors",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/user-delete-mfa-factors-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/auth/{ref}/validate/spam",
+   "form": "literal",
+   "files": ["apps/studio/data/auth/validate-spam-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/cli/login",
+   "form": "literal",
+   "files": ["apps/studio/data/cli/login.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/cloud-marketplace/buyers/{buyer_id}/contract-linking-eligibility",
+   "form": "literal",
+   "files": ["apps/studio/components/interfaces/Organization/CloudMarketplace/cloud-marketplace-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/cloud-marketplace/buyers/{buyer_id}/onboarding-info",
+   "form": "literal",
+   "files": ["apps/studio/components/interfaces/Organization/CloudMarketplace/cloud-marketplace-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/database/{ref}/backups",
+   "form": "literal",
+   "files": ["apps/studio/data/database/backups-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/database/{ref}/backups/download",
+   "form": "literal",
+   "files": ["apps/studio/data/database/backup-download-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/database/{ref}/backups/downloadable-backups",
+   "form": "literal",
+   "files": ["apps/studio/data/database/backup-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/database/{ref}/backups/enable-physical-backups",
+   "form": "literal",
+   "files": ["apps/studio/data/database/enable-physical-backups-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/database/{ref}/backups/pitr",
+   "form": "literal",
+   "files": ["apps/studio/data/database/pitr-restore-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/database/{ref}/backups/restore",
+   "form": "literal",
+   "files": ["apps/studio/data/database/backup-restore-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/database/{ref}/backups/restore-physical",
+   "form": "literal",
+   "files": ["apps/studio/data/database/backup-restore-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/database/{ref}/clone",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/clone-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/database/{ref}/clone",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/clone-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/database/{ref}/clone/status",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/clone-status-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/database/{ref}/hook-enable",
+   "form": "literal",
+   "files": ["apps/studio/data/database/hooks-enable-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/feedback/conversations/escalation",
+   "form": "literal",
+   "files": ["apps/studio/data/feedback/ai-chat-front-sync.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/feedback/conversations/messages",
+   "form": "literal",
+   "files": ["apps/studio/data/feedback/ai-chat-front-sync.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/feedback/conversations/resolve",
+   "form": "literal",
+   "files": ["apps/studio/data/feedback/ai-chat-front-sync.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/feedback/conversations/{conversation_id}/custom-fields",
+   "form": "literal",
+   "files": ["apps/studio/data/feedback/link-support-ticket-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/feedback/downgrade",
+   "form": "literal",
+   "files": ["apps/studio/data/feedback/exit-survey-send.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/feedback/send",
+   "form": "literal",
+   "files": ["apps/studio/data/feedback/feedback-send.ts", "apps/studio/data/feedback/support-ticket-send.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/feedback/upgrade",
+   "form": "literal",
+   "files": ["apps/studio/data/feedback/upgrade-survey-send.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/integrations",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/integrations-query.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/integrations/github/authorization",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/github-authorization-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/integrations/github/authorization",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/github-authorization-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/integrations/github/authorization",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/github-authorization-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/integrations/github/connections",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/github-connections-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/integrations/github/connections",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/github-connection-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/integrations/github/connections/{connection_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/github-connection-delete-mutation.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/integrations/github/connections/{connection_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/github-connection-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/integrations/github/connections/{connection_id}/config",
+   "form": "literal",
+   "files": ["apps/studio/data/config/github-config-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/integrations/github/repositories",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/github-repositories-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/integrations/github/repositories/{repository_id}/branches/{branch_name}",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/github-branch-check-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/integrations/partners/{ref}",
+   "form": "literal",
+   "files": ["apps/studio/data/partners/integration-status-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/integrations/partners/{ref}/{listing_slug}",
+   "form": "literal",
+   "files": ["apps/studio/data/marketplace/install-oauth-integration-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/integrations/vercel",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/vercel-integration-create-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/integrations/vercel/connections",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/integrations-vercel-connections-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/integrations/vercel/connections/{connection_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/integrations-vercel-installed-connection-delete-mutation.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/integrations/vercel/connections/{connection_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/vercel-connection-update-mutate.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/integrations/vercel/connections/{connection_id}/sync-envs",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/integrations-vercel-connection-sync-envs-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/integrations/vercel/projects/{organization_integration_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/integrations-vercel-projects-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/integrations/{slug}",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/integrations-query-org-only.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/mcp-tools-permissions",
+   "form": "fetch",
+   "files": ["apps/studio/app/api/scoped-access-token-permissions/buildAPIPermissionScopeMap.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/notifications",
+   "form": "literal",
+   "files": ["apps/studio/data/notifications/notifications-v2-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/notifications",
+   "form": "literal",
+   "files": ["apps/studio/data/notifications/notifications-v2-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/oauth/authorizations/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/api-authorization/api-authorization-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organizations-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-create-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/cloud-marketplace",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-create-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/confirm-subscription",
+   "form": "literal",
+   "files": ["apps/studio/data/subscriptions/org-subscription-confirm-pending-create.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/preview-creation",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-creation-preview.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/organizations/{slug}",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/analytics/audit-log-drains",
+   "form": "literal",
+   "files": ["apps/studio/data/log-drains/audit-log-drains-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/analytics/audit-log-drains",
+   "form": "literal",
+   "files": ["apps/studio/data/log-drains/create-audit-log-drain-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/analytics/audit-log-drains/{token}",
+   "form": "literal",
+   "files": ["apps/studio/data/log-drains/delete-audit-log-drain-mutation.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/organizations/{slug}/analytics/audit-log-drains/{token}",
+   "form": "literal",
+   "files": ["apps/studio/data/log-drains/update-audit-log-drain-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/analytics/audit-log-drains/{token}/test",
+   "form": "literal",
+   "files": ["apps/studio/data/log-drains/test-audit-log-drain-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/apps",
+   "form": "literal",
+   "files": ["apps/studio/data/platform-apps/platform-apps-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/apps",
+   "form": "literal",
+   "files": ["apps/studio/data/platform-apps/platform-app-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/apps/installations",
+   "form": "literal",
+   "files": ["apps/studio/data/platform-apps/platform-app-installations-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/apps/installations",
+   "form": "literal",
+   "files": ["apps/studio/data/platform-apps/platform-app-installation-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/apps/installations/{installation_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/platform-apps/platform-app-installation-delete-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/apps/{app_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/platform-apps/platform-app-delete-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/apps/{app_id}/signing-keys",
+   "form": "literal",
+   "files": ["apps/studio/data/platform-apps/platform-app-signing-key-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/audit",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-audit-logs-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/available-versions",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-creation-postgres-versions-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/billing/credits/balance",
+   "form": "literal",
+   "files": ["apps/studio/data/subscriptions/org-balance-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/billing/credits/preview",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-credit-top-up-preview.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/billing/credits/redeem",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-credit-code-redemption-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/billing/credits/top-up",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-credit-top-up-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/billing/invoices",
+   "form": "literal",
+   "files": ["apps/studio/data/invoices/invoices-query.ts"]
+  },
+  {
+   "method": "HEAD",
+   "path": "/platform/organizations/{slug}/billing/invoices",
+   "form": "literal",
+   "files": ["apps/studio/data/invoices/invoices-count-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/billing/invoices/upcoming",
+   "form": "literal",
+   "files": ["apps/studio/data/invoices/org-invoice-upcoming-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/billing/invoices/{invoice_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/invoices/invoice-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/billing/invoices/{invoice_id}/payment-link",
+   "form": "literal",
+   "files": ["apps/studio/data/invoices/invoice-payment-link-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/billing/invoices/{invoice_id}/receipt",
+   "form": "literal",
+   "files": ["apps/studio/data/invoices/invoice-receipt-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/billing/plans",
+   "form": "literal",
+   "files": ["apps/studio/data/subscriptions/org-plans-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/billing/subscription",
+   "form": "literal",
+   "files": ["apps/studio/data/subscriptions/org-subscription-query.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/organizations/{slug}/billing/subscription",
+   "form": "literal",
+   "files": ["apps/studio/data/subscriptions/org-subscription-update-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/billing/subscription/confirm",
+   "form": "literal",
+   "files": ["apps/studio/data/subscriptions/org-subscription-confirm-pending-change.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/billing/subscription/preview",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-billing-subscription-preview.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/billing/upgrade-request",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/request-upgrade-mutation.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/organizations/{slug}/cloud-marketplace/link",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-link-aws-marketplace-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/cloud-marketplace/redirect",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/aws-redirect-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/customer",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-customer-profile-query.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/organizations/{slug}/customer",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-customer-profile-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/documents/iso27001-certificate",
+   "form": "literal",
+   "files": ["apps/studio/data/documents/document-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/documents/soc2-type-2-report",
+   "form": "literal",
+   "files": ["apps/studio/data/documents/document-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/documents/standard-security-questionnaire",
+   "form": "literal",
+   "files": ["apps/studio/data/documents/document-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/entitlements",
+   "form": "literal",
+   "files": ["apps/studio/data/entitlements/entitlements-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/members",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-members-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/members/invitations",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-members-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/members/invitations",
+   "form": "literal",
+   "files": ["apps/studio/data/organization-members/organization-invitation-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/members/invitations/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/organization-members/organization-invitation-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/members/invitations/{token}",
+   "form": "literal",
+   "files": ["apps/studio/data/organization-members/organization-invitation-token-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/members/invitations/{token}",
+   "form": "literal",
+   "files": ["apps/studio/data/organization-members/organization-invitation-accept-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/members/mfa/enforcement",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-mfa-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/organizations/{slug}/members/mfa/enforcement",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-mfa-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/members/reached-free-project-limit",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/free-project-limit-check-query.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/members/{gotrue_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-member-delete-mutation.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/organizations/{slug}/members/{gotrue_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/organization-members/organization-member-role-assign-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/members/{gotrue_id}/roles/{role_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/organization-members/organization-member-role-unassign-mutation.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/organizations/{slug}/members/{gotrue_id}/roles/{role_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/organization-members/organization-member-role-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/oauth/apps",
+   "form": "literal",
+   "files": ["apps/studio/data/oauth/authorized-apps-query.ts", "apps/studio/data/oauth/oauth-apps-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/oauth/apps",
+   "form": "literal",
+   "files": ["apps/studio/data/oauth/oauth-app-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/oauth/apps/{app_id}/client-secrets",
+   "form": "literal",
+   "files": ["apps/studio/data/oauth-secrets/client-secrets-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/oauth/apps/{app_id}/client-secrets",
+   "form": "literal",
+   "files": ["apps/studio/data/oauth-secrets/client-secret-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/oauth/apps/{app_id}/client-secrets/{secret_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/oauth-secrets/client-secret-delete-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/oauth/apps/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/oauth/oauth-app-delete-mutation.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/organizations/{slug}/oauth/apps/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/oauth/oauth-app-update-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/oauth/apps/{id}/revoke",
+   "form": "literal",
+   "files": ["apps/studio/data/oauth/authorized-app-revoke-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/oauth/authorizations/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/api-authorization/api-authorization-decline-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/oauth/authorizations/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/api-authorization/api-authorization-approve-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/payments",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-payment-method-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/payments",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-payment-methods-query.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/organizations/{slug}/payments/default",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-payment-method-default-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/payments/setup-intent",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-payment-method-setup-intent-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/projects",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/org-projects-infinite-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/roles",
+   "form": "literal",
+   "files": ["apps/studio/data/organization-members/organization-roles-query.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/organizations/{slug}/sso",
+   "form": "literal",
+   "files": ["apps/studio/data/sso/sso-config-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/sso",
+   "form": "literal",
+   "files": ["apps/studio/data/sso/sso-config-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/organizations/{slug}/sso",
+   "form": "literal",
+   "files": ["apps/studio/data/sso/sso-config-create-mutation.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/organizations/{slug}/sso",
+   "form": "literal",
+   "files": ["apps/studio/data/sso/sso-config-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/tax-ids",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-tax-id-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/usage",
+   "form": "literal",
+   "files": ["apps/studio/data/usage/org-usage-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/organizations/{slug}/usage/daily",
+   "form": "literal",
+   "files": ["apps/studio/data/analytics/org-daily-stats-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/pg-meta/{ref}/query",
+   "form": "computed+literal",
+   "files": ["apps/studio/data/sql/execute-sql-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/profile",
+   "form": "literal",
+   "files": ["apps/studio/data/profile/profile-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/profile",
+   "form": "literal",
+   "files": ["apps/studio/data/profile/profile-update-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/profile",
+   "form": "literal",
+   "files": ["apps/studio/data/profile/profile-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/profile/access-tokens",
+   "form": "literal",
+   "files": ["apps/studio/data/access-tokens/access-tokens-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/profile/access-tokens",
+   "form": "literal",
+   "files": ["apps/studio/data/access-tokens/access-tokens-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/profile/access-tokens/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/access-tokens/access-tokens-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/profile/audit",
+   "form": "literal",
+   "files": ["apps/studio/data/profile/profile-audit-logs-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/profile/audit-login",
+   "form": "literal",
+   "files": ["apps/studio/data/misc/audit-login-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/profile/permissions",
+   "form": "literal",
+   "files": ["apps/studio/data/permissions/permissions-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/profile/scoped-access-tokens",
+   "form": "literal",
+   "files": ["apps/studio/data/scoped-access-tokens/scoped-access-token-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/profile/scoped-access-tokens",
+   "form": "literal",
+   "files": ["apps/studio/data/scoped-access-tokens/scoped-access-token-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/profile/scoped-access-tokens/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/scoped-access-tokens/scoped-access-tokens-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/profile/scoped-access-tokens/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/scoped-access-tokens/scoped-access-token-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/projects-infinite-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects-resource-warnings",
+   "form": "literal",
+   "files": ["apps/studio/data/usage/resource-warnings-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/available-regions",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-available-regions-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{projectRef}/ha-admin/v1/gateways",
+   "form": "computed",
+   "files": ["apps/studio/data/ha-admin/get-ha-admin.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{projectRef}/ha-admin/v1/poolers",
+   "form": "computed",
+   "files": ["apps/studio/data/ha-admin/get-ha-admin.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/projects/{ref}",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-detail-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/projects/{ref}",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/analytics/endpoints/api_keys.last_used.otel",
+   "form": "literal",
+   "files": ["apps/studio/data/analytics/api-keys-last-used-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/analytics/endpoints/auth.metrics",
+   "form": "literal",
+   "files": ["apps/studio/components/interfaces/Auth/Overview/OverviewUsage.constants.ts", "apps/studio/data/auth/auth-overview-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/analytics/endpoints/functions.combined-stats",
+   "form": "literal",
+   "files": ["apps/studio/data/analytics/functions-combined-stats-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/analytics/endpoints/logs.all",
+   "form": "computed",
+   "files": ["apps/studio/data/logs/execute-analytics-sql.ts", "apps/studio/hooks/analytics/useLogsQuery.tsx"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/analytics/endpoints/logs.all",
+   "form": "computed",
+   "files": ["apps/studio/data/logs/execute-analytics-sql.ts", "apps/studio/data/logs/get-unified-logs.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/analytics/endpoints/logs.all.otel",
+   "form": "computed",
+   "files": ["apps/studio/data/logs/execute-analytics-sql.ts", "apps/studio/hooks/analytics/useLogsQuery.tsx"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/analytics/endpoints/logs.all.otel",
+   "form": "computed",
+   "files": ["apps/studio/data/logs/execute-analytics-sql.ts", "apps/studio/data/logs/get-unified-logs.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/analytics/endpoints/service-health",
+   "form": "literal",
+   "files": ["apps/studio/data/analytics/service-health-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/analytics/endpoints/usage.api-counts",
+   "form": "literal",
+   "files": ["apps/studio/data/analytics/project-log-stats-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/analytics/log-drains",
+   "form": "literal",
+   "files": ["apps/studio/data/log-drains/log-drains-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/analytics/log-drains",
+   "form": "literal",
+   "files": ["apps/studio/data/log-drains/create-log-drain-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/projects/{ref}/analytics/log-drains/{token}",
+   "form": "literal",
+   "files": ["apps/studio/data/log-drains/delete-log-drain-mutation.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/projects/{ref}/analytics/log-drains/{token}",
+   "form": "literal",
+   "files": ["apps/studio/data/log-drains/update-log-drain-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/analytics/log-drains/{token}/test",
+   "form": "literal",
+   "files": ["apps/studio/data/log-drains/test-log-drain-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/api-keys/temporary",
+   "form": "literal",
+   "files": ["apps/studio/data/api-keys/temp-api-keys-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/api/rest",
+   "form": "literal",
+   "files": ["apps/studio/data/docs/project-json-schema-query.ts", "apps/studio/data/open-api/api-spec-query.ts"]
+  },
+  {
+   "method": "HEAD",
+   "path": "/platform/projects/{ref}/api/rest",
+   "form": "computed+fetch",
+   "files": ["apps/studio/data/fetchers.ts", "apps/studio/lib/pingPostgrest.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/billing/addons",
+   "form": "literal",
+   "files": ["apps/studio/data/subscriptions/project-addons-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/billing/addons",
+   "form": "literal",
+   "files": ["apps/studio/data/subscriptions/project-addon-update-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/projects/{ref}/billing/addons/{addon_variant}",
+   "form": "literal",
+   "files": ["apps/studio/data/subscriptions/project-addon-remove-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/config/pgbouncer",
+   "form": "literal",
+   "files": ["apps/studio/data/database/pgbouncer-config-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/projects/{ref}/config/pgbouncer",
+   "form": "literal",
+   "files": ["apps/studio/data/database/pgbouncer-config-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/config/postgrest",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-postgrest-config-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/projects/{ref}/config/postgrest",
+   "form": "literal",
+   "files": ["apps/studio/data/api-settings/create-and-expose-api-schema-mutation.ts", "apps/studio/data/config/project-postgrest-config-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/config/realtime",
+   "form": "literal",
+   "files": ["apps/studio/data/realtime/realtime-config-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/projects/{ref}/config/realtime",
+   "form": "literal",
+   "files": ["apps/studio/data/realtime/realtime-config-mutation.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/projects/{ref}/config/secrets",
+   "form": "literal",
+   "files": ["apps/studio/data/config/jwt-secret-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/config/secrets/update-status",
+   "form": "literal",
+   "files": ["apps/studio/data/config/jwt-secret-updating-status-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/config/storage",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-storage-config-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/projects/{ref}/config/storage",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-storage-config-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/config/supavisor",
+   "form": "literal",
+   "files": ["apps/studio/data/database/supavisor-configuration-query.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/projects/{ref}/content",
+   "form": "literal",
+   "files": ["apps/studio/data/content/content-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/content",
+   "form": "literal",
+   "files": ["apps/studio/data/content/content-infinite-query.ts", "apps/studio/data/content/content-query.ts", "apps/studio/data/content/sql-snippets-query.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/projects/{ref}/content",
+   "form": "literal",
+   "files": ["apps/studio/data/content/content-upsert-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/content/count",
+   "form": "literal",
+   "files": ["apps/studio/data/content/content-count-query.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/projects/{ref}/content/folders",
+   "form": "literal",
+   "files": ["apps/studio/data/content/sql-folders-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/content/folders",
+   "form": "literal",
+   "files": ["apps/studio/data/content/sql-folders-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/content/folders",
+   "form": "literal",
+   "files": ["apps/studio/data/content/sql-folder-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/content/folders/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/content/sql-folder-contents-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/projects/{ref}/content/folders/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/content/sql-folder-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/content/item/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/content/content-id-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/daily-stats",
+   "form": "literal",
+   "files": ["apps/studio/data/analytics/project-daily-stats-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/databases",
+   "form": "literal",
+   "files": ["apps/studio/data/read-replicas/replicas-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/databases-statuses",
+   "form": "literal",
+   "files": ["apps/studio/data/read-replicas/replicas-status-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/projects/{ref}/db-password",
+   "form": "literal",
+   "files": ["apps/studio/data/database/database-password-reset-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/disk",
+   "form": "literal",
+   "files": ["apps/studio/data/config/disk-attributes-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/disk",
+   "form": "literal",
+   "files": ["apps/studio/data/config/disk-attributes-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/disk/custom-config",
+   "form": "literal",
+   "files": ["apps/studio/data/config/disk-autoscale-config-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/disk/custom-config",
+   "form": "literal",
+   "files": ["apps/studio/data/config/disk-autoscale-config-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/disk/util",
+   "form": "literal",
+   "files": ["apps/studio/data/config/disk-utilization-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/infra-monitoring",
+   "form": "literal",
+   "files": ["apps/studio/data/analytics/infra-monitoring-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/load-balancers",
+   "form": "literal",
+   "files": ["apps/studio/data/read-replicas/load-balancers-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/members",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-members-query.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/projects/{ref}/notifications/advisor/exceptions",
+   "form": "literal",
+   "files": ["apps/studio/data/lint/delete-lint-rule-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/notifications/advisor/exceptions",
+   "form": "literal",
+   "files": ["apps/studio/data/lint/lint-rules-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/notifications/advisor/exceptions",
+   "form": "literal",
+   "files": ["apps/studio/data/lint/create-lint-rule-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/pause",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-pause-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/pause/status",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-pause-status-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/privatelink/associations",
+   "form": "literal",
+   "files": ["apps/studio/data/aws-accounts/aws-accounts-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/privatelink/associations/aws-account",
+   "form": "literal",
+   "files": ["apps/studio/data/aws-accounts/aws-account-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/projects/{ref}/privatelink/associations/aws-account/{aws_account_id}",
+   "form": "computed",
+   "files": ["apps/studio/data/aws-accounts/aws-account-delete-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/projects/{ref}/privatelink/associations/aws-account/{aws_account_id}/database/{database_identifier}",
+   "form": "computed",
+   "files": ["apps/studio/data/aws-accounts/aws-account-delete-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/resize",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-disk-resize-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/resources/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/__templates/resource-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/projects/{ref}/resources/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/__templates/resource-update-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/restart",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-restart-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/restart-services",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-restart-services-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/restore",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-restore-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/restore/versions",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-unpause-postgres-versions-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/run-lints",
+   "form": "literal",
+   "files": ["apps/studio/data/lint/lint-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/service-versions",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-service-versions.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/settings",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-settings-v2-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/projects/{ref}/settings/sensitivity",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-compliance-config-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/projects/{ref}/status",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-status-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/transfer",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-transfer-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/transfer/preview",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-transfer-preview-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/projects/{ref}/wake",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-detail-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/v2/{ref}/sources/{source_id}/publications",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/publication-names-query.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/replication/v2/{ref}/sources/{source_id}/publications/{publication_name}",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/publication-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/v2/{ref}/sources/{source_id}/publications/{publication_name}",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/publication-query.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/replication/v2/{ref}/sources/{source_id}/publications/{publication_name}",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/publication-create-mutation.ts", "apps/studio/data/replication/publication-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/v2/{ref}/sources/{source_id}/tables",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/tables-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/v2/{ref}/sources/{source_id}/tables/{table_id}/columns",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/table-columns-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/{ref}/destinations",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/destinations-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/replication/{ref}/destinations-pipelines",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/create-destination-pipeline-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/replication/{ref}/destinations-pipelines/{destination_id}/{pipeline_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/delete-destination-pipeline-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/replication/{ref}/destinations-pipelines/{destination_id}/{pipeline_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/update-destination-pipeline-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/replication/{ref}/destinations/validate",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/validate-destination-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/{ref}/destinations/{destination_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/destination-by-id-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/{ref}/pipelines",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/pipelines-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/replication/{ref}/pipelines/validate",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/validate-pipeline-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/{ref}/pipelines/{pipeline_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/pipeline-by-id-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/{ref}/pipelines/{pipeline_id}/replication-status",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/pipeline-replication-status-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/replication/{ref}/pipelines/{pipeline_id}/restart",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/restart-pipeline-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/replication/{ref}/pipelines/{pipeline_id}/rollback-tables",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/rollback-tables-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/replication/{ref}/pipelines/{pipeline_id}/start",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/start-pipeline-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/{ref}/pipelines/{pipeline_id}/status",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/pipeline-status-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/replication/{ref}/pipelines/{pipeline_id}/stop",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/stop-pipeline-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/{ref}/pipelines/{pipeline_id}/version",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/pipeline-version-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/replication/{ref}/pipelines/{pipeline_id}/version",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/update-pipeline-version-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/{ref}/sources",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/sources-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/replication/{ref}/sources/{source_id}/publications/{publication_name}/cost-estimate",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/cost-estimate-query.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/replication/{ref}/tenants",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/delete-tenant-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/replication/{ref}/tenants-sources",
+   "form": "literal",
+   "files": ["apps/studio/data/replication/create-tenant-source-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/reset-password",
+   "form": "literal",
+   "files": ["apps/studio/data/misc/reset-password-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/signup",
+   "form": "literal",
+   "files": ["apps/studio/data/misc/signup-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/storage/{ref}/analytics-buckets",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/analytics-buckets-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/analytics-buckets",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/analytics-bucket-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/storage/{ref}/analytics-buckets/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/analytics-bucket-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/storage/{ref}/analytics-buckets/{id}/namespaces",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/iceberg-namespaces-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/analytics-buckets/{id}/namespaces",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/iceberg-namespace-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/storage/{ref}/analytics-buckets/{id}/namespaces/{namespace}",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/iceberg-namespace-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/storage/{ref}/analytics-buckets/{id}/namespaces/{namespace}/tables",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/iceberg-namespace-tables-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/analytics-buckets/{id}/namespaces/{namespace}/tables",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/iceberg-namespace-table-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/storage/{ref}/analytics-buckets/{id}/namespaces/{namespace}/tables/{table}",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/iceberg-namespace-table-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/storage/{ref}/archive",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/storage-archive-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/archive",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/storage-archive-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/storage/{ref}/buckets",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/buckets-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/buckets",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/bucket-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/storage/{ref}/buckets/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/bucket-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/storage/{ref}/buckets/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/buckets-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/platform/storage/{ref}/buckets/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/bucket-update-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/buckets/{id}/empty",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/bucket-delete-mutation.ts", "apps/studio/data/storage/bucket-empty-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/storage/{ref}/buckets/{id}/objects",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/bucket-object-delete-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/buckets/{id}/objects/list",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/bucket-objects-list-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/buckets/{id}/objects/list-v2",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/bucket-objects-list-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/buckets/{id}/objects/move",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/object-move-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/buckets/{id}/objects/public-url",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/bucket-object-get-public-url-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/buckets/{id}/objects/sign",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/bucket-object-sign-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/buckets/{id}/objects/sign-multi",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/bucket-object-sign-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/storage/{ref}/credentials",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/s3-access-key-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/credentials",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/s3-access-key-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/storage/{ref}/credentials/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/s3-access-key-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/storage/{ref}/vector-buckets",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/vector-buckets-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/vector-buckets",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/vector-bucket-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/storage/{ref}/vector-buckets/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/vector-bucket-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/storage/{ref}/vector-buckets/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/vector-bucket-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/storage/{ref}/vector-buckets/{id}/indexes",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/vector-buckets-indexes-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/storage/{ref}/vector-buckets/{id}/indexes",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/vector-bucket-index-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/platform/storage/{ref}/vector-buckets/{id}/indexes/{indexName}",
+   "form": "literal",
+   "files": ["apps/studio/data/storage/vector-bucket-index-delete-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/stripe/atlas/application",
+   "form": "literal",
+   "files": ["apps/studio/data/stripe-atlas/stripe-atlas-application-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/stripe/atlas/application/complete",
+   "form": "literal",
+   "files": ["apps/studio/data/stripe-atlas/stripe-atlas-application-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/stripe/invoices/overdue",
+   "form": "literal",
+   "files": ["apps/studio/data/invoices/invoices-overdue-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/stripe/projects/provisioning/account_requests/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/partners/stripe-projects-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/stripe/projects/provisioning/account_requests/{id}/confirm",
+   "form": "literal",
+   "files": ["apps/studio/data/partners/stripe-projects-confirm-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/stripe/setup-intent",
+   "form": "literal",
+   "files": ["apps/studio/data/stripe/setup-intent-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/telemetry/feature-flags/track",
+   "form": "literal",
+   "files": ["apps/studio/lib/posthog.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/telemetry/reset",
+   "form": "fetch+literal",
+   "files": ["apps/studio/data/telemetry/send-reset-mutation.ts", "packages/common/fetchWrappers.tsx"]
+  },
+  {
+   "method": "PUT",
+   "path": "/platform/update-email",
+   "form": "literal",
+   "files": ["apps/studio/data/profile/profile-update-email-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/vercel/redirect/{installation_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/integrations/vercel-redirect-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/warehouse/{ref}/catalog",
+   "form": "literal",
+   "files": ["apps/studio/data/warehouse/warehouse-catalog-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/warehouse/{ref}/catalog",
+   "form": "literal",
+   "files": ["apps/studio/data/warehouse/warehouse-catalog-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/platform/warehouse/{ref}/setup",
+   "form": "literal",
+   "files": ["apps/studio/data/warehouse/warehouse-setup-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/platform/warehouse/{ref}/setup-status",
+   "form": "literal",
+   "files": ["apps/studio/data/warehouse/warehouse-setup-status-query.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/v1/branches/{branch_id_or_ref}",
+   "form": "literal",
+   "files": ["apps/studio/data/branches/branch-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/branches/{branch_id_or_ref}",
+   "form": "literal",
+   "files": ["apps/studio/data/branches/branch-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/v1/branches/{branch_id_or_ref}",
+   "form": "literal",
+   "files": ["apps/studio/data/branches/branch-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/branches/{branch_id_or_ref}/diff",
+   "form": "literal",
+   "files": ["apps/studio/data/branches/branch-diff-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/branches/{branch_id_or_ref}/merge",
+   "form": "literal",
+   "files": ["apps/studio/data/branches/branch-merge-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/branches/{branch_id_or_ref}/push",
+   "form": "literal",
+   "files": ["apps/studio/data/branches/branch-push-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/branches/{branch_id_or_ref}/reset",
+   "form": "literal",
+   "files": ["apps/studio/data/branches/branch-reset-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/branches/{branch_id_or_ref}/restore",
+   "form": "literal",
+   "files": ["apps/studio/data/branches/branch-restore-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/organizations/{slug}/project-claim/{token}",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-project-claim-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/organizations/{slug}/project-claim/{token}",
+   "form": "literal",
+   "files": ["apps/studio/data/organizations/organization-project-claim-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/actions",
+   "form": "literal",
+   "files": ["apps/studio/data/actions/action-runs-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/actions/{run_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/actions/action-detail-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/actions/{run_id}/logs",
+   "form": "literal",
+   "files": ["apps/studio/data/actions/action-logs-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/api-keys",
+   "form": "literal",
+   "files": ["apps/studio/data/api-keys/api-keys-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/api-keys",
+   "form": "literal",
+   "files": ["apps/studio/data/api-keys/api-key-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/api-keys/legacy",
+   "form": "literal",
+   "files": ["apps/studio/data/api-keys/legacy-api-keys-status-query.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/v1/projects/{ref}/api-keys/legacy",
+   "form": "literal",
+   "files": ["apps/studio/data/api-keys/legacy-api-key-toggle-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/v1/projects/{ref}/api-keys/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/api-keys/api-key-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/api-keys/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/api-keys/api-key-id-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/branches",
+   "form": "literal",
+   "files": ["apps/studio/data/__templates/resources-query.ts", "apps/studio/data/branches/branches-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/branches",
+   "form": "literal",
+   "files": ["apps/studio/data/branches/branch-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/config/auth/signing-keys",
+   "form": "literal",
+   "files": ["apps/studio/data/jwt-signing-keys/jwt-signing-keys-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/config/auth/signing-keys",
+   "form": "literal",
+   "files": ["apps/studio/data/jwt-signing-keys/jwt-signing-key-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/config/auth/signing-keys/legacy",
+   "form": "literal",
+   "files": ["apps/studio/data/jwt-signing-keys/legacy-jwt-signing-key-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/config/auth/signing-keys/legacy",
+   "form": "literal",
+   "files": ["apps/studio/data/jwt-signing-keys/legacy-jwt-signing-key-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/v1/projects/{ref}/config/auth/signing-keys/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/jwt-signing-keys/jwt-signing-key-delete-mutation.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/v1/projects/{ref}/config/auth/signing-keys/{id}",
+   "form": "literal",
+   "files": ["apps/studio/data/jwt-signing-keys/jwt-signing-key-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/config/auth/third-party-auth",
+   "form": "literal",
+   "files": ["apps/studio/data/third-party-auth/integrations-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/config/auth/third-party-auth",
+   "form": "literal",
+   "files": ["apps/studio/data/third-party-auth/integration-create-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/v1/projects/{ref}/config/auth/third-party-auth/{tpa_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/third-party-auth/integration-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/config/database/postgres",
+   "form": "literal",
+   "files": ["apps/studio/data/config/postgres-config-query.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/v1/projects/{ref}/config/database/postgres",
+   "form": "literal",
+   "files": ["apps/studio/data/config/postgres-config-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/v1/projects/{ref}/custom-hostname",
+   "form": "literal",
+   "files": ["apps/studio/data/custom-domains/custom-domains-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/custom-hostname",
+   "form": "literal",
+   "files": ["apps/studio/data/custom-domains/custom-domains-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/custom-hostname/activate",
+   "form": "literal",
+   "files": ["apps/studio/data/custom-domains/custom-domains-activate-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/custom-hostname/initialize",
+   "form": "literal",
+   "files": ["apps/studio/data/custom-domains/custom-domains-create-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/custom-hostname/reverify",
+   "form": "literal",
+   "files": ["apps/studio/data/custom-domains/custom-domains-reverify-query.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/v1/projects/{ref}/database/jit",
+   "form": "literal",
+   "files": ["apps/studio/data/jit-db-access/jit-db-access-grant-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/database/jit/list",
+   "form": "literal",
+   "files": ["apps/studio/data/jit-db-access/jit-db-access-members-query.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/v1/projects/{ref}/database/jit/{user_id}",
+   "form": "literal",
+   "files": ["apps/studio/data/jit-db-access/jit-db-access-revoke-mutation.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/v1/projects/{ref}/database/migrations",
+   "form": "literal",
+   "files": ["apps/studio/data/database/migration-upsert-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/functions",
+   "form": "literal",
+   "files": ["apps/studio/data/edge-functions/edge-functions-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/functions/deploy",
+   "form": "literal",
+   "files": ["apps/studio/data/edge-functions/edge-functions-deploy-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/v1/projects/{ref}/functions/{function_slug}",
+   "form": "literal",
+   "files": ["apps/studio/data/edge-functions/edge-functions-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/functions/{function_slug}",
+   "form": "literal",
+   "files": ["apps/studio/data/edge-functions/edge-function-query.ts"]
+  },
+  {
+   "method": "PATCH",
+   "path": "/v1/projects/{ref}/functions/{function_slug}",
+   "form": "literal",
+   "files": ["apps/studio/data/edge-functions/edge-functions-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/functions/{function_slug}/body",
+   "form": "literal",
+   "files": ["apps/studio/data/edge-functions/edge-function-body-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/health",
+   "form": "literal",
+   "files": ["apps/studio/data/service-status/service-status-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/jit-access",
+   "form": "literal",
+   "files": ["apps/studio/data/jit-db-access/jit-db-access-query.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/v1/projects/{ref}/jit-access",
+   "form": "literal",
+   "files": ["apps/studio/data/jit-db-access/jit-db-access-update-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/v1/projects/{ref}/network-bans",
+   "form": "literal",
+   "files": ["apps/studio/data/banned-ips/banned-ips-delete-mutations.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/network-bans/retrieve",
+   "form": "literal",
+   "files": ["apps/studio/data/banned-ips/banned-ips-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/network-restrictions",
+   "form": "literal",
+   "files": ["apps/studio/data/network-restrictions/network-restrictions-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/network-restrictions/apply",
+   "form": "literal",
+   "files": ["apps/studio/data/network-restrictions/network-retrictions-apply-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/read-replicas/remove",
+   "form": "literal",
+   "files": ["apps/studio/data/read-replicas/replica-remove-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/read-replicas/setup",
+   "form": "literal",
+   "files": ["apps/studio/data/read-replicas/replica-setup-mutation.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/readonly/temporary-disable",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-temp-disable-read-only-mutation.ts"]
+  },
+  {
+   "method": "DELETE",
+   "path": "/v1/projects/{ref}/secrets",
+   "form": "literal",
+   "files": ["apps/studio/data/secrets/secrets-delete-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/secrets",
+   "form": "literal",
+   "files": ["apps/studio/data/secrets/secrets-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/secrets",
+   "form": "literal",
+   "files": ["apps/studio/data/secrets/secrets-create-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/ssl-enforcement",
+   "form": "literal",
+   "files": ["apps/studio/data/ssl-enforcement/ssl-enforcement-query.ts"]
+  },
+  {
+   "method": "PUT",
+   "path": "/v1/projects/{ref}/ssl-enforcement",
+   "form": "literal",
+   "files": ["apps/studio/data/ssl-enforcement/ssl-enforcement-update-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/types/typescript",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-type-generation-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v1/projects/{ref}/upgrade",
+   "form": "literal",
+   "files": ["apps/studio/data/projects/project-upgrade-mutation.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/upgrade/eligibility",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-upgrade-eligibility-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v1/projects/{ref}/upgrade/status",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-upgrade-status-query.ts"]
+  },
+  {
+   "method": "POST",
+   "path": "/v2/projects/{ref}/advisors/run",
+   "form": "literal",
+   "files": ["apps/studio/data/lint/health-lints-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v2/projects/{ref}/compute",
+   "form": "literal",
+   "files": ["apps/studio/data/compute/compute-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v2/projects/{ref}/compute/{name}",
+   "form": "literal",
+   "files": ["apps/studio/data/compute/compute-instance-query.ts"]
+  },
+  {
+   "method": "GET",
+   "path": "/v2/projects/{ref}/config",
+   "form": "literal",
+   "files": ["apps/studio/data/config/project-config-query.ts"]
+  }
+ ],
+ "skipped": [
+  {
+   "file": "apps/studio/data/config/deployment-mode-query.ts",
+   "reason": "enabled only when IS_PLATFORM is false"
+  },
+  {
+   "file": "apps/studio/data/misc/cli-release-version-query.ts",
+   "reason": "enabled only when IS_PLATFORM is false"
+  },
+  {
+   "file": "apps/studio/data/misc/enabled-features-override-query.ts",
+   "reason": "enabled only when IS_PLATFORM is false"
+  },
+  {
+   "file": "apps/studio/data/misc/local-s3-keys-query.ts",
+   "reason": "enabled only when IS_PLATFORM is false"
+  },
+  {
+   "file": "apps/studio/data/misc/user-ip-address-query.ts",
+   "reason": "enabled only when IS_PLATFORM is false"
+  }
+ ],
+ "unresolved": [],
+ "mentions": [
+  {
+   "path": "/platform/mcp",
+   "files": ["packages/ui-patterns/src/McpUrlBuilder/utils/getMcpUrl.ts"]
+  },
+  {
+   "path": "/platform/pg-meta",
+   "files": ["apps/studio/data/fetchers.ts"]
+  },
+  {
+   "path": "/platform/platform",
+   "files": ["packages/common/helpers.ts"]
+  },
+  {
+   "path": "/platform/projects/{projectRef}/api/graphql",
+   "files": ["apps/studio/components/interfaces/Integrations/GraphQL/GraphiQLTab.tsx"]
+  }
+ ]
+}
