@@ -93,7 +93,7 @@ const withDataNotice = "a with_data branch is a copy of production: users' sessi
 // Create starts a new branch of the project ref belongs to and returns it as soon as its
 // project exists (state CREATING_PROJECT). The work continues in the background; poll Get
 // or call WaitIdle.
-func (s *Service) Create(ctx context.Context, ref string, in CreateInput) (*Branch, error) {
+func (s *Service) Create(ctx context.Context, ref string, in CreateInput) (b *Branch, err error) {
 	if in.IsDefault {
 		return s.createDefault(ctx, ref, in)
 	}
@@ -155,6 +155,11 @@ func (s *Service) Create(ctx context.Context, ref string, in CreateInput) (*Bran
 	if err != nil {
 		return nil, err
 	}
+	defer func() { // the run that builds the branch, which a caller can follow (Branch.RunID)
+		if b != nil {
+			b.RunID = r.id
+		}
+	}()
 	job := &createJob{parent: p, ref: newRef, info: info, in: in, class: class, org: org}
 	failed := make(chan error, 1)
 	s.spawn(r, newRef, p.Ref, func(ctx context.Context) (string, error) {

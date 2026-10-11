@@ -129,8 +129,9 @@ about. `runs.go` is the recorder; the tables are `supavise.branch_runs` and `sup
   A run this process is working on refuses it (`409`). The run's status follows the steps. `REMOVING` and
   `RESTARTING` are container words this node's steps never have and are refused.
 * **For code outside the package** (the GitHub runner): `Service.Recorder(ctx, runID)` returns a `*Run` with
-  `Step(name).Start/Finish/Fail/Skip`, `Phase`, `Log`/`Logf` and `Finish(err)`; `Service.LatestRun(ctx, ref)`
-  finds the run a `Create` started (the run row exists before `Create` returns). All of them are no-ops on a nil
+  `Step(name).Start/Finish/Fail/Skip`, `Phase`, `Log`/`Logf` and `Finish(err)`; `Create` returns the run it started
+  in `Branch.RunID` (the run row exists before `Create` returns), and `Service.LatestRun(ctx, ref)` finds the newest run
+  listed under a ref later. All of them are no-ops on a nil
   `*Run`. `registry.BranchRun.CheckRunID` and `Workdir` are for that runner.
 
 ### Notifications
