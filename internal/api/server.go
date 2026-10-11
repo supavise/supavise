@@ -532,6 +532,7 @@ func (s *Server) implemented() map[string]route {
 	s.routesUnsupported(add)
 	s.routesConfigCat(add)
 	s.routesRestGraphQL(add)
+	s.routesAuthExtras(add)
 	// Read replicas and failover: one registration function per file, so that each part of the
 	// work adds its routes without editing this one.
 	s.routesReplicas(add)
