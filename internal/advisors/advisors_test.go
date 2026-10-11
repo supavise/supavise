@@ -512,6 +512,138 @@ func TestRunnerInvalidateDropsTheCacheAndAStaleRun(t *testing.T) {
 	}
 }
 
+// A burst of Invalidate calls (a script running many statements through the API) must not start a
+// run beside the one under way: the project has one run at a time, and the callers that wait for
+// it share the single run that follows.
+func TestRunnerRunsOneQueryAtATimePerProject(t *testing.T) {
+	r := &Runner{}
+	var runs, live, peak atomic.Int32
+	started, release := make(chan struct{}), make(chan struct{})
+	exec := func(context.Context, string) ([]byte, error) {
+		n := live.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		defer live.Add(-1)
+		if runs.Add(1) == 1 {
+			close(started)
+			<-release
+		} else {
+			time.Sleep(20 * time.Millisecond)
+		}
+		return []byte(oneLint), nil
+	}
+	var wg sync.WaitGroup
+	call := func() {
+		defer wg.Done()
+		if l, err := r.SQL(context.Background(), "p", "", exec); err != nil || len(l) != 1 {
+			t.Errorf("SQL: %v %v", l, err)
+		}
+	}
+	wg.Add(1)
+	go call()
+	<-started
+	for i := 0; i < 5; i++ {
+		r.Invalidate("p")
+		wg.Add(1)
+		go call()
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := runs.Load(); n != 1 {
+		t.Fatalf("%d runs started while the first was under way, want 1", n)
+	}
+	close(release)
+	wg.Wait()
+	if n := runs.Load(); n != 2 {
+		t.Errorf("%d runs, want 2: the callers that waited share one follow-up run", n)
+	}
+	if p := peak.Load(); p != 1 {
+		t.Errorf("%d runs at the same time for one project", p)
+	}
+	// The follow-up run was started after the last Invalidate, so it is the one kept.
+	if _, err := r.SQL(context.Background(), "p", "", exec); err != nil || runs.Load() != 2 {
+		t.Errorf("the result of the follow-up run was not kept (%d runs, %v)", runs.Load(), err)
+	}
+}
+
+func TestRunnerCallerLeavesWhileWaitingForAStaleRun(t *testing.T) {
+	r := &Runner{}
+	started, release := make(chan struct{}), make(chan struct{})
+	var runs atomic.Int32
+	exec := func(context.Context, string) ([]byte, error) {
+		if runs.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return []byte(oneLint), nil
+	}
+	go func() { _, _ = r.SQL(context.Background(), "p", "", exec) }()
+	<-started
+	r.Invalidate("p")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if _, err := r.SQL(ctx, "p", "", exec); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v, want the caller's own deadline", err)
+	}
+	if n := runs.Load(); n != 1 {
+		t.Errorf("%d runs: the caller that left started one", n)
+	}
+	close(release)
+}
+
+func TestRunnerBoundsTheRunsAcrossProjects(t *testing.T) {
+	r := &Runner{MaxConcurrent: 2}
+	var live, peak atomic.Int32
+	exec := func(context.Context, string) ([]byte, error) {
+		n := live.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		live.Add(-1)
+		return []byte(oneLint), nil
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := r.SQL(context.Background(), fmt.Sprintf("p%d", i), "", exec); err != nil {
+				t.Errorf("p%d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if p := peak.Load(); p > 2 {
+		t.Errorf("peak of %d runs at once, want at most 2", p)
+	}
+}
+
+func TestRunnerDropsExpiredEntries(t *testing.T) {
+	ck := newClock()
+	r := &Runner{TTL: 10 * time.Second, Now: ck.now}
+	exec := func(context.Context, string) ([]byte, error) { return []byte(`[]`), nil }
+	for _, k := range []string{"p1", "p2"} {
+		_, _ = r.SQL(context.Background(), k, "", exec)
+	}
+	ck.add(30 * time.Second)
+	_, _ = r.SQL(context.Background(), "p3", "", exec)
+	if len(r.cache) != 1 {
+		t.Errorf("%d entries kept after the TTL of the others ended, want 1", len(r.cache))
+	}
+	// A deleted project leaves nothing behind.
+	r.Invalidate("p3")
+	if len(r.cache) != 0 || len(r.flight) != 0 {
+		t.Errorf("Invalidate left %d entries and %d runs", len(r.cache), len(r.flight))
+	}
+}
+
 func TestRunnerKeepsARunWhoseFirstCallerLeaves(t *testing.T) {
 	r := &Runner{}
 	started, release := make(chan struct{}), make(chan struct{})

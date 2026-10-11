@@ -190,6 +190,7 @@ func (s *Server) removeProject(ctx context.Context, p registry.Project) error {
 			return err
 		}
 	}
+	s.invalidateAdvisors(p.Ref)
 	s.functionsGone(ctx, p.Ref)
 	return nil
 }
