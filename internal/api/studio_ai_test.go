@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/supavise/supavise/internal/config"
+	"github.com/supavise/supavise/internal/registry"
 )
 
 const (
@@ -174,5 +175,47 @@ func TestNoGetRouteAnswersWithTheAIProvider(t *testing.T) {
 	}
 	if asked < 100 {
 		t.Fatalf("only %d requests were sent: the walk does not cover the route table", asked)
+	}
+}
+
+// beforeUpdate lets a test change the registry between the read and the write of one request, as a
+// second Owner's request would: do runs once, just before the first UpdateOrganization.
+type beforeUpdate struct {
+	registry.Registry
+	do func()
+}
+
+func (b *beforeUpdate) UpdateOrganization(ctx context.Context, o *registry.Organization) error {
+	if do := b.do; do != nil {
+		b.do = nil
+		do()
+	}
+	return b.Registry.UpdateOrganization(ctx, o)
+}
+
+// A rename read the organization before another Owner saved the AI opt-in; it must not write the
+// old tags back, because they decide what Studio sends to a third-party model provider.
+func TestOrganizationRenameKeepsTagsSavedMeanwhile(t *testing.T) {
+	rf := newRolesFixture(t)
+	const org = "/platform/organizations/default"
+	rf.srv.reg = &beforeUpdate{Registry: rf.reg, do: func() {
+		o, err := rf.reg.GetOrganization(context.Background(), "default")
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		o.OptInTags = []string{tagSQL}
+		if err := rf.reg.UpdateOrganization(context.Background(), o); err != nil {
+			t.Error(err)
+		}
+	}}
+
+	rec := rf.status(200, "owner", "PATCH", org, map[string]any{"name": "Renamed"})
+	if got := tagsOf(t, decodeBody(t, rec)); !slices.Equal(got, []string{tagSQL}) {
+		t.Errorf("the answer shows %v, want the tags saved meanwhile", got)
+	}
+	stored, err := rf.reg.GetOrganization(context.Background(), "default")
+	if err != nil || stored.Name != "Renamed" || !slices.Equal(stored.OptInTags, []string{tagSQL}) {
+		t.Fatalf("the registry holds %+v (%v): the rename undid the opt-in", stored, err)
 	}
 }
