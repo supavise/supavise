@@ -143,11 +143,31 @@ sudo -u supavise supavise status   # one verdict for the node and every project
 curl https://api.<domain>/healthz  # for an uptime monitor; reveals nothing else
 ```
 
+To read a project's logs, run `supavise logs` on the server:
+
+```bash
+sudo supavise logs <ref>                                  # the last 100 lines of everything the project writes
+sudo supavise logs <ref> --service postgres -n 500        # one service: postgres, auth, rest, realtime, storage, pooler, functions
+sudo supavise logs <ref> --since 1h                       # an age (30m, 2h, 1d) or a time (2026-10-10T12:00:00Z)
+sudo supavise logs <ref> -f                               # keep printing new lines
+```
+
+It reads the systemd journal, so run it with `sudo`, on the server that hosts the project (on a cluster, the dashboard's message names the node). A project's Postgres, Auth and REST units log under their own names. Realtime, Storage, the pooler and the Edge Runtime serve every project, so the command shows only their lines that mention the project's ref. Auth, REST, Realtime and Storage are set to log warnings and errors, so a healthy project prints little from them. The dashboard has no log store: its Logs pages, the Reports that read logs and the MCP server's log tools answer with an error that names this command, instead of an empty list. Use `supavise logs system` for the dashboard's own Postgres and Auth.
+
 Add an `[alerts]` section to `/etc/supavise/config.toml` to get a webhook or email when a backup fails, disk runs low, the server's memory runs low, a project's disk quota is nearly full, a project turns unhealthy, a certificate nears expiry, an update is available, or an upgrade starts, succeeds or fails. With a second server you also get one when a replica is unhealthy or lags, a server stops answering, a failover starts, ends or fails, or a server is fenced. Before planned work, `supavise maintenance announce` shows a notice in the dashboard. The deploy guide's [health and alerts](../deploy/README.md#health-alerts-and-maintenance-notices) section has the details.
 
 Studio's **Observability > Database** report, its overview cards and the **Compute and Disk** page show what each project uses: CPU, memory, connections, disk size, and the block reads and writes of Postgres. The server measures them once a minute and keeps the minutes of the last 3 days and the hours of the last 92. CPU is a share of the project's CPU quota, and memory is measured against its limit. When a project uses 80% of its disk quota or its CPU quota, or 85% of its memory limit, Studio shows its usual warning above the project; at 90% (95% for memory) the warning is critical. The charts of network traffic, the disk I/O budget, memory commitment, PgBouncer and Realtime have no source on a Supavise server and stay at zero. [`internal/metrics`](../internal/metrics/README.md) has the full list.
 
 A server can run out of memory while every project is under its own limit, because the limits add up to more than the memory (`[compute] overcommit`). You get a `memory_low` alert when under 10% of the memory is available, or when programs wait for memory while under 30% is available (`[health] memory_low_percent` sets the percentage; half of it is critical). When a project's disk quota is 80% used, and again at 90%, you get `project_disk_high`. Raise the disk size in Studio under **Settings > Compute and Disk**, or delete data. In a cluster, each server alerts for the projects it runs, so set `[alerts]` destinations on every server. After a restart of the daemon or a reboot, an alert that is open stays open for up to 10 minutes while the project starts and is measured again, instead of ending and being raised a second time. When the kernel kills a process of a project for lack of memory, Studio shows a critical memory warning for that project for 15 minutes. The server sees the kill in the project's counters or, when systemd restarted the service after it, in a restart that coincides with the kernel's count for all projects, so two projects that restart in the minute of a kill can both show it.
+
+## What the dashboard shows differently
+
+Studio is the real hosted dashboard. Where a page depends on something a server does not have, it says so instead of showing an empty list or a success that did nothing.
+
+- **Logs and Reports.** The Logs Explorer and the log pages of each service show an error that points to `supavise logs <ref>`. The charts of the Auth, Edge Functions and some other reports have no way to show an error and stay empty.
+- **Requests on the project home.** The chart counts the requests that the server's proxy served to the project's REST, Auth, Storage and Realtime APIs, by minute, hour or day. The counts live in memory: they start at zero when `supavise` restarts, and on a two-server cluster they leave out the requests that the second server served.
+- **Database Webhooks.** Select **Enable webhooks** to create the `supabase_functions` schema and turn on `pg_net`. If you created a schema with that name yourself, the button fails with a message: drop or rename your schema first. Webhooks you create after that send an HTTP request when a row is inserted, updated or deleted, as you chose; the response is in `net._http_response`. A branch created with data cannot send those requests to the network unless it was created with `--allow-egress`.
+- **Features a server cannot offer.** Iceberg and vector buckets in Storage are hidden. SSL enforcement shows as unavailable. Adding a Third-party Auth provider, changing the JWT secret from the dashboard, creating JWT signing keys and sending feedback are refused with a message; to rotate a project's JWT secret and API keys, run `sudo -u supavise supavise projects rotate-keys <ref>`.
 
 ## Read replicas and failover
 
@@ -197,6 +217,7 @@ By default every move is yours to start. `[failover] mode = "project"` or `"serv
 | Dashboard | Studio for a single project | Supabase Studio in its hosted, multi-project mode | Supabase Studio |
 | Management API and `supabase link` | Not available | Yes: the parts that Studio, the Supabase CLI and the MCP server call | Yes |
 | Remote MCP server with OAuth sign-in | Not available | Yes, at `api.<domain>/mcp`, one organization per sign-in | Yes |
+| Logs pages | Logflare and Vector, with an override file | No log store. `supavise logs <ref>` on the server reads the journal; the dashboard says so | Yes |
 | Branching | Not available | Yes, schema-only or with data | Yes |
 | Security and Performance Advisors | Studio's page for its one project; nothing for the CLI or an MCP client | Yes: Studio, `supabase db advisors` and the MCP server, without the health checks | Yes |
 | Point-in-time restore | Not included; you set up backups yourself | Yes, in the dashboard (in place) or with `supavise backups restore` on the server | Yes |

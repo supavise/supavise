@@ -259,11 +259,12 @@ func TestStubsMatchSpec(t *testing.T) {
 	ops, _ := Operations()
 	impl := f.srv.implemented()
 	paramRe := regexp.MustCompile(`\{[^}]+\}`)
-	n := 0
+	n, candidates := 0, 0
 	for _, op := range ops {
 		if _, ok := impl[op.Key()]; ok {
 			continue
 		}
+		candidates++
 		path := paramRe.ReplaceAllStringFunc(op.Path, func(p string) string {
 			if p == "{ref}" {
 				return testRef
@@ -287,10 +288,13 @@ func TestStubsMatchSpec(t *testing.T) {
 			validateAgainstSpec(t, op.Key(), rec.Body.Bytes())
 		}
 	}
-	t.Logf("%d stubbed operations checked", n)
-	// A sanity floor, not a count to keep: it falls as operations get handlers.
-	if n < 250 {
-		t.Fatalf("only %d stubs were exercised", n)
+	t.Logf("%d stubbed operations checked of %d that no handler claims", n, candidates)
+	// Most operations without a handler are answered by the stub (267 of 335 when this was written; the rest are
+	// answered by a more specific route that has a handler). A share, not a count: a count
+	// needs a new number each time an operation gets a handler (and every lane that adds handlers
+	// edits it). The check catches a route table that stopped serving stubs.
+	if candidates == 0 || n*10 < candidates*7 {
+		t.Fatalf("only %d of the %d operations without a handler were answered by a stub", n, candidates)
 	}
 }
 

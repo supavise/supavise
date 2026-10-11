@@ -15,6 +15,16 @@
 #   Owners, the last Owner cannot be demoted or removed;
 # - the pinned Postgres creates supabase_read_only_user, the user of the read-only connection string
 #   the databases listing hands Studio;
+# - Database Webhooks: a Read-only member is refused "Enable webhooks", a Developer's call creates the
+#   supabase_functions schema and its role, a second call changes nothing, and a webhook that Studio
+#   creates (a trigger on supabase_functions.http_request through pg-meta) answers an insert with a
+#   request that a local HTTP server receives and a net._http_response row with its status; the script
+#   runs as a superuser, so a Developer's own supabase_functions schema is refused, a trigger the
+#   Developer adds to the migrations table does not fire, and a role of theirs is not dropped;
+# - the dashboard's honesty about logs: a log query answers an error that names `supavise logs <ref>`
+#   (never a bare empty result), `supavise logs` prints the project's Postgres lines and only the
+#   project's lines of the shared services, and the project home's request chart counts the
+#   requests the proxy served (usage.api-counts);
 # - the MCP server (apply_migration, execute_sql) and, when SUPABASE_CLI is set, the Supabase CLI
 #   (secrets set) list as Read-only and are refused writes; an Owner's can;
 # - [mail] reaches supavise-gotrue@system: an invitation to a new address (GoTrue invite) and to an
@@ -29,12 +39,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TEARDOWN=0
 [[ ${1:-} == --teardown ]] && TEARDOWN=1
 WORK=$(mktemp -d)
-SMTP_PID=""
-trap 'rc=$?; [[ -n $SMTP_PID ]] && kill "$SMTP_PID" 2>/dev/null; collect_logs; [[ $TEARDOWN -eq 1 ]] && teardown; rm -rf "$WORK"; exit $rc' EXIT
+SMTP_PID="" HOOK_PID=""
+trap 'rc=$?; [[ -n $SMTP_PID ]] && kill "$SMTP_PID" 2>/dev/null; [[ -n $HOOK_PID ]] && kill "$HOOK_PID" 2>/dev/null; collect_logs; [[ $TEARDOWN -eq 1 ]] && teardown; rm -rf "$WORK"; exit $rc' EXIT
 
 # Ports away from anything the runner may listen on, as in settings-smoke.sh.
 P_SESSION=15432 P_TRANSACTION=16543 P_REALTIME=14000 P_STORAGE=15000 P_STORAGE_ADMIN=15001 P_PGMETA=18080 P_API=14001 P_STUDIO=13000
-P_SMTP=12526
+P_SMTP=12526 P_HOOK=12527
 PASSWORD=roles-correct-horse-battery
 ORG=default   # the claim keeps the organization the first project created
 
@@ -101,6 +111,23 @@ S(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
 python3 "$WORK/smtp.py" "$P_SMTP" "$WORK/mails.txt" &
 SMTP_PID=$!
+
+# The webhook target: answers 200 to anything and logs each request line, so the test sees that the
+# database's HTTP request arrived.
+cat >"$WORK/hook.py" <<'PY'
+import http.server, sys
+out = sys.argv[2]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n).decode(errors="replace")
+        open(out, "a").write(self.path + " " + body.replace("\n", " ") + "\n")
+        self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"ok")
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+python3 "$WORK/hook.py" "$P_HOOK" "$WORK/hooks.txt" &
+HOOK_PID=$!
 
 log "system init, fleet, one project"
 system_up
@@ -302,6 +329,164 @@ expect 403 "${PAT[ro]}" POST "$CFG/branches" '{"branch_name":"ro-data","with_dat
 # The list has the default branch (the project itself); nothing else may have been made.
 [[ $(body "${PAT[owner]}" GET "$CFG/branches" | json_get 'len([b for b in d if not b.get("is_default")])') == 0 ]] || fail "a refused branch with data was created"
 expect 403 "${PAT[dev]}" POST "/v1/projects" "{\"name\":\"nope\",\"organization_slug\":\"$ORG\",\"db_pass\":\"correct-horse-battery\"}"
+
+log "Database Webhooks: Enable creates the schema, a trigger fires a request, the response is recorded"
+[[ $(sql "select to_regnamespace('supabase_functions') is not null") == f ]] || fail "supabase_functions exists before webhooks were enabled"
+# Enabling needs the right to change triggers: refused for Read-only on both routes, before the database is touched.
+expect 403 "${PAT[ro]}" POST "$CFG/database/webhooks/enable"
+code=$(papi "${JWT[ro]}" POST "/platform/database/$REF/hook-enable")
+[[ $code == 403 ]] || fail "a read-only member enabled webhooks through the dashboard route: $code"
+[[ $(sql "select to_regnamespace('supabase_functions') is not null") == f ]] || fail "a refused call created supabase_functions"
+# The script runs as a superuser, and a Developer (the postgres role) can make objects before Enable is called. Trying the two
+# ways to turn that into superuser code: a supabase_functions schema of the Developer's own with a trigger on its migrations
+# table (the script's INSERT would fire it), and a role named supabase_pg_net_admin (upstream's cleanup reassigns what it owns
+# to supabase_admin). Setup that the pinned Postgres does not allow a Developer is not an attack, so it is skipped with a note.
+devq() { # SQL: run SQL through pg-meta as the Developer (the postgres role); the status is the result
+  papi "${JWT[dev]}" POST "/platform/pg-meta/$REF/query" "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$1")"
+}
+ok2xx() { [[ $1 == 200 || $1 == 201 ]]; }
+ok2xx "$(devq "create table public.hook_spy_log (who text, su boolean);
+create function public.hook_spy() returns trigger language plpgsql as \$\$ begin insert into public.hook_spy_log select current_user, rolsuper from pg_roles where rolname = current_user; return null; end \$\$;")" \
+  || fail "a Developer could not create the spy table and function: $(head -c 300 "$WORK/last.json")"
+PGNET_ROLE=0
+if ok2xx "$(devq "create role supabase_pg_net_admin")"; then PGNET_ROLE=1; else log "note: a Developer cannot create the role supabase_pg_net_admin here; that check is skipped"; fi
+if ok2xx "$(devq "create schema supabase_functions;
+create table supabase_functions.migrations (version text primary key, inserted_at timestamptz not null default now());
+create trigger spy before insert on supabase_functions.migrations for each row execute function public.hook_spy();
+create trigger spy_stmt before insert on supabase_functions.migrations for each statement execute function public.hook_spy();")"; then
+  code=$(papi "${JWT[dev]}" POST "/platform/database/$REF/hook-enable")
+  [[ $code == 400 ]] || fail "enabling webhooks over a schema the Developer made answered $code, want 400: $(head -c 300 "$WORK/last.json")"
+  grep -q "not to supabase_admin" "$WORK/last.json" || { cat "$WORK/last.json" >&2; fail "the refusal does not say that the schema does not belong to supabase_admin"; }
+  [[ $(sql "select count(*) from public.hook_spy_log") == 0 ]] || { sql "select * from public.hook_spy_log" >&2; fail "enabling webhooks fired a trigger of the project's as $(sql "select string_agg(who || ' superuser=' || su, ', ') from public.hook_spy_log")"; }
+  [[ $(sql "select to_regprocedure('supabase_functions.http_request()') is null and to_regclass('supabase_functions.hooks') is null") == t ]] \
+    || fail "a refused enable left the webhooks objects behind"
+  expect 201 "${PAT[dev]}" POST "$CFG/database/query" '{"query":"drop schema supabase_functions cascade"}'
+else
+  log "note: a Developer cannot create a schema or trigger here; the check of a schema the project made is skipped"
+  devq "drop schema if exists supabase_functions cascade" >/dev/null
+fi
+[[ $(sql "select to_regnamespace('supabase_functions') is not null") == f ]] || fail "supabase_functions is still there after the refused-schema check"
+expect 201 "${PAT[dev]}" POST "$CFG/database/webhooks/enable"
+if [[ $PGNET_ROLE == 1 ]]; then
+  [[ $(sql "select count(*) from pg_roles where rolname = 'supabase_pg_net_admin'") == 1 ]] || fail "enabling webhooks dropped the role supabase_pg_net_admin that the Developer made"
+  sql "drop role supabase_pg_net_admin"
+fi
+[[ $(sql "select to_regprocedure('supabase_functions.http_request()') is not null and exists (select 1 from pg_extension where extname = 'pg_net') and exists (select 1 from pg_roles where rolname = 'supabase_functions_admin')") == t ]] \
+  || fail "enabling webhooks left no supabase_functions.http_request(), pg_net or supabase_functions_admin"
+# Studio shows "enabled" when the schema is listed; the function runs as its owner, which is not postgres.
+[[ $(sql "select proowner::regrole::text || ' ' || prosecdef from pg_proc where oid = 'supabase_functions.http_request'::regproc") == 'supabase_functions_admin t' ]] \
+  || fail "http_request() is not a SECURITY DEFINER function of supabase_functions_admin"
+# The artifact's pg_net (0.12 and newer) keeps net.http_post executable by PUBLIC: the script must not have reverted that.
+[[ $(sql "select prosecdef from pg_proc where oid = 'net.http_post(text,jsonb,jsonb,jsonb,integer)'::regprocedure") == f ]] \
+  || fail "enabling webhooks made net.http_post SECURITY DEFINER"
+# A second call (another click, a retry) succeeds and changes nothing.
+before=$(sql "select count(*) from supabase_functions.migrations")
+code=$(papi "${JWT[dev]}" POST "/platform/database/$REF/hook-enable")
+[[ $code == 201 ]] || fail "enabling webhooks a second time answered $code"
+[[ $(sql "select count(*) from supabase_functions.migrations") == "$before" ]] || fail "a second enable added migration rows"
+# Once the tables exist, the Developer holds privileges on them and can add a trigger. A repeated enable must not run it: it
+# writes no row into a table that exists (a BEFORE INSERT trigger fires even for an INSERT ... ON CONFLICT DO NOTHING).
+if ok2xx "$(devq "create trigger spy before insert on supabase_functions.migrations for each row execute function public.hook_spy();
+create trigger spy_stmt before insert on supabase_functions.migrations for each statement execute function public.hook_spy();")"; then
+  code=$(papi "${JWT[dev]}" POST "/platform/database/$REF/hook-enable")
+  [[ $code == 201 ]] || fail "enabling webhooks with a trigger on the migrations table answered $code: $(head -c 300 "$WORK/last.json")"
+  [[ $(sql "select count(*) from public.hook_spy_log") == 0 ]] || fail "a repeated enable ran the project's trigger as $(sql "select string_agg(who || ' superuser=' || su, ', ') from public.hook_spy_log")"
+  ok2xx "$(devq "drop trigger spy on supabase_functions.migrations; drop trigger spy_stmt on supabase_functions.migrations;")" || fail "could not drop the spy triggers"
+else
+  log "note: a Developer cannot add a trigger to supabase_functions.migrations here; that check is skipped"
+fi
+devq "drop function public.hook_spy(); drop table public.hook_spy_log;" >/dev/null
+# What Studio does next: create the webhook as a trigger through pg-meta (the postgres role), here on a table the Developer owns.
+expect 201 "${PAT[dev]}" POST "$CFG/database/query" '{"query":"create table public.hook_t (id int primary key, v text)"}'
+code=$(papi "${JWT[dev]}" POST "/platform/pg-meta/$REF/query" "{\"query\":\"create trigger roles_hook after insert on public.hook_t for each row execute function supabase_functions.http_request('http://127.0.0.1:$P_HOOK/roles-hook', 'POST', '{\\\"Content-Type\\\":\\\"application/json\\\"}', '{}', '5000')\"}")
+[[ $code == 200 || $code == 201 ]] || fail "creating a webhook trigger through pg-meta answered $code: $(head -c 300 "$WORK/last.json")"
+# Studio lists webhooks as the triggers whose function is in supabase_functions.
+[[ $(sql "select count(*) from pg_trigger t join pg_proc p on p.oid = t.tgfoid where not t.tgisinternal and t.tgname = 'roles_hook' and p.pronamespace = 'supabase_functions'::regnamespace") == 1 ]] \
+  || fail "the webhook trigger is not listed under supabase_functions"
+expect 201 "${PAT[dev]}" POST "$CFG/database/query" '{"query":"insert into public.hook_t values (1, '"'"'fires'"'"')"}'
+for i in $(seq 1 30); do
+  [[ $(sql "select count(*) from net._http_response where status_code = 200") -ge 1 ]] && break
+  sleep 1
+done
+[[ $(sql "select count(*) from net._http_response where status_code = 200") -ge 1 ]] \
+  || { sql "select id, status_code, error_msg from net._http_response" >&2; fail "the insert produced no net._http_response row with status 200"; }
+grep -q '^/roles-hook .*"record".*"fires"' "$WORK/hooks.txt" || { cat "$WORK/hooks.txt" >&2; fail "the webhook target did not receive the insert"; }
+[[ $(sql "select count(*) from supabase_functions.hooks where hook_name = 'roles_hook'") == 1 ]] || fail "supabase_functions.hooks has no row for the webhook"
+# Deleting the webhook is a DROP TRIGGER through pg-meta.
+code=$(papi "${JWT[dev]}" POST "/platform/pg-meta/$REF/query" '{"query":"drop trigger roles_hook on public.hook_t"}')
+[[ $code == 200 || $code == 201 ]] || fail "dropping the webhook trigger answered $code"
+
+log "Logs: queries say there are no logs, supavise logs reads the journal, the request chart counts proxy requests"
+# A log query is an error, not an empty answer (Studio's logs pages, the reports and the MCP tools show it).
+code=$(papi "${JWT[dev]}" GET "/platform/projects/$REF/analytics/endpoints/logs.all?sql=select%201&iso_timestamp_start=2026-01-01T00:00:00Z&iso_timestamp_end=2026-01-01T01:00:00Z")
+[[ $code == 200 ]] || fail "logs.all answered $code"
+[[ $(json_get 'len(d["result"])' <"$WORK/last.json") == 0 ]] || fail "logs.all returned rows"
+json_get 'd["error"]' <"$WORK/last.json" | grep -q "supavise logs $REF" || { cat "$WORK/last.json" >&2; fail "logs.all does not say to run supavise logs $REF"; }
+[[ $(st "${PAT[owner]}" GET "$CFG/analytics/endpoints/logs.all") == 410 ]] || fail "v1 logs.all is not gone (410)"
+json_get 'd["error"]' < <(body "${PAT[owner]}" GET "$CFG/analytics/endpoints/logs") | grep -q "supavise logs $REF" || fail "v1 logs does not say to run supavise logs $REF"
+# Iceberg and vector buckets are hidden: the profile lists them as disabled features.
+[[ $(curl -sS -m 30 -H "Authorization: Bearer ${JWT[owner]}" "$ADMIN/platform/profile" | json_get '"storage:analytics" in d["disabled_features"] and "storage:vectors" in d["disabled_features"]') == True ]] \
+  || fail "the profile does not hide storage:analytics and storage:vectors"
+
+# supavise logs runs as root here: the supavise user may not read the system journal.
+SVLOG=/usr/local/bin/supavise
+$SVLOG logs "$REF" --service postgres -n 20000 >"$WORK/pglog.txt" 2>"$WORK/pglog.err" || { cat "$WORK/pglog.err" >&2; fail "supavise logs --service postgres failed"; }
+[[ -s $WORK/pglog.txt ]] || { cat "$WORK/pglog.err" >&2; fail "supavise logs printed no Postgres line"; }
+grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z postgres +' "$WORK/pglog.txt" || { head -5 "$WORK/pglog.txt" >&2; fail "supavise logs lines are not '<time> postgres <message>'"; }
+grep -q "ready to accept connections" "$WORK/pglog.txt" || { tail -5 "$WORK/pglog.txt" >&2; fail "supavise logs does not show the Postgres start"; }
+# A shared service shows only the lines that mention the project. Realtime and Storage log at warning level, so the
+# journal holds a line only when one of them reports a problem: provoke one per service (a Realtime join with a
+# malformed token, a Storage call with a bad key, a pooler login with a wrong password), then require that every line
+# a service prints mentions the ref. A service that prints nothing is reported, not failed: whether its warning
+# carries the ref depends on the service's logger, which this test cannot see.
+ws_join "$P_REALTIME" "$REF.realtime.internal" "not-a-token" >/dev/null 2>&1 || true
+curl -s -o /dev/null -m 10 -H "Host: $REF.api.$SUPAVISE_DOMAIN" -H "apikey: not-a-token" -H "Authorization: Bearer not-a-token" "http://127.0.0.1/storage/v1/bucket" || true
+PGPASSWORD=a-wrong-password "$PSQL" "host=127.0.0.1 port=$P_SESSION user=postgres.$REF dbname=postgres sslmode=disable connect_timeout=10" -Atc 'select 1' </dev/null >/dev/null 2>&1 || true
+sleep 2
+for svc in realtime storage pooler functions; do
+  $SVLOG logs "$REF" --service "$svc" -n 500 >"$WORK/shared-$svc.txt" 2>/dev/null || fail "supavise logs --service $svc failed"
+  if grep -v "$REF" "$WORK/shared-$svc.txt" | grep -q .; then head -3 "$WORK/shared-$svc.txt" >&2; fail "supavise logs shows $svc lines that do not mention the project"; fi
+  log "supavise logs --service $svc: $(wc -l <"$WORK/shared-$svc.txt" | tr -d ' ') line(s) that mention the project"
+done
+# Every service together, a window, and the refusals.
+$SVLOG logs "$REF" -n 50 --since 1d >"$WORK/alllog.txt" 2>/dev/null || fail "supavise logs (all services, --since 1d) failed"
+[[ $(wc -l <"$WORK/alllog.txt") -le 50 ]] || fail "supavise logs -n 50 printed more than 50 lines"
+$SVLOG logs "$REF" --since yesterday >/dev/null 2>"$WORK/since.err" && fail "supavise logs accepted --since yesterday"
+grep -q -- "--since" "$WORK/since.err" || fail "supavise logs --since yesterday: no explanation"
+$SVLOG logs not-a-ref >/dev/null 2>"$WORK/ref.err" && fail "supavise logs accepted a bad ref"
+# --follow prints a line that Postgres writes after it started (a statement the log records at LOG level).
+( timeout 10 $SVLOG logs "$REF" --service postgres -n 0 -f >"$WORK/follow.txt" 2>/dev/null || true ) &
+FOLLOW_PID=$!
+sleep 2
+sql "do \$\$ begin raise warning 'supavise-logs-follow-marker'; end \$\$"
+wait "$FOLLOW_PID"
+grep -q "supavise-logs-follow-marker" "$WORK/follow.txt" || { cat "$WORK/follow.txt" >&2; fail "supavise logs -f did not print a line written after it started"; }
+
+# The project home's request chart (usage.api-counts) counts what the proxy served: unauthenticated
+# requests answered 401 are requests too.
+req_sum() { # the REST requests of the last hour, as the dashboard asks for them
+  papi "${JWT[owner]}" GET "/platform/projects/$REF/analytics/endpoints/usage.api-counts?interval=1hr" >/dev/null
+  json_get 'sum(r["total_rest_requests"] for r in d["result"])' <"$WORK/last.json"
+}
+before=$(req_sum)
+for _ in 1 2 3 4 5; do
+  [[ $(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Host: $REF.api.$SUPAVISE_DOMAIN" "http://127.0.0.1/rest/v1/roles_t") == 401 ]] || fail "an unauthenticated REST request was not refused with 401"
+done
+after=$(req_sum)
+[[ $((after - before)) -ge 5 ]] || fail "usage.api-counts counted $((after - before)) of 5 requests (before $before, after $after)"
+[[ $(json_get 'len(d["result"])' <"$WORK/last.json") -ge 60 ]] || fail "usage.api-counts 1hr has fewer than 60 minute buckets"
+
+# Hosted features a node does not offer say so instead of succeeding: SSL enforcement is "not allowed" (Studio shows a
+# disabled switch), the legacy signing key does not exist (Studio offers to migrate), a JWT secret change is refused with the
+# command that does it, and no JWT secret update is "running" (a stub's status 0 means "updating").
+[[ $(st "${PAT[owner]}" GET "$CFG/ssl-enforcement") == 400 ]] || fail "GET ssl-enforcement is not refused with 400"
+body "${PAT[owner]}" GET "$CFG/ssl-enforcement" | grep -q "not allowed to configure SSL enforcements" || fail "ssl-enforcement does not say that configuring it is not allowed"
+[[ $(st "${PAT[owner]}" GET "$CFG/config/auth/signing-keys/legacy") == 404 ]] || fail "GET signing-keys/legacy is not 404"
+code=$(papi "${JWT[owner]}" PATCH "/platform/projects/$REF/config/secrets" '{"jwt_secret":"a-new-secret-a-new-secret-a-new","change_tracking_id":"00000000-0000-4000-8000-000000000000"}')
+[[ $code == 400 ]] || fail "PATCH config/secrets answered $code, want 400"
+grep -q "supavise projects rotate-keys $REF" "$WORK/last.json" || { cat "$WORK/last.json" >&2; fail "PATCH config/secrets does not name supavise projects rotate-keys"; }
+papi "${JWT[owner]}" GET "/platform/projects/$REF/config/secrets/update-status" >/dev/null
+[[ $(json_get 'd["update_status"]' <"$WORK/last.json") == None ]] || fail "a JWT secret update is reported as running"
 
 log "Administrator: settings and members, never Owners"
 # An Administrator passes the permission check of a restore; the time is far outside any window, so

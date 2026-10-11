@@ -238,6 +238,9 @@ func matrixCases() []routeCase {
 		rc("YYYYYN", "POST", p+"/cli/login-role", map[string]any{"read_only": false}),
 		// dropping the project's login roles drops every member's, so it needs the right to change roles
 		rc("YYYNYN", "DELETE", p+"/cli/login-role", nil),
+		// Database Webhooks create a schema, a role and an extension: the right to change triggers
+		rc("YYYNYN", "POST", "/platform/database/"+testRef+"/hook-enable", nil),
+		rc("YYYNYN", "POST", p+"/database/webhooks/enable", nil),
 		rc("YYYNYN", "DELETE", p+"/functions/nope", nil),
 		rc("YYYNYN", "POST", p+"/branches", map[string]any{"branch_name": "x"}),
 		// a branch with data copies production data: Owner and Administrator only
@@ -430,9 +433,10 @@ func TestPermissionsEndpointMatchesEnforcement(t *testing.T) {
 // a route of a family added later, needs a rule: otherwise a user without a role could use it.
 func TestImplementedRoutesOpenToEveryUserAreAllowlisted(t *testing.T) {
 	// The OAuth endpoints of /v1 are the clients' own: authorize, token and revoke carry no session (they
-	// are authNone, so the rule never decides), and the project-claim stub is open like its siblings.
+	// are authNone, so the rule never decides), the project-claim stub is open like its siblings, and the
+	// feedback form answers every user with the same refusal (unsupported.go).
 	// The resource warnings are a list too: they name only the projects the caller can see.
-	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/v1/oauth/)`)
+	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/platform/feedback/send$|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/v1/oauth/)`)
 	for key := range newFixture(t).srv.implemented() {
 		m, p, _ := strings.Cut(key, " ")
 		if n := routeNeed(m, p); n.kind == needAny && !open.MatchString(p) {
