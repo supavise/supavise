@@ -241,7 +241,11 @@ var (
 
 // pgRestart lists the settings Postgres applies only at start (context postmaster), plus
 // the ones the class puts on the command line, which a reload cannot override.
+// autovacuum_max_workers and pg_stat_statements.max are postmaster settings of PostgreSQL 17.
+// autovacuum_work_mem and pg_net.batch_size are not: a reload reaches the autovacuum workers and
+// pg_net's background worker (it re-reads its settings on SIGHUP).
 var pgRestart = map[string]bool{
+	"autovacuum_max_workers": true, "pg_stat_statements.max": true,
 	"max_connections": true, "max_locks_per_transaction": true, "max_logical_replication_workers": true,
 	"max_replication_slots": true, "max_wal_senders": true,
 	"max_worker_processes": true, "shared_buffers": true, "track_commit_timestamp": true,
@@ -276,6 +280,11 @@ func buildPostgresSchema() *Schema {
 		{Name: "session_replication_role", Kind: Enum, Enum: []string{"origin", "replica", "local"}},
 		size("shared_buffers"), dur("statement_timeout"), boolean("track_commit_timestamp"), size("wal_keep_size"),
 		dur("wal_sender_timeout"), size("work_mem"), dur("checkpoint_timeout"), boolean("hot_standby_feedback"),
+		// The four of the later specs go last, so the order of what an earlier version saved does not move.
+		// Each autovacuum worker holds a backend slot of shared memory, so the count is capped like the
+		// other counts that size it (the spec allows up to 262143).
+		num("autovacuum_max_workers", 1, 256), size("autovacuum_work_mem"),
+		num("pg_net.batch_size", 0, 32767), num("pg_stat_statements.max", 100, 45000),
 	})
 }
 

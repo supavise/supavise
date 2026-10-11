@@ -33,6 +33,7 @@ func TestPostgresRefusesSettingsThePostmasterCannotStartWith(t *testing.T) {
 		{"max_logical_replication_workers": float64(262143)},
 		{"max_parallel_workers": float64(262143)},
 		{"max_wal_senders": float64(262143)},
+		{"autovacuum_max_workers": float64(262143)},
 	} {
 		for _, cx := range []CrossContext{{}, {MemoryLimit: 1 << 30}} {
 			if err := patchWith(m, Postgres, body, cx); err == nil {
@@ -45,6 +46,11 @@ func TestPostgresRefusesSettingsThePostmasterCannotStartWith(t *testing.T) {
 	wantInvalidWith(t, patchWith(m, Postgres, map[string]any{"max_locks_per_transaction": float64(1024), "max_connections": float64(100)}, CrossContext{MemoryLimit: 256 << 20}), "lock table")
 	wantInvalidWith(t, patchWith(m, Postgres, map[string]any{"max_locks_per_transaction": float64(1024), "max_connections": float64(900)}, CrossContext{}), "needs a memory limit")
 	wantInvalidWith(t, patchWith(m, Postgres, map[string]any{"max_connections": float64(900), "max_worker_processes": float64(256)}, CrossContext{}), "needs a memory limit")
+	// The autovacuum workers hold backend slots like the connections do.
+	wantInvalidWith(t, patchWith(m, Postgres, map[string]any{"max_connections": float64(500), "max_worker_processes": float64(16), "autovacuum_max_workers": float64(256)}, CrossContext{}), "needs a memory limit")
+	if err := patchWith(m, Postgres, map[string]any{"max_connections": float64(100), "max_worker_processes": float64(16), "autovacuum_max_workers": float64(10), "max_wal_senders": float64(5)}, CrossContext{}); err != nil {
+		t.Errorf("a few more autovacuum workers: %v", err)
+	}
 	// Sensible values pass with and without a limit.
 	for _, cx := range []CrossContext{{}, {MemoryLimit: 1 << 30}, {MemoryLimit: 512 << 20}} {
 		if err := patchWith(m, Postgres, map[string]any{"max_locks_per_transaction": float64(256), "max_worker_processes": float64(16), "max_connections": float64(100)}, cx); err != nil {

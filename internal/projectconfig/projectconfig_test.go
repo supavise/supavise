@@ -440,6 +440,75 @@ func TestPostgresRules(t *testing.T) {
 	}
 }
 
+// The four settings of the later specs: autovacuum_max_workers and pg_stat_statements.max are
+// postmaster settings (a restart), autovacuum_work_mem and pg_net.batch_size are read on a reload.
+// The two dotted names render as they are, and a dot in a name is not special to the schema.
+func TestPostgresAutovacuumAndExtensionSettings(t *testing.T) {
+	m, _ := newManager(t)
+	patch(t, m, Postgres, map[string]any{
+		"autovacuum_max_workers": float64(6), "autovacuum_work_mem": "256 MB",
+		"pg_net.batch_size": float64(500), "pg_stat_statements.max": float64(10000),
+	})
+	args, _ := m.PostgresSettings(context.Background(), ref)
+	got := strings.Join(args, " ")
+	for _, w := range []string{"autovacuum_max_workers=6", "autovacuum_work_mem=256MB", "pg_net.batch_size=500", "pg_stat_statements.max=10000"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("%q missing from %q", w, got)
+		}
+	}
+	// The bounds of the specs, the unit rules of the other sizes, -1 for autovacuum_work_mem only.
+	for _, ok := range []map[string]any{
+		{"autovacuum_max_workers": float64(1)}, {"autovacuum_max_workers": float64(256)},
+		{"autovacuum_work_mem": "-1"}, {"autovacuum_work_mem": "1MB"}, {"autovacuum_work_mem": "1GB"},
+		{"pg_net.batch_size": float64(0)}, {"pg_net.batch_size": float64(32767)},
+		{"pg_stat_statements.max": float64(100)}, {"pg_stat_statements.max": float64(45000)},
+	} {
+		if _, err := m.Patch(context.Background(), ref, Postgres, ok, CrossContext{MemoryLimit: 8 << 30}); err != nil {
+			t.Errorf("%v: %v", ok, err)
+		}
+	}
+	for _, c := range []struct {
+		body map[string]any
+		want string
+	}{
+		{map[string]any{"autovacuum_max_workers": float64(0)}, "between"},
+		{map[string]any{"autovacuum_max_workers": float64(257)}, "between"},
+		{map[string]any{"autovacuum_max_workers": 2.5}, "integer"},
+		{map[string]any{"autovacuum_work_mem": "64"}, "needs a unit"},
+		{map[string]any{"autovacuum_work_mem": "512kB"}, "between"},
+		{map[string]any{"autovacuum_work_mem": "0"}, "between"},
+		{map[string]any{"autovacuum_work_mem": "-2"}, "invalid format"},
+		{map[string]any{"autovacuum_work_mem": "16 parsecs"}, "invalid format"},
+		{map[string]any{"autovacuum_work_mem": "900MB"}, "25%"},
+		{map[string]any{"pg_net.batch_size": float64(-1)}, "between"},
+		{map[string]any{"pg_net.batch_size": float64(32768)}, "between"},
+		{map[string]any{"pg_stat_statements.max": float64(99)}, "between"},
+		{map[string]any{"pg_stat_statements.max": float64(45001)}, "between"},
+		{map[string]any{"pg_stat_statements.max": "5000"}, "must be a number"},
+	} {
+		wantInvalid(t, m, Postgres, c.body, c.want)
+	}
+	// null returns a setting to its default: nothing is rendered for it.
+	patch(t, m, Postgres, map[string]any{"autovacuum_max_workers": nil, "pg_net.batch_size": nil})
+	args, _ = m.PostgresSettings(context.Background(), ref)
+	for _, a := range args {
+		if strings.HasPrefix(a, "autovacuum_max_workers=") || strings.HasPrefix(a, "pg_net.batch_size=") {
+			t.Errorf("a reset setting is still rendered: %v", args)
+		}
+	}
+	for name, restart := range map[string]bool{
+		"autovacuum_max_workers": true, "pg_stat_statements.max": true,
+		"autovacuum_work_mem": false, "pg_net.batch_size": false,
+	} {
+		if _, known := PostgresSchema.Field(name); !known {
+			t.Errorf("%s is not in the schema", name)
+		}
+		if PostgresNeedsRestart(name) != restart {
+			t.Errorf("PostgresNeedsRestart(%s) = %v, want %v", name, !restart, restart)
+		}
+	}
+}
+
 func TestRedactIsStable(t *testing.T) {
 	if Redact("abc") != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" {
 		t.Fatal("Redact is the hex SHA-256")
