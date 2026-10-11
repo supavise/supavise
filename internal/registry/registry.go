@@ -56,6 +56,9 @@ type Organization struct {
 	Slug      string
 	Name      string
 	CreatedAt time.Time
+	// OptInTags are the AI opt-in tags the organization saved (AI_SQL_GENERATOR_OPT_IN and the
+	// other two Studio knows). UpdateOrganization leaves them as they are when this is nil.
+	OptInTags []string
 }
 
 type Project struct {
