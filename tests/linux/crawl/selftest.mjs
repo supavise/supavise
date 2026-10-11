@@ -169,13 +169,14 @@ test('failures and the summary', () => {
     ],
     probes: [{ name: 'p1', ok: true, ms: 1000, findings: [{ kind: '4xx', op: 'GET /x', allowed: false, detail: '404' }] }, { name: 'p2', ok: false, ms: 2000, detail: 'nope' }, { name: 'p3', ok: null, ms: 0, detail: 'skipped' }],
     noFixture: [{ route: '/project/[ref]/x/[id]', params: ['id'] }],
+    crashed: [{ where: "route pass, group 'A'", kind: 'crash', detail: 'sign-in timed out' }],
     allowlist: { unseen: { stubs: ['GET /platform/q'], statuses: [], dom: [] }, seenStatic: { stubs: ['GET /platform/w'], statuses: [], dom: [] } },
     totals: { calls: 5, stubs: 1, mutationAttempts: 0 },
   }
   const f = failures(report)
-  assert.deepEqual(f.map((x) => x.kind), ['5xx', '4xx', 'probe', 'no-fixture', 'unseen'])
+  assert.deepEqual(f.map((x) => x.kind), ['5xx', '4xx', 'probe', 'crash', 'no-fixture', 'unseen'])
   const md = summaryMarkdown(report)
-  assert.match(md, /5 failure\(s\)/)
+  assert.match(md, /6 failure\(s\)/)
   assert.match(md, /\| p2 \| FAILED \|/)
   assert.match(md, /GET \/platform\/w/)
 })
