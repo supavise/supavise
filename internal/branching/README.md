@@ -35,6 +35,21 @@ not cleaned up on delete. The base-backup path restores through `Backup.WithMana
 the service that stamps the new project as a branch. Without `Deps.Branching` the API lists only the
 default branch and refuses to create one.
 
+## Source layout
+
+One file per operation, so that a change to one operation stays in one file:
+
+| File | Holds |
+|---|---|
+| `service.go` | `Service`, `Deps`, reading (`List`, `Get`, `Resolve`) and the helpers the operations share |
+| `ops.go` | `ActionInput`, the in-process operation table (`begin`, `end`, `checkIdle`, `WaitIdle`) and the detached run wrapper `spawn` |
+| `create.go` | `Create` and `doCreate` |
+| `merge.go`, `push.go`, `reset.go` | `Merge` and `Diff`, `Push`, `Reset` |
+| `update.go` | `Update` (PATCH of a branch) |
+| `delete.go` | `Delete`, `Restore`, `DisableBranching` and `removeBranch` |
+| `migrations.go` | the migration history (`Migration`, `Compare`, `Apply`) and `replay` into a schema-only branch |
+| `sweep.go`, `notify.go` | the expiry sweeper and the `notify_url` call |
+
 ## Data model
 
 Migration `0700_branching.sql` adds nullable columns to `supavise.projects`: `branch_id` (UUID,
