@@ -168,7 +168,7 @@ alter table public.todos enable row level security;
 create policy "owners read" on public.todos for select to authenticated using (owner = auth.uid());
 create policy "anon reads done" on public.todos for select to anon using (done);
 grant usage on schema public to anon, authenticated, app_user;
--- The default privileges gave anon and authenticated everything on todos; tighten that, as a hosted project may.
+-- The default privileges left anon and authenticated truncate, references, trigger and maintain on todos (the node revoked the rest); take all of it away, as a hosted project that locked its table down may.
 revoke all on public.todos from anon, authenticated;
 grant select on public.todos to anon, app_user;
 grant select, insert, update, delete on public.todos to authenticated;

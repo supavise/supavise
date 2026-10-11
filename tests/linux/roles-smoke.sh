@@ -477,14 +477,15 @@ after=$(req_sum)
 [[ $(json_get 'len(d["result"])' <"$WORK/last.json") -ge 60 ]] || fail "usage.api-counts 1hr has fewer than 60 minute buckets"
 
 # Hosted features a node does not offer say so instead of succeeding: SSL enforcement is "not allowed" (Studio shows a
-# disabled switch), the legacy signing key does not exist (Studio offers to migrate), a JWT secret change is refused with the
-# command that does it, and no JWT secret update is "running" (a stub's status 0 means "updating").
+# disabled switch), the legacy signing key does not exist (Studio offers to migrate), and no JWT secret update is "running"
+# (a stub's status 0 means "updating"). A JWT secret change works (migrate-smoke.sh covers it); here only a secret that is too
+# short is sent, so that the project keeps its secret for the rest of the run.
 [[ $(st "${PAT[owner]}" GET "$CFG/ssl-enforcement") == 400 ]] || fail "GET ssl-enforcement is not refused with 400"
 body "${PAT[owner]}" GET "$CFG/ssl-enforcement" | grep -q "not allowed to configure SSL enforcements" || fail "ssl-enforcement does not say that configuring it is not allowed"
 [[ $(st "${PAT[owner]}" GET "$CFG/config/auth/signing-keys/legacy") == 404 ]] || fail "GET signing-keys/legacy is not 404"
-code=$(papi "${JWT[owner]}" PATCH "/platform/projects/$REF/config/secrets" '{"jwt_secret":"a-new-secret-a-new-secret-a-new","change_tracking_id":"00000000-0000-4000-8000-000000000000"}')
-[[ $code == 400 ]] || fail "PATCH config/secrets answered $code, want 400"
-grep -q "supavise projects rotate-keys $REF" "$WORK/last.json" || { cat "$WORK/last.json" >&2; fail "PATCH config/secrets does not name supavise projects rotate-keys"; }
+code=$(papi "${JWT[owner]}" PATCH "/platform/projects/$REF/config/secrets" '{"jwt_secret":"a-new-secret-a-new-secret-a-new","change_tracking_id":"00000000-0000-4000-8000-000000000000"}') # 31 characters
+[[ $code == 400 ]] || fail "PATCH config/secrets answered $code for a secret of 31 characters, want 400"
+grep -q "at least 32 characters" "$WORK/last.json" || { cat "$WORK/last.json" >&2; fail "PATCH config/secrets does not say how long a JWT secret must be"; }
 papi "${JWT[owner]}" GET "/platform/projects/$REF/config/secrets/update-status" >/dev/null
 [[ $(json_get 'd["update_status"]' <"$WORK/last.json") == None ]] || fail "a JWT secret update is reported as running"
 
