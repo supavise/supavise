@@ -2,6 +2,8 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -76,6 +78,11 @@ func (r *reporter) finish(ctx context.Context, id int64, conclusion, detailsURL 
 // one when there is none or somebody deleted it. It returns the comment's id.
 func (r *reporter) comment(ctx context.Context, pr int, id int64, body string) (int64, error) {
 	body = commentMarker + "\n" + body
+	if id == 0 {
+		// A pull request whose branch was never made (or whose link was lost) may carry the comment of an
+		// earlier report: take it over instead of adding another with every commit.
+		id = r.findComment(ctx, pr)
+	}
 	if id != 0 {
 		err := r.s.cl.do(ctx, r.token, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", escapeSegments(r.repo), id), map[string]string{"body": body}, nil)
 		if err == nil {
@@ -92,6 +99,29 @@ func (r *reporter) comment(ctx context.Context, pr int, id int64, body string) (
 		return id, err
 	}
 	return res.ID, nil
+}
+
+// findComment returns the id of the comment this server wrote on the pull request, 0 when there is none.
+func (r *reporter) findComment(ctx context.Context, pr int) int64 {
+	var found int64
+	stop := errors.New("found")
+	_ = r.s.cl.getAll(ctx, r.token, fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", escapeSegments(r.repo), pr), "", 5, func(raw json.RawMessage) error {
+		var page []struct {
+			ID   int64  `json:"id"`
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return err
+		}
+		for _, c := range page {
+			if strings.HasPrefix(c.Body, commentMarker) {
+				found = c.ID
+				return stop
+			}
+		}
+		return nil
+	})
+	return found
 }
 
 // stepWord is a step's status as the table says it.

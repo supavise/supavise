@@ -397,7 +397,7 @@ func (s *Service) finishPR(ctx context.Context, conn registry.GitHubConnection, 
 		}
 	}
 	// The comment follows the branch: a pull request that made none has nothing to comment on.
-	if ev.Number > 0 && (oc.BranchRef != "" || oc.Neutral) {
+	if ev.Number > 0 {
 		var link *registry.GitHubBranchLink
 		if oc.BranchRef != "" {
 			link, _ = s.st.GetGitHubBranchLink(ctx, oc.BranchRef)

@@ -207,14 +207,26 @@ func (sn *Snapshot) readAll(ctx context.Context, rels []string, limit int64) ([]
 // Match returns the files that a glob of config.toml ("./seed.sql", "./seeds/*.sql") names, sorted.
 func (sn *Snapshot) Match(pattern string) ([]string, error) {
 	pat := strings.TrimPrefix(strings.TrimPrefix(pattern, "./"), "/")
-	g, err := glob.Compile(pat, '/')
-	if err != nil {
-		return nil, fmt.Errorf("the pattern %q: %w", pattern, err)
+	// "a/**/b" matches "a/b" too, as it does for the CLI's glob.
+	pats := []string{pat}
+	if strings.Contains(pat, "**/") {
+		pats = append(pats, strings.ReplaceAll(pat, "**/", ""))
+	}
+	var globs []glob.Glob
+	for _, p := range pats {
+		g, err := glob.Compile(p, '/')
+		if err != nil {
+			return nil, fmt.Errorf("the pattern %q: %w", pattern, err)
+		}
+		globs = append(globs, g)
 	}
 	var out []string
 	for p := range sn.entries {
-		if g.Match(p) {
-			out = append(out, p)
+		for _, g := range globs {
+			if g.Match(p) {
+				out = append(out, p)
+				break
+			}
 		}
 	}
 	sort.Strings(out)
