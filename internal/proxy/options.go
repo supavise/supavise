@@ -9,6 +9,7 @@ import (
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/domains"
 	"github.com/supavise/supavise/internal/registry"
+	"github.com/supavise/supavise/internal/reqstats"
 	"github.com/supavise/supavise/internal/secrets"
 )
 
@@ -63,7 +64,11 @@ type Options struct {
 	// ((*api.Server).MCPGate). Nil: /mcp is not special; the request goes to the Management API like
 	// any other path of api.<domain>, which serves nothing there.
 	MCPGate func(w http.ResponseWriter, r *http.Request) (rawQuery string, ok bool)
-	Logger  *slog.Logger
+	// Stats, when set, counts the requests that match a route of a project's API, per project, service
+	// and minute (internal/reqstats); the Management API answers the dashboard's request charts from it.
+	// Nil counts nothing.
+	Stats  *reqstats.Counter
+	Logger *slog.Logger
 }
 
 func (o *Options) validate() error {
