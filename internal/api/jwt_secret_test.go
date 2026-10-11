@@ -16,7 +16,9 @@ import (
 func (m *fakeManager) SetJWTSecret(_ context.Context, ref, secret string) (*secrets.ProjectKeys, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.jwtErr != nil {
+	// A replica that could not be updated comes with the keys: the new secret is in force.
+	var rk *lifecycle.ReplicaKeysError
+	if m.jwtErr != nil && !errors.As(m.jwtErr, &rk) {
 		return nil, m.jwtErr
 	}
 	m.jwtSecrets = append(m.jwtSecrets, ref+":"+secret)
@@ -25,7 +27,10 @@ func (m *fakeManager) SetJWTSecret(_ context.Context, ref, secret string) (*secr
 		return nil, errors.New("no keys")
 	}
 	k.JWTSecret = secret
-	return k, k.ResignLegacy(ref, time.Now())
+	if err := k.ResignLegacy(ref, time.Now()); err != nil {
+		return k, err
+	}
+	return k, m.jwtErr
 }
 
 const (
@@ -158,6 +163,43 @@ func TestJWTSecretUpdateFailures(t *testing.T) {
 		}
 		if st, _ := jwtStatus(t, f, jwtStatusPath).(map[string]any); st["status"] != float64(jwtStatusFailed) {
 			t.Fatalf("update_status = %v", st)
+		}
+	})
+	// The primary has the new secret; the PostgREST of a read replica does not. The change is not taken
+	// back: Edge Functions follow, the manager keeps the secret, and the answer and the status say what
+	// is left to do.
+	t.Run("a read replica that could not be updated", func(t *testing.T) {
+		f := newFixture(t)
+		hook := &recordingHook{}
+		withHook(t, f, hook)
+		f.mgr.jwtErr = &lifecycle.ReplicaKeysError{Failed: []lifecycle.ReplicaKeyFailure{
+			{Identifier: "abcdefghijklmnopqrst-rr-us-east-1-xyz12", NodeID: "n2", Err: errors.New("boom")},
+		}}
+		rec := f.do("PATCH", jwtSecretPath, map[string]any{"jwt_secret": hostedSecret, "change_tracking_id": "track-r"})
+		body := rec.Body.String()
+		if rec.Code != 500 || !strings.Contains(body, "abcdefghijklmnopqrst-rr-us-east-1-xyz12") || !strings.Contains(body, "was changed") ||
+			!strings.Contains(body, "same secret again") || strings.Contains(body, "boom") {
+			t.Fatalf("%d %s", rec.Code, body)
+		}
+		st, _ := jwtStatus(t, f, jwtStatusPath).(map[string]any)
+		if st["status"] != float64(jwtStatusFailed) || st["error"] != float64(jwtErrorServicesRestart) || st["progress"] != float64(jwtProgressGatewayConfigUpdated) || st["change_tracking_id"] != "track-r" {
+			t.Fatalf("update_status = %v", st)
+		}
+		if hook.count() != 1 {
+			t.Fatalf("the Edge Functions were told %d times: the change is in force and they read the secret from a file", hook.count())
+		}
+		pg := bodyMap(t, f.mustDo("GET", "/platform/projects/"+testRef+"/config/postgrest", nil, 200))
+		if pg["jwt_secret"] != hostedSecret {
+			t.Fatalf("the secret was taken back: %v", pg["jwt_secret"])
+		}
+		// Several replicas are all named; a list that could not be read says so.
+		f.mgr.jwtErr = &lifecycle.ReplicaKeysError{Failed: []lifecycle.ReplicaKeyFailure{{Identifier: "r-one", Err: errors.New("x")}, {Identifier: "r-two", Err: errors.New("y")}}}
+		if body := f.do("PATCH", jwtSecretPath, map[string]any{"jwt_secret": hostedSecret}).Body.String(); !strings.Contains(body, "r-one, r-two") {
+			t.Fatalf("body = %s", body)
+		}
+		f.mgr.jwtErr = &lifecycle.ReplicaKeysError{Err: errors.New("registry gone")}
+		if body := f.do("PATCH", jwtSecretPath, map[string]any{"jwt_secret": hostedSecret}).Body.String(); !strings.Contains(body, "could not be listed") {
+			t.Fatalf("body = %s", body)
 		}
 	})
 	t.Run("refused keeps the last status", func(t *testing.T) {

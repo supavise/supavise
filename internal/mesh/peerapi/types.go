@@ -149,8 +149,12 @@ type Action string
 const (
 	// ActionRestart restarts the replica's Postgres and PostgREST.
 	ActionRestart Action = "restart"
-	ActionStop    Action = "stop"
-	ActionStart   Action = "start"
+	// ActionRestartAPI renders the replica's PostgREST again from the project's current keys and
+	// restarts it when its unit changed. The standby's Postgres is not touched. InstanceAction.KeysDigest
+	// tells the node which JWT secret to render.
+	ActionRestartAPI Action = "restart_api"
+	ActionStop       Action = "stop"
+	ActionStart      Action = "start"
 	// ActionPromote turns the standby into a primary on the canonical port. See InstanceAction.
 	ActionPromote Action = "promote"
 	// ActionDemote turns a primary into a replica of the project's new home, in place.
@@ -219,6 +223,11 @@ type InstanceAction struct {
 	// the project's size and the node's copy of the registry may not have caught up. Empty: the
 	// size in the node's copy.
 	Class string `json:"class,omitempty"`
+	// KeysDigest (restart_api): secrets.ProjectKeys.JWTDigest of the keys the leader means the replica's
+	// PostgREST to run on. The node's copy of the registry may trail the leader's by a moment: a node whose
+	// copy holds other keys waits for it to catch up, for a bounded time, and refuses the action if it does
+	// not, instead of rendering the previous secret again. Empty: the keys in the node's copy.
+	KeysDigest string `json:"keys_digest,omitempty"`
 	// ReplicationPassword (demote, system cluster only): the opened password of the system cluster's
 	// replication role. The old leader of a planned switchover cannot read it from its registry, which is
 	// the database it stopped for the move; the leader that took over sends it with the request, over the

@@ -57,7 +57,8 @@ type Options struct {
 	// restart them in the right order (see ReplicaFleet). Nil: the node has none.
 	Replicas ReplicaFleet
 	// ReplicaRestartTimeout bounds the restart of one replica after a resize or a settings save (see
-	// restartReplicas); zero means five minutes.
+	// restartReplicas); zero means five minutes. It also bounds the restart of one replica's PostgREST
+	// after a change of the project's keys (updateReplicaKeys); zero means two minutes there.
 	ReplicaRestartTimeout time.Duration
 	// PeerRefresh asks the other nodes that run Supavisor to drop their cached copy of a tenant after
 	// the Engine changed it (a database password, a restore, a tenant that moved with its project).
@@ -944,9 +945,11 @@ func (e *Engine) finalBackup(ctx context.Context, p *registry.Project, prev regi
 
 // RotateKeys implements Manager: a new JWT secret, legacy anon and service_role keys
 // and opaque keys; database passwords are unchanged. GoTrue and PostgREST are
-// restarted on the new secret and the fleet tenants are updated. A paused project only
-// gets new stored keys; its env files are rewritten when it resumes. If applying the
-// keys fails, the previous keys are restored.
+// restarted on the new secret, the fleet tenants are updated and then the PostgREST of the
+// project's read replicas is restarted on its nodes. A paused project only
+// gets new stored keys (and its replicas that run get them); its env files are rewritten when it
+// resumes. If applying the keys fails, the previous keys are restored. A replica that could not be
+// updated leaves the new keys in force: the keys come back with a *ReplicaKeysError.
 func (e *Engine) RotateKeys(ctx context.Context, ref string) (*secrets.ProjectKeys, error) {
 	if err := e.upgradeBusy(ref, "rotate keys of"); err != nil {
 		return nil, err
@@ -986,7 +989,8 @@ func (e *Engine) RotateKeys(ctx context.Context, ref string) (*secrets.ProjectKe
 		return nil, fmt.Errorf("lifecycle: rotate keys of %s (previous keys restored): %w", ref, err)
 	}
 	e.event(ctx, ref, "project.keys_rotated", nil)
-	return &nk, nil
+	// The new keys are in force from here, so they are returned with the error of a replica.
+	return &nk, e.updateReplicaKeys(ctx, p, &nk)
 }
 
 // KeyStep names the step of a key change that failed, for JWTSecretError.
@@ -1026,11 +1030,16 @@ func (e *JWTSecretError) Unwrap() error { return e.Err }
 // hosted); the publishable and secret keys, the database passwords and the pgsodium root key
 // stay. Everything that checks a JWT follows it, in this order: the sealed keys in the
 // registry (the proxy's key cache drops them at once), the env files of GoTrue and PostgREST
-// and their restart, the Realtime and Storage tenants. A paused project only gets the stored
-// keys and applies them when it resumes. If a step fails the previous keys are stored and
-// applied again, and the error is a *JWTSecretError. Setting the secret the project already
-// has changes nothing. The caller restarts what this package does not run: the Edge Functions
-// environment (internal/functions) and the PostgREST of read replicas on other nodes.
+// and their restart, the Realtime and Storage tenants, and last the PostgREST of each running
+// read replica, which its own node restarts (ReplicaFleet.RestartAPI). A paused project only gets the
+// stored keys and applies them when it resumes; its replicas that run get them at once, because they
+// keep running while the project is paused. If a step up to the tenants fails the previous keys are
+// stored and applied again, and the error is a *JWTSecretError. A replica that cannot be updated does
+// not undo the change (that would put the previous secret back on the primary): the keys come back
+// with a *ReplicaKeysError that names it. Setting the secret the project already has changes nothing
+// on the primary, and updates the replicas again, which is how a replica that missed a change gets it.
+// The caller restarts what this package does not run: the Edge Functions environment
+// (internal/functions).
 func (e *Engine) SetJWTSecret(ctx context.Context, ref, secret string) (*secrets.ProjectKeys, error) {
 	if ref == config.SystemRef {
 		return nil, fmt.Errorf("%w: the JWT secret of the system project is the dashboard's own", ErrInvalidState)
@@ -1061,7 +1070,9 @@ func (e *Engine) SetJWTSecret(ctx context.Context, ref, secret string) (*secrets
 		return nil, err
 	}
 	if old.JWTSecret == secret {
-		return old, nil
+		// Nothing changes for the primary. A replica that missed the change (its node was away) takes the
+		// secret now; one that has it is left running (its unit renders the same).
+		return old, e.updateReplicaKeys(ctx, p, old)
 	}
 	nk := *old
 	nk.JWTSecret = secret
@@ -1072,7 +1083,8 @@ func (e *Engine) SetJWTSecret(ctx context.Context, ref, secret string) (*secrets
 		return nil, &JWTSecretError{Step: step, Err: err, NotRestored: !restored}
 	}
 	e.event(ctx, ref, "project.jwt_secret_changed", nil)
-	return &nk, nil
+	// The new secret is in force from here, so the keys are returned with the error of a replica.
+	return &nk, e.updateReplicaKeys(ctx, p, &nk)
 }
 
 // applyKeys makes nk the credentials of p: sealed in the registry (with revived, the default

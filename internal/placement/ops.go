@@ -183,6 +183,24 @@ func (f *Fleet) Restart(ctx context.Context, r registry.Replica, class string) e
 	return nil
 }
 
+// RestartAPI implements lifecycle.ReplicaFleet: the node renders the replica's PostgREST again from the
+// keys the digest names and restarts it when its unit changed, and the call returns once PostgREST
+// answers there. The standby's Postgres is not restarted.
+func (f *Fleet) RestartAPI(ctx context.Context, r registry.Replica, keysDigest string) error {
+	var epoch int64
+	if f.Epoch != nil {
+		epoch = f.Epoch()
+	}
+	st, err := f.Ops.Do(ctx, r.NodeID, r.Identifier, peerapi.ActionRestartAPI, peerapi.InstanceAction{Epoch: epoch, KeysDigest: keysDigest})
+	if err != nil {
+		return err
+	}
+	if r.Ref != config.SystemRef && !st.PostgRESTReady {
+		return errors.New("after the restart PostgREST is not ready")
+	}
+	return nil
+}
+
 // Failed implements lifecycle.ReplicaFleet.
 func (f *Fleet) Failed(ctx context.Context, r registry.Replica, cause error) {
 	if f.OnFailure != nil {

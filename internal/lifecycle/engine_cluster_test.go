@@ -243,9 +243,32 @@ type fakeFleet struct {
 	classes []string
 	// failedCtxErr is the error of the context each call of Failed got, in call order.
 	failedCtxErr []error
+	// RestartAPI: apiFailing and apiHung are by identifier, digests are the ones the calls named,
+	// listErr makes Replicas fail.
+	apiFailing map[string]error
+	apiHung    map[string]bool
+	digests    []string
+	listErr    error
+}
+
+func (f *fakeFleet) RestartAPI(ctx context.Context, r registry.Replica, digest string) error {
+	f.mu.Lock()
+	f.digests = append(f.digests, digest)
+	_ = f.h.plane.rec("Replica " + r.Identifier + " api")
+	hung := f.apiHung[r.Identifier]
+	err := f.apiFailing[r.Identifier]
+	f.mu.Unlock()
+	if hung {
+		<-ctx.Done() // a node that never answers
+		return ctx.Err()
+	}
+	return err
 }
 
 func (f *fakeFleet) Replicas(_ context.Context, ref string) ([]registry.Replica, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.h.reg.ListReplicas(context.Background(), ref)
 }
 
@@ -303,7 +326,8 @@ func replicaHarness(t *testing.T) (*harness, *registry.Project, *fakeFleet, []st
 		t.Fatal(err)
 	}
 	p := h.create(t)
-	fl := &fakeFleet{h: h, failing: map[string]error{}, hung: map[string]bool{}, slow: map[string]time.Duration{}}
+	fl := &fakeFleet{h: h, failing: map[string]error{}, hung: map[string]bool{}, slow: map[string]time.Duration{},
+		apiFailing: map[string]error{}, apiHung: map[string]bool{}}
 	h.e.opts.Replicas = fl
 	var ids []string
 	for i, n := range []string{n2.ID, n3.ID} {
