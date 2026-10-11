@@ -207,6 +207,9 @@ for ((i = 0; i < 60; i++)); do
 done
 [[ $(sql "$REF" "select label from public.compute_smoke where id = 1") == before ]] || fail "the data did not survive"
 log "utilization: what the node measures is what Studio's Database report draws"
+# The session token of the start of the run may be close to its end.
+JWT=$(api POST '/auth/v1/token?grant_type=password' -H 'Content-Type: application/json' \
+  -d '{"email":"smoke@example.com","password":"smoke-correct-horse-battery"}' | json_get 'd["access_token"]') || fail "dashboard sign-in"
 # The collector samples every minute; CPU needs two readings. Give Postgres some work to be measured.
 for i in 1 2 3; do sql "$REF" "select count(*) from generate_series(1, 30000000)" >/dev/null || fail "cpu load"; done
 infra() { # INTERVAL ATTRIBUTE...: the last hour of the series, to $LOG_DIR/infra.json
