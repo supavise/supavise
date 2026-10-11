@@ -103,6 +103,16 @@ func TestSplitPostgresSettings(t *testing.T) {
 	}
 }
 
+// The four settings of the later specs are never on the command line: they go through ALTER SYSTEM,
+// where pg_settings.pending_restart tells a postmaster one (autovacuum_max_workers,
+// pg_stat_statements.max) from one a reload applies (autovacuum_work_mem, pg_net.batch_size).
+func TestSplitPostgresSettingsKeepsAutovacuumAndExtensionSettingsOffTheCommandLine(t *testing.T) {
+	cmd, alter := SplitPostgresSettings([]string{"autovacuum_max_workers=6", "autovacuum_work_mem=256MB", "pg_net.batch_size=500", "pg_stat_statements.max=10000"})
+	if len(cmd) != 0 || strings.Join(alter, ",") != "autovacuum_max_workers=6,autovacuum_work_mem=256MB,pg_net.batch_size=500,pg_stat_statements.max=10000" {
+		t.Fatalf("%v | %v", cmd, alter)
+	}
+}
+
 // ConfigPlane over fakePlane.
 type cfgPlane struct {
 	*fakePlane

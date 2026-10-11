@@ -147,6 +147,10 @@ func init() {
 			f.Check = sizeRange(64*kB, intKB, false)
 		case "maintenance_work_mem":
 			f.Check = sizeRange(1*mB, intKB, false)
+		case "autovacuum_work_mem":
+			// -1 uses maintenance_work_mem; Postgres raises any other value below 1MB to 1MB, so such a
+			// value would read back as something else.
+			f.Check = sizeRange(1*mB, intKB, true)
 		case "logical_decoding_work_mem":
 			f.Check = sizeRange(64*kB, intKB, false)
 		case "max_wal_size":
@@ -215,7 +219,7 @@ func postgresCross(eff, _ Values, cx CrossContext) error {
 		if b, ok := size("shared_buffers"); ok && b > lim*0.4 {
 			return invalid("shared_buffers %s is more than 40%% of the project's memory limit (%s)", eff.Str("shared_buffers"), humanBytes(lim))
 		}
-		for _, n := range []string{"work_mem", "maintenance_work_mem", "logical_decoding_work_mem"} {
+		for _, n := range []string{"work_mem", "maintenance_work_mem", "logical_decoding_work_mem", "autovacuum_work_mem"} {
 			if b, ok := size(n); ok && b > lim*0.25 {
 				return invalid("%s %s is more than 25%% of the project's memory limit (%s)", n, eff.Str(n), humanBytes(lim))
 			}
@@ -257,9 +261,10 @@ func postmasterMemory(eff Values, cx CrossContext) error {
 	conns := intOr("max_connections", 100)
 	workers := intOr("max_worker_processes", defaultWorkerProcesses)
 	senders := intOr("max_wal_senders", 10)
-	backends := conns + workers + senders + 3 /* autovacuum workers */ + 1
+	vacuumers := intOr("autovacuum_max_workers", 3)
+	backends := conns + workers + senders + vacuumers + 1 /* the autovacuum launcher */
 	if backends > 0x3FFFF {
-		return invalid("max_connections + max_worker_processes + max_wal_senders must stay below %d", 0x3FFFF)
+		return invalid("max_connections + max_worker_processes + max_wal_senders + autovacuum_max_workers must stay below %d", 0x3FFFF)
 	}
 	locks := intOr("max_locks_per_transaction", 64)
 	lockBytes := float64(locks) * float64(backends) * lockEntryBytes
@@ -279,7 +284,7 @@ func postmasterMemory(eff Values, cx CrossContext) error {
 		return nil
 	}
 	if lockBytes > unlimitedLockBytes || backends > unlimitedBackends {
-		return invalid("max_locks_per_transaction %d with %d backends (max_connections, max_worker_processes and max_wal_senders together) needs a memory limit on the project", locks, backends)
+		return invalid("max_locks_per_transaction %d with %d backends (max_connections, max_worker_processes, max_wal_senders and autovacuum_max_workers together) needs a memory limit on the project", locks, backends)
 	}
 	return nil
 }

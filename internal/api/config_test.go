@@ -279,6 +279,54 @@ func TestPostgresConfig(t *testing.T) {
 	}
 }
 
+// The four settings the specs gained later are validated, saved, applied and read back like the
+// others, by the CLI's v1 route and in the v2 config with the dots of their names written as underscores.
+func TestPostgresConfigAutovacuumAndExtensionSettings(t *testing.T) {
+	f := newFixture(t)
+	url := "/v1/projects/" + testRef + "/config/database/postgres"
+	f.project.Limits.MemoryMax = "4G"
+	if err := f.reg.UpdateProject(context.Background(), f.project); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"autovacuum_max_workers": 5, "autovacuum_work_mem": "128MB", "pg_net.batch_size": 300, "pg_stat_statements.max": 8000}
+	rec := f.mustDo("PUT", url, body, 200)
+	validateAgainstSpec(t, "PUT /v1/projects/{ref}/config/database/postgres", rec.Body.Bytes())
+	want := map[string]any{"autovacuum_max_workers": float64(5), "autovacuum_work_mem": "128MB", "pg_net.batch_size": float64(300), "pg_stat_statements.max": float64(8000)}
+	for _, got := range []map[string]any{bodyMap(t, rec), bodyMap(t, f.mustDo("GET", url, nil, 200))} {
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("%s = %v, want %v", k, got[k], v)
+			}
+		}
+	}
+	if len(f.mgr.applied) == 0 || f.mgr.applied[len(f.mgr.applied)-1] != testRef+" postgres" {
+		t.Fatalf("the cluster was not told: %v", f.mgr.applied)
+	}
+	cfg := bodyMap(t, f.mustDo("GET", "/v2/projects/"+testRef+"/config", nil, 200))["data"].(map[string]any)["attributes"].(map[string]any)["database"].(map[string]any)["postgres_settings"].(map[string]any)
+	for k, v := range map[string]any{"autovacuum_max_workers": float64(5), "autovacuum_work_mem": "128MB", "pg_net_batch_size": float64(300), "pg_stat_statements_max": float64(8000)} {
+		if cfg[k] != v {
+			t.Errorf("v2 postgres_settings.%s = %v, want %v", k, cfg[k], v)
+		}
+	}
+	// Values outside the spec's bounds, or in a form Postgres would refuse at start, are refused unsaved.
+	for body, msg := range map[string]string{
+		`{"autovacuum_max_workers": 0}`:    "between",
+		`{"autovacuum_work_mem": "512kB"}`: "between",
+		`{"autovacuum_work_mem": "64"}`:    "needs a unit",
+		`{"pg_net.batch_size": 32768}`:     "between",
+		`{"pg_stat_statements.max": 99}`:   "between",
+	} {
+		f.mgr.applied = nil
+		rec := f.do("PUT", url, body)
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), msg) || len(f.mgr.applied) != 0 {
+			t.Errorf("%s: %d %s applied=%v", body, rec.Code, rec.Body.String(), f.mgr.applied)
+		}
+	}
+	if got := bodyMap(t, f.mustDo("GET", url, nil, 200)); got["pg_stat_statements.max"] != float64(8000) {
+		t.Fatalf("a refused save changed the settings: %v", got)
+	}
+}
+
 func TestAPIKeysLifecycle(t *testing.T) {
 	f := newFixture(t)
 	base := "/v1/projects/" + testRef + "/api-keys"
@@ -676,6 +724,109 @@ func TestAuthSchemaCoversTheSpecs(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Every setting of the specs' Postgres bodies has a place in the schema, with the type the spec
+// gives it and a range inside the spec's: when the pinned specs grow a field (the nightly spec
+// diff re-pins them), this fails until the schema knows it. The v2 config lists the same
+// settings with dots written as underscores (pg_net.batch_size is pg_net_batch_size).
+func TestPostgresSchemaCoversTheSpecs(t *testing.T) {
+	type prop struct {
+		Type  string                     `json:"type"`
+		Min   *float64                   `json:"minimum"`
+		Max   *float64                   `json:"maximum"`
+		Enum  []string                   `json:"enum"`
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	load := func(file string) map[string]any {
+		b, err := specFS.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(b, &doc); err != nil {
+			t.Fatal(err)
+		}
+		return doc
+	}
+	dig := func(doc map[string]any, path ...string) map[string]prop {
+		t.Helper()
+		var cur any = doc
+		for _, k := range path {
+			m, ok := cur.(map[string]any)
+			if !ok || m[k] == nil {
+				t.Fatalf("no %q on the path %v of the spec", k, path)
+			}
+			cur = m[k]
+		}
+		b, _ := json.Marshal(cur)
+		var out map[string]prop
+		if err := json.Unmarshal(b, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	v1, v2 := load("gen/specs/v1.json"), load("gen/specs/v2.json")
+	schemas := func(doc map[string]any, name string) []string {
+		return []string{"components", "schemas", name, "properties"}
+	}
+	bodies := []struct {
+		what  string
+		props map[string]prop
+		dots  bool // the names have their dots written as underscores
+	}{
+		{"v1 UpdatePostgresConfigBody", dig(v1, schemas(v1, "UpdatePostgresConfigBody")...), false},
+		{"v1 PostgresConfigResponse_Output", dig(v1, schemas(v1, "PostgresConfigResponse_Output")...), false},
+		{"v2 postgres_settings", dig(v2, "components", "schemas", "V2ProjectConfigResponse_Output", "properties", "data", "properties", "attributes", "properties", "database", "properties", "postgres_settings", "properties"), true},
+	}
+	byName := map[string]projectconfig.Field{}
+	byUnderscore := map[string]projectconfig.Field{}
+	for _, f := range projectconfig.PostgresSchema.Fields {
+		byName[f.Name] = f
+		byUnderscore[strings.ReplaceAll(f.Name, ".", "_")] = f
+	}
+	for _, b := range bodies {
+		if len(b.props) < 30 {
+			t.Fatalf("%s has %d properties", b.what, len(b.props))
+		}
+		seen := map[string]bool{}
+		for name, p := range b.props {
+			if name == "restart_database" { // a flag of the request, not a setting
+				continue
+			}
+			f, ok := byName[name]
+			if b.dots {
+				f, ok = byUnderscore[name]
+			}
+			if !ok {
+				t.Errorf("%s: no setting %q in projectconfig.PostgresSchema", b.what, name)
+				continue
+			}
+			seen[f.Name] = true
+			want := map[string]projectconfig.Kind{"boolean": projectconfig.Bool, "integer": projectconfig.Int, "string": projectconfig.String}[p.Type]
+			if len(p.Enum) > 0 {
+				want = projectconfig.Enum
+			}
+			if f.Kind != want {
+				t.Errorf("%s: %s is %v in the schema, the spec says %s", b.what, name, f.Kind, p.Type)
+			}
+			if f.Kind == projectconfig.Int && f.HasRange && ((p.Min != nil && f.Min < *p.Min) || (p.Max != nil && f.Max > *p.Max)) {
+				t.Errorf("%s: %s accepts %v..%v, outside the spec's %v..%v", b.what, name, f.Min, f.Max, specBound(p.Min), specBound(p.Max))
+			}
+		}
+		for _, f := range projectconfig.PostgresSchema.Fields {
+			if !seen[f.Name] {
+				t.Errorf("%s does not list %q, which the schema takes", b.what, f.Name)
+			}
+		}
+	}
+}
+
+func specBound(p *float64) any {
+	if p == nil {
+		return "unbounded"
+	}
+	return *p
 }
 
 // platformOnly are settings only Studio's twin lists; they are not stored.
