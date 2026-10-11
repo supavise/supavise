@@ -27,6 +27,9 @@ type Branch struct {
 
 	// Region is the region of the branch's project, which is its parent's.
 	Region string
+	// RunID is the action run that Create started for the branch, "" on a branch read later (list
+	// the runs of a branch with Service.BranchRuns).
+	RunID string
 
 	Persistent bool
 	WithData   bool

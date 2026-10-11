@@ -589,3 +589,23 @@ func TestBranchRunsGathersTheMergesToo(t *testing.T) {
 		t.Fatalf("limit: %d", len(limited))
 	}
 }
+
+func TestCreateReturnsTheRunItStarted(t *testing.T) {
+	h := newHarness(t, nil)
+	b, err := h.svc.Create(context.Background(), parentRef, CreateInput{Name: "feat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.wait(b.Ref)
+	if !IsUUID(b.RunID) || b.RunID != latestRun(t, h, b.Ref).ID {
+		t.Fatalf("RunID = %q, newest run %q", b.RunID, latestRun(t, h, b.Ref).ID)
+	}
+	if got, _ := h.svc.Resolve(context.Background(), b.Ref); got.RunID != "" {
+		t.Fatalf("a branch read later has a RunID: %q", got.RunID)
+	}
+	// A create that fails before the project exists returns the error and no branch.
+	h.eng.failBeforeRow = errors.New("engine unavailable")
+	if got, err := h.svc.Create(context.Background(), parentRef, CreateInput{Name: "bad"}); err == nil || got != nil {
+		t.Fatalf("failed create = %+v, %v", got, err)
+	}
+}
