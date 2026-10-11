@@ -89,12 +89,21 @@ func (d *fakeSchemaDB) Record(_ context.Context, ref string, ms []Migration) ([]
 	return done, nil
 }
 
-func (d *fakeSchemaDB) InitHistory(_ context.Context, ref string, m Migration) (bool, error) {
+func (d *fakeSchemaDB) InitHistory(ctx context.Context, ref string, m Migration, run func(context.Context) error) (bool, error) {
 	d.fakeDB.mu.Lock()
-	defer d.fakeDB.mu.Unlock()
-	if len(d.migs[ref]) > 0 {
+	has := len(d.migs[ref]) > 0
+	d.fakeDB.mu.Unlock()
+	if has {
 		return false, nil
 	}
+	if run != nil {
+		// like the real one, run works on the branch while the parent's lock is held
+		if err := run(ctx); err != nil {
+			return false, err
+		}
+	}
+	d.fakeDB.mu.Lock()
+	defer d.fakeDB.mu.Unlock()
 	d.migs[ref] = append(d.migs[ref], m)
 	d.initCalls++
 	d.note("init %s %s", ref, m.Version)
@@ -266,8 +275,8 @@ func TestBaselineIsTakenOnlyForAnEmptyHistoryAndRecordedOnce(t *testing.T) {
 			order = append(order, strings.Fields(e)[0])
 		}
 	}
-	if want := []string{"engine.create", "init", "apply"}; !reflect.DeepEqual(order, want) {
-		t.Fatalf("order = %v, want %v (the Data API choice, the history, the baseline)", order, want)
+	if want := []string{"engine.create", "apply", "init"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("order = %v, want %v (the Data API choice, the baseline on the branch, then the parent's history)", order, want)
 	}
 	// A second branch replays what is recorded: nothing is dumped or recorded again.
 	b2 := c.create("two", nil)

@@ -42,12 +42,20 @@ func (d *fakeBranchDB) Record(_ context.Context, ref string, ms []branching.Migr
 	return done, nil
 }
 
-func (d *fakeBranchDB) InitHistory(_ context.Context, ref string, m branching.Migration) (bool, error) {
+func (d *fakeBranchDB) InitHistory(ctx context.Context, ref string, m branching.Migration, run func(context.Context) error) (bool, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if len(d.migs[ref]) > 0 {
+	has := len(d.migs[ref]) > 0
+	d.mu.Unlock()
+	if has {
 		return false, nil
 	}
+	if run != nil {
+		if err := run(ctx); err != nil {
+			return false, err
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.migs[ref] = append(d.migs[ref], m)
 	return true, nil
 }

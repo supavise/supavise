@@ -23,11 +23,13 @@ type Migration struct {
 	Version    string
 	Name       string
 	Statements []string
-	// Covered is set on a migration whose changes another migration of the same history already holds
-	// (the version of that one): the diff Studio's merge page recorded is the whole of what the branch
-	// changed, tracked migrations included, so the tracked ones are kept in the history without being
-	// run again. A replay, a push and a merge record a covered migration and do not run it. It is
-	// stored in the created_by column of the history table; it takes no part in comparing migrations.
+	// Covered is set on a migration whose schema changes another migration of the same history already
+	// holds (the version of that one): the diff Studio's merge page recorded is the whole of what the
+	// branch changed in its schema, tracked migrations included, so the tracked ones are kept in the
+	// history without their DDL being run again. Apply records a covered migration, and runs only the
+	// statements the diff does not hold (carried: data, publications, cron jobs, roles; see stmts.go),
+	// after the migrations that are not covered. It is stored in the created_by column of the history
+	// table; it takes no part in comparing migrations.
 	Covered string
 }
 
@@ -137,7 +139,8 @@ type Database interface {
 	Migrations(ctx context.Context, ref string) ([]Migration, error)
 	// Apply runs the migrations in order and records each one. With o.Atomic they run in a
 	// single transaction (all or nothing) and fall back to one transaction each when a
-	// statement cannot run inside a transaction block.
+	// statement cannot run inside a transaction block. A covered migration (Migration.Covered) is
+	// recorded with its marker and only its carried statements run, after all the others.
 	Apply(ctx context.Context, ref string, ms []Migration, o ApplyOptions) (ApplyResult, error)
 	// RunScript executes a script (a seed) in one transaction.
 	RunScript(ctx context.Context, ref, script string) error
@@ -250,18 +253,65 @@ func notInTransaction(err error) bool {
 func applyOne(ctx context.Context, q interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }, m Migration) error {
-	for i, st := range m.Statements {
+	stmts, where, marker := m.Statements, "statement", ""
+	if m.Covered != "" {
+		// The migration that covers this one holds its schema changes; what that one does not hold
+		// still has to happen.
+		stmts, where, marker = m.carried(), "statement of the part a recorded schema diff does not hold", coveredPrefix+m.Covered
+	}
+	for i, st := range stmts {
 		if strings.TrimSpace(st) == "" {
 			continue
 		}
 		if _, err := q.Exec(ctx, st); err != nil {
-			return fmt.Errorf("migration %s (statement %d): %w", m.Version, i+1, err)
+			return fmt.Errorf("migration %s (%s %d): %w", m.Version, where, i+1, err)
 		}
 	}
 	// A plain insert: a version that is already recorded aborts the transaction instead of
 	// letting its DDL run twice with only one record.
-	_, err := q.Exec(ctx, `insert into `+migrationsTable+` (version, name, statements) values ($1, nullif($2, ''), $3)`, m.Version, m.Name, m.Statements)
+	_, err := q.Exec(ctx, `insert into `+migrationsTable+` (version, name, statements, created_by) values ($1, nullif($2, ''), $3, nullif($4, ''))`, m.Version, m.Name, m.Statements, marker)
 	return err
+}
+
+// coveredLast returns ms with the covered migrations after the others, each group in its order: the
+// statements of a covered migration depend on the schema the covering migration makes.
+func coveredLast(ms []Migration) []Migration {
+	out := make([]Migration, 0, len(ms))
+	for _, m := range ms {
+		if m.Covered == "" {
+			out = append(out, m)
+		}
+	}
+	for _, m := range ms {
+		if m.Covered != "" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// settleCovers keeps the covered marker of a migration only while the migration that covers it is
+// there to run: in ms, or in have (the history of the target, where it ran already). A covering
+// migration that was cut away (migration_version), left out (a recorded diff that is out of date) or
+// never existed leaves the migration to run in full.
+func settleCovers(ms, have []Migration) []Migration {
+	there := make(map[string]bool, len(ms)+len(have))
+	for _, m := range ms {
+		if m.Covered == "" {
+			there[m.Version] = true
+		}
+	}
+	for _, m := range have {
+		there[m.Version] = true
+	}
+	out := make([]Migration, len(ms))
+	for i, m := range ms {
+		if m.Covered != "" && !there[m.Covered] {
+			m.Covered = ""
+		}
+		out[i] = m
+	}
+	return out
 }
 
 // Apply implements Database.
@@ -270,6 +320,7 @@ func (d *pgDatabase) Apply(ctx context.Context, ref string, ms []Migration, o Ap
 	if len(ms) == 0 {
 		return res, nil
 	}
+	ms = coveredLast(ms)
 	c, err := d.conn(ctx, ref)
 	if err != nil {
 		return res, err
@@ -399,14 +450,19 @@ func upTo(ms []Migration, v string) ([]Migration, error) {
 func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, seeded bool, err error) {
 	s.phase(ctx, StepMigrate)
 	var hist []Migration
+	applied := false // the baseline is applied by baselineFor, under the parent's lock
 	if j.useHistory {
 		hist = j.history
 	} else {
 		if hist, err = s.db.Migrations(ctx, j.parent.Ref); err != nil {
 			return 0, false, fmt.Errorf("read the parent's migration history: %w", err)
 		}
+		if len(hist) == 0 && j.upTo != "" && j.upTo != "0" {
+			// A baseline is made now, so no version can name it: refuse before one is made.
+			return 0, false, invalid("migration_version %s is not in the migration history", j.upTo)
+		}
 		if len(hist) == 0 && j.upTo != "0" {
-			if hist, err = s.baselineFor(ctx, j); err != nil {
+			if hist, applied, err = s.baselineFor(ctx, j); err != nil {
 				return 0, false, err
 			}
 		}
@@ -427,9 +483,10 @@ func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, see
 		if !found {
 			return 0, false, invalid("migration_version %s is not in the migration history", j.upTo)
 		}
-		hist = cut
+		// A migration whose covering migration is cut away runs in full.
+		hist = settleCovers(cut, nil)
 	}
-	if len(hist) > 0 {
+	if len(hist) > 0 && !applied {
 		s.setState(ctx, j.ref, registry.BranchRunningMigration, fmt.Sprintf("replaying %d migration(s)", len(hist)), nil)
 		if _, err := s.applyHistory(ctx, j.ref, hist, ApplyOptions{}); err != nil {
 			return 0, false, fmt.Errorf("replay the migrations: %w", err)
@@ -455,28 +512,14 @@ func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, see
 	return len(hist), false, nil
 }
 
-// applyHistory runs the migrations of ms that are not covered and records the covered ones without
-// running them (they are in the history so that it matches the other side's, and their changes come
-// with the migration that covers them). Without a SchemaDatabase every migration runs.
+// applyHistory runs the migrations of ms and records them. A covered migration is recorded and only the
+// statements the migration that covers it does not hold run (Database.Apply). Without a SchemaDatabase
+// every migration runs in full.
 func (s *Service) applyHistory(ctx context.Context, ref string, ms []Migration, o ApplyOptions) (ApplyResult, error) {
-	var run, covered []Migration
-	for _, m := range ms {
-		if m.Covered != "" && s.schemaDB() != nil {
-			covered = append(covered, m)
-		} else {
-			run = append(run, m)
-		}
+	if s.schemaDB() == nil {
+		ms = withCovered(ms, "")
 	}
-	res, err := s.db.Apply(ctx, ref, run, o)
-	if err != nil {
-		return res, err
-	}
-	if len(covered) > 0 {
-		if _, err := s.schemaDB().Record(ctx, ref, covered); err != nil {
-			return res, fmt.Errorf("record the migrations whose changes another migration holds: %w", err)
-		}
-	}
-	return res, nil
+	return s.db.Apply(ctx, ref, ms, o)
 }
 
 // withCovered returns the migrations marked as covered by the migration at version by.
@@ -504,9 +547,12 @@ type SchemaDatabase interface {
 	// takes. A version that is already there with the same content is left; with other content it is
 	// an error. It returns the versions it recorded.
 	Record(ctx context.Context, ref string, ms []Migration) ([]string, error)
-	// InitHistory records m as the first migration of ref, without running it, only when the
-	// history has none. It reports whether it did.
-	InitHistory(ctx context.Context, ref string, m Migration) (bool, error)
+	// InitHistory records m as the first migration of ref, without running it, only when the history
+	// has none. The check, run and the record happen under the apply lock: run is called while the
+	// history is still empty and the lock is held, and m is recorded only when it returns nil, so a
+	// baseline that fails to run on the branch never reaches the parent's history. It reports whether it
+	// recorded m; it does not call run when the history is not empty.
+	InitHistory(ctx context.Context, ref string, m Migration, run func(context.Context) error) (bool, error)
 }
 
 // schemaDB returns the Database's schema abilities, nil when it has none.
@@ -613,7 +659,7 @@ func (d *pgDatabase) Record(ctx context.Context, ref string, ms []Migration) ([]
 }
 
 // InitHistory implements SchemaDatabase.
-func (d *pgDatabase) InitHistory(ctx context.Context, ref string, m Migration) (bool, error) {
+func (d *pgDatabase) InitHistory(ctx context.Context, ref string, m Migration, run func(context.Context) error) (bool, error) {
 	c, err := d.conn(ctx, ref)
 	if err != nil {
 		return false, err
@@ -622,17 +668,31 @@ func (d *pgDatabase) InitHistory(ctx context.Context, ref string, m Migration) (
 	if _, err := c.Exec(ctx, ensureMigrationsTable); err != nil {
 		return false, fmt.Errorf("prepare %s: %w", migrationsTable, err)
 	}
+	// The lock belongs to this session and is released when the connection closes, so it is held while
+	// run works on the branch: a second branch made meanwhile waits here and then finds the history.
 	if _, err := c.Exec(ctx, applyLockSQL); err != nil {
 		return false, fmt.Errorf("wait for other migrations on %s: %w", ref, err)
 	}
+	var n int
+	if err := c.QueryRow(ctx, `select count(*) from `+migrationsTable).Scan(&n); err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return false, nil
+	}
+	if run != nil {
+		if err := run(ctx); err != nil {
+			return false, err
+		}
+	}
 	inserted := false
 	err = pgx.BeginFunc(ctx, c, func(tx pgx.Tx) error {
-		var n int
 		if err := tx.QueryRow(ctx, `select count(*) from `+migrationsTable).Scan(&n); err != nil {
 			return err
 		}
 		if n > 0 {
-			return nil
+			// A migration recorded outside the lock (the API's apply_migration) while run worked.
+			return fmt.Errorf("%w: the migration history of %s changed while its baseline was applied to the branch", ErrDiverged, ref)
 		}
 		if _, err := tx.Exec(ctx, `insert into `+migrationsTable+` (version, name, statements) values ($1, nullif($2, ''), $3)`, m.Version, m.Name, m.Statements); err != nil {
 			return err

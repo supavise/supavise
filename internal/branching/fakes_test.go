@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -166,7 +167,9 @@ type fakeDB struct {
 	scripts  map[string][]string
 	applyErr map[string]error
 	atomic   map[string]bool
-	readErr  map[string]error
+	// carried records, per project, the statements Apply ran for a covered migration.
+	carried map[string][]string
+	readErr map[string]error
 	// raceOnApply, when set, runs at the start of Apply, standing for another operation that
 	// lands while this one waits for the apply lock.
 	raceOnApply func(d *fakeDB, ref string)
@@ -174,7 +177,7 @@ type fakeDB struct {
 
 func newFakeDB() *fakeDB {
 	return &fakeDB{migs: map[string][]Migration{}, applied: map[string][]string{}, scripts: map[string][]string{},
-		applyErr: map[string]error{}, atomic: map[string]bool{}, readErr: map[string]error{}}
+		applyErr: map[string]error{}, atomic: map[string]bool{}, carried: map[string][]string{}, readErr: map[string]error{}}
 }
 
 func (d *fakeDB) Migrations(_ context.Context, ref string) ([]Migration, error) {
@@ -204,8 +207,15 @@ func (d *fakeDB) Apply(_ context.Context, ref string, ms []Migration, o ApplyOpt
 		}
 	}
 	d.atomic[ref] = o.Atomic
-	for _, m := range ms {
+	for _, m := range coveredLast(ms) {
 		d.migs[ref] = append(d.migs[ref], m)
+		if m.Covered != "" {
+			// recorded; only what the covering migration does not hold runs
+			if c := m.carried(); len(c) > 0 {
+				d.carried[ref] = append(d.carried[ref], m.Version+": "+strings.Join(c, "; "))
+			}
+			continue
+		}
 		d.applied[ref] = append(d.applied[ref], m.Version)
 	}
 	return ApplyResult{Applied: len(ms)}, nil

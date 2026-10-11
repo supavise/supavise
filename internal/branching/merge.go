@@ -22,11 +22,14 @@ const mergeLockTimeout = 30 * time.Second
 // transaction under the parent's apply lock, refusing when the histories diverged (the parent has
 // migrations the branch lacks, a version differs in content, or a branch migration is older than the
 // parent's latest) unless Force is set. Studio's merge page records the branch's schema diff as one
-// migration without running it (PUT .../database/migrations, named branch_merge_*): when the branch
-// has such a migration the parent lacks, the merge checks that the diff is still what was recorded
-// (it fails with "refresh" when the branch or production moved), runs only that migration on the
-// parent and records the branch's other migrations there without running them, so that the
-// histories end up equal and no statement runs twice.
+// migration without running it (PUT .../database/migrations, named branch_merge_*): when the newest
+// migration of the branch is such a recording and the parent lacks it, the merge checks that the diff is
+// still what was recorded (it fails with "refresh" when the branch or production moved, whatever Force
+// says), runs that migration on the parent, records the branch's other migrations there as covered by it
+// and runs, after it and in the same transaction, the statements of those migrations that a schema diff
+// does not hold (data, publications, cron jobs, roles), so that the histories end up equal and no
+// statement runs twice. A recorded diff that is not the newest migration of the branch is out of date
+// (the branch moved on after it was recorded): the merge ignores it and takes the history flow.
 //
 // Either way the Edge Functions the branch created or changed since it was made are deployed to
 // the parent (never deleted from it); a function both sides changed makes the merge fail before
@@ -76,13 +79,22 @@ func (s *Service) doMerge(ctx context.Context, b *Branch, parent *registry.Proje
 	s.phase(ctx, StepMigrate)
 	own := withoutPushed(branchMigs)
 	s.logRun(ctx, "the branch has %d migration(s) and the parent %d", len(own), len(parentMigs))
+	s.healCovers(ctx, b, own, parentMigs)
 	plan := Compare(own, parentMigs)
 
 	var detail string
-	if rec := recordedDiff(plan.Apply); rec != nil && s.schemaDB() != nil && (in.MigrationVersion == "" || rec.Version <= in.MigrationVersion) {
+	rec, stale := s.pickRecordedDiff(own, plan, in)
+	if rec != nil {
 		detail, err = s.mergeRecorded(ctx, b, parent, in, own, plan, rec)
 	} else {
-		detail, err = s.mergeHistory(ctx, b, parent, in, own, plan)
+		if len(stale) > 0 {
+			// The branch changed after Studio recorded these: the migrations of the branch are what the
+			// merge runs, and a recorded copy of their changes would run them twice.
+			s.logRun(ctx, "ignoring the schema diff(s) recorded by the merge page that the branch has moved past: %s", versions(stale))
+			own = without(own, stale)
+			plan = Compare(own, parentMigs)
+		}
+		detail, err = s.mergeHistory(ctx, b, parent, in, own, parentMigs, plan, stale)
 	}
 	if err != nil {
 		return "", err
@@ -113,6 +125,52 @@ func withoutPushed(ms []Migration) []Migration {
 	return out
 }
 
+// without returns ms without the migrations at the versions of drop.
+func without(ms, drop []Migration) []Migration {
+	gone := make(map[string]bool, len(drop))
+	for _, m := range drop {
+		gone[m.Version] = true
+	}
+	out := make([]Migration, 0, len(ms))
+	for _, m := range ms {
+		if !gone[m.Version] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// pickRecordedDiff decides whether the merge takes the flow of Studio's merge page. It does when the
+// newest migration of the plan that the page recorded (branch_merge_*) is also the newest migration of
+// the branch, and the merge is not cut at an older version: the page records the diff and calls merge,
+// so nothing is newer. A recording with a newer migration after it is out of date, the branch having
+// moved on (a failed or abandoned attempt, then an apply_migration or a db push): it is returned as
+// stale, with the older ones, for the history flow to leave out.
+func (s *Service) pickRecordedDiff(own []Migration, plan Plan, in ActionInput) (rec *Migration, stale []Migration) {
+	if s.schemaDB() == nil {
+		return nil, nil
+	}
+	for _, m := range plan.Apply {
+		if strings.HasPrefix(m.Name, mergeMigrationPrefix) {
+			stale = append(stale, m)
+		}
+	}
+	rec = recordedDiff(plan.Apply)
+	if rec == nil {
+		return nil, nil
+	}
+	current := in.MigrationVersion == "" || rec.Version <= in.MigrationVersion
+	for _, m := range own {
+		if m.Version > rec.Version {
+			current = false
+		}
+	}
+	if current {
+		return rec, nil
+	}
+	return nil, stale
+}
+
 // recordedDiff returns the newest migration of the plan that Studio's merge page recorded (named
 // branch_merge_*), nil when there is none.
 func recordedDiff(apply []Migration) *Migration {
@@ -126,8 +184,8 @@ func recordedDiff(apply []Migration) *Migration {
 }
 
 // mergeHistory is the merge of the CLI and the MCP server: run the branch's migrations that the
-// parent lacks.
-func (s *Service) mergeHistory(ctx context.Context, b *Branch, parent *registry.Project, in ActionInput, own []Migration, plan Plan) (string, error) {
+// parent lacks. stale are the recordings of Studio's merge page that were left out of own and plan.
+func (s *Service) mergeHistory(ctx context.Context, b *Branch, parent *registry.Project, in ActionInput, own, parentMigs []Migration, plan Plan, stale []Migration) (string, error) {
 	if d := plan.Summary(); d != "" && !in.Force {
 		return "", fmt.Errorf("%w: %s (use force to merge anyway)", ErrDiverged, d)
 	}
@@ -135,8 +193,14 @@ func (s *Service) mergeHistory(ctx context.Context, b *Branch, parent *registry.
 	if err != nil {
 		return "", err
 	}
+	// A migration covered by a recording that was left out runs in full.
+	apply = settleCovers(apply, parentMigs)
 	if len(apply) == 0 {
-		return "nothing to merge: the parent already has every migration of the branch", nil
+		msg := "nothing to merge: the parent already has every migration of the branch"
+		if len(stale) > 0 {
+			msg += fmt.Sprintf(" (the schema diff the merge page recorded on the branch, %s, was ignored because the branch changed after it; open the merge page again to merge schema changes made outside migrations)", versions(stale))
+		}
+		return msg, nil
 	}
 	// The plan was made before Apply took the parent's apply lock. A merge from another
 	// branch may have landed since: judge the history the parent has under the lock, so
@@ -153,10 +217,13 @@ func (s *Service) mergeHistory(ctx context.Context, b *Branch, parent *registry.
 	}
 	detail := fmt.Sprintf("merged %d migration(s) into %s: %s", len(apply), parent.Ref, versions(apply))
 	if res.NonAtomic {
-		detail += " (not atomic: a statement cannot run inside a transaction)"
+		detail += " (not atomic: a statement cannot run inside a transaction block)"
 	}
 	if in.Force && len(plan.Conflicts) > 0 {
 		detail += fmt.Sprintf("; skipped %d version(s) with different content", len(plan.Conflicts))
+	}
+	if len(stale) > 0 {
+		detail += fmt.Sprintf("; ignored the schema diff(s) the merge page recorded on the branch (%s), because the branch changed after them", versions(stale))
 	}
 	s.syncBase(ctx, b, parent, "merge")
 	return detail, nil
@@ -164,6 +231,11 @@ func (s *Service) mergeHistory(ctx context.Context, b *Branch, parent *registry.
 
 // mergeRecorded is the merge of Studio's merge page, which recorded the branch's schema diff as one
 // migration (rec) without running it.
+//
+// Everything lands in one transaction on the parent: rec; the branch's other migrations the parent
+// lacks, recorded as covered by it (a schema diff holds their schema changes); and the statements of
+// those that a schema diff does not hold (an INSERT, a cron.schedule, an ALTER PUBLICATION, a role), which
+// run after rec. A failure rolls the whole of it back, so that a retry starts from the same state.
 func (s *Service) mergeRecorded(ctx context.Context, b *Branch, parent *registry.Project, in ActionInput, own []Migration, plan Plan, rec *Migration) (string, error) {
 	sd := s.schemaDB()
 	// The parent having migrations the branch lacks, or a version differing, means the branch is not
@@ -173,17 +245,19 @@ func (s *Service) mergeRecorded(ctx context.Context, b *Branch, parent *registry
 	if d := div.Summary(); d != "" && !in.Force {
 		return "", fmt.Errorf("%w: %s (update the branch, or use force to merge anyway)", ErrDiverged, d)
 	}
-	if schemadiff.HasUnsupported(rec.sql()) {
-		return "", fmt.Errorf("the recorded schema diff %s holds changes this node cannot express as SQL (%s); apply them to the parent by hand and record the rest",
-			rec.Version, strings.Join(unsupportedLines(rec.sql()), "; "))
+	unsupported := unsupportedLines(rec.sql())
+	if len(unsupported) > 0 && !in.Force {
+		return "", fmt.Errorf("the recorded schema diff %s holds changes this node cannot express as SQL (%s); apply them to the parent by hand and record the rest, or use force to merge without them",
+			rec.Version, strings.Join(unsupported, "; "))
 	}
-	// The diff must still be what the page showed and the user approved.
+	// The diff must still be what the page showed and the user approved. Force does not merge a diff
+	// that is out of date: what would run is not what was approved.
 	res, branchSnap, err := s.schemaChanges(ctx, b, parent, schemadiff.ReadOptions{})
 	if err != nil {
 		return "", err
 	}
-	if scriptHash(res.SQL()) != scriptHash(rec.sql()) && !in.Force {
-		return "", fmt.Errorf("%w: production or branch changed since the diff was recorded; refresh", ErrDiverged)
+	if scriptHash(res.SQL()) != scriptHash(rec.sql()) {
+		return "", fmt.Errorf("%w: production or the branch changed since the diff was recorded; refresh the merge page (or record a newer migration on the branch, which makes the merge run the branch's migrations instead)", ErrDiverged)
 	}
 	if base, ok, err := s.getBase(ctx, b.Ref); err != nil {
 		return "", err
@@ -196,7 +270,30 @@ func (s *Service) mergeRecorded(ctx context.Context, b *Branch, parent *registry
 			return "", fmt.Errorf("%w: production and the branch both changed %s (use force to merge anyway)", ErrDiverged, strings.Join(conflicts, "; "))
 		}
 	}
+	// The branch's other migrations are part of what the diff ran. They join the parent's history as
+	// covered by the diff (their schema changes are not run again: a replay of the history would
+	// otherwise create their tables twice), and the branch's own rows are marked the same way, so that
+	// both histories hold the same migrations and either replays to the same schema. What a diff does
+	// not hold of them runs after it.
+	var others []Migration
+	for _, m := range plan.Apply {
+		if m.Version != rec.Version {
+			others = append(others, m)
+		}
+	}
+	covered := withCovered(others, rec.Version)
+	var carriedFrom []string
+	nCarried := 0
+	for _, m := range covered {
+		if c := m.carried(); len(c) > 0 {
+			nCarried += len(c)
+			carriedFrom = append(carriedFrom, m.Version)
+		}
+	}
 	s.logRun(ctx, "the recorded schema diff %s is current; running it on the parent", rec.Version)
+	if nCarried > 0 {
+		s.logRun(ctx, "running %d statement(s) of the branch's other migrations that a schema diff does not hold, after the diff: %s", nCarried, strings.Join(carriedFrom, ", "))
+	}
 	verify := func(current []Migration) error {
 		c := Compare(own, current)
 		c.OutOfOrder = nil
@@ -205,38 +302,67 @@ func (s *Service) mergeRecorded(ctx context.Context, b *Branch, parent *registry
 		}
 		return nil
 	}
-	applied, err := s.db.Apply(ctx, parent.Ref, []Migration{*rec}, ApplyOptions{Atomic: true, LockTimeout: mergeLockTimeout, Verify: verify})
+	applied, err := s.db.Apply(ctx, parent.Ref, append([]Migration{*rec}, covered...), ApplyOptions{Atomic: true, LockTimeout: mergeLockTimeout, Verify: verify})
 	if err != nil {
 		return "", fmt.Errorf("apply to the parent (rolled back where the SQL allows): %w", err)
 	}
-	// The branch's other migrations are part of what the diff ran. They join the parent's history as
-	// covered by the diff (kept, not run again: a replay of the history would otherwise create their
-	// tables twice), and the branch's own rows are marked the same way, so that both histories hold the
-	// same migrations and either replays to the same schema.
-	var others []Migration
-	for _, m := range plan.Apply {
-		if m.Version != rec.Version {
-			others = append(others, m)
-		}
+	detail := fmt.Sprintf("merged the recorded schema diff %s into %s", rec.Version, parent.Ref)
+	if applied.NonAtomic {
+		detail += " (not atomic: a statement cannot run inside a transaction block)"
 	}
 	if len(others) > 0 {
-		covered := withCovered(others, rec.Version)
-		if _, err := sd.Record(ctx, parent.Ref, covered); err != nil {
-			return "", fmt.Errorf("record the branch's other migrations in the parent's history: %w", err)
+		detail += fmt.Sprintf("; recorded %d other migration(s) of the branch in the parent's history without running their schema changes (the diff holds them): %s", len(others), versions(others))
+		if nCarried > 0 {
+			detail += fmt.Sprintf("; ran %d statement(s) of them that a schema diff does not hold (%s)", nCarried, strings.Join(carriedFrom, ", "))
 		}
+	}
+	if len(unsupported) > 0 {
+		detail += fmt.Sprintf("; not merged, because this node cannot express them as SQL (force): %s", strings.Join(unsupported, "; "))
+	}
+	// The parent is merged for good by now. Marking the branch's rows is what lets a reset of the branch
+	// skip their schema changes, and its failure must not turn a merge that worked into a failed run.
+	if len(covered) > 0 {
 		if _, err := sd.Record(ctx, b.Ref, covered); err != nil {
-			return "", fmt.Errorf("mark the branch's other migrations as covered by the merged diff: %w", err)
+			s.log.Warn("could not mark the migrations of a merged branch as covered", "ref", b.Ref, "err", err)
+			s.logRun(ctx, "the merge worked, but the branch's other migrations could not be marked as covered by the merged diff (%v); a reset of the branch would run their schema changes twice until a later merge marks them", err)
+			detail += "; could not mark the branch's other migrations as covered (see the log)"
 		}
 	}
 	s.syncBase(ctx, b, parent, "merge")
-	detail := fmt.Sprintf("merged the recorded schema diff %s into %s", rec.Version, parent.Ref)
-	if applied.NonAtomic {
-		detail += " (not atomic: a statement cannot run inside a transaction)"
-	}
-	if len(others) > 0 {
-		detail += fmt.Sprintf("; recorded %d other migration(s) of the branch in the parent's history without running them (the diff holds their changes): %s", len(others), versions(others))
-	}
 	return detail, nil
+}
+
+// healCovers marks, on the branch, the migrations that the parent records as covered by a recorded diff
+// both sides have, when the branch does not yet: the mark is written after the parent was merged, and its
+// failure is only logged, so a later merge puts it right. It changes no schema.
+func (s *Service) healCovers(ctx context.Context, b *Branch, own, parentMigs []Migration) {
+	sd := s.schemaDB()
+	if sd == nil {
+		return
+	}
+	ownHas := make(map[string]bool, len(own))
+	for _, m := range own {
+		ownHas[m.Version] = true
+	}
+	theirs := make(map[string]Migration, len(parentMigs))
+	for _, m := range parentMigs {
+		theirs[m.Version] = m
+	}
+	var fix []Migration
+	for _, m := range own {
+		if p, ok := theirs[m.Version]; ok && m.Covered == "" && p.Covered != "" && ownHas[p.Covered] && sameMigration(m, p) {
+			m.Covered = p.Covered
+			fix = append(fix, m)
+		}
+	}
+	if len(fix) == 0 {
+		return
+	}
+	if _, err := sd.Record(ctx, b.Ref, fix); err != nil {
+		s.logRun(ctx, "could not mark the migrations %s of the branch as covered, as the parent has them: %v", versions(fix), err)
+		return
+	}
+	s.logRun(ctx, "marked the migrations %s of the branch as covered by the diff that was merged, as the parent has them", versions(fix))
 }
 
 // unsupportedLines returns the unsupported-change markers of a script, without the marker.
