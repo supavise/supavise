@@ -117,7 +117,7 @@ func TestRunLintsReturnsTheSQLLintsThenTheConfigurationLints(t *testing.T) {
 	validateAgainstSpec(t, "GET /platform/projects/{ref}/run-lints", rec.Body.Bytes())
 	ls := lintList(t, rec, 200)
 	want := []string{"rls_disabled_in_public", "unused_index", "public_bucket_allows_listing",
-		"auth_leaked_password_protection", "auth_insufficient_mfa_options", "auth_otp_long_expiry", "auth_db_connections_absolute"}
+		"auth_otp_long_expiry", "auth_db_connections_absolute"}
 	if got := lintNames(ls); !slices.Equal(got, want) {
 		t.Fatalf("lints %v, want %v", got, want)
 	}
@@ -206,7 +206,7 @@ func TestAdvisorsShareOneRunAndStartAgainAfterAChange(t *testing.T) {
 func TestAdvisorsOfACategory(t *testing.T) {
 	f := advisorsFixture(t)
 	sec := lintList(t, f.do("GET", "/v1/projects/"+testRef+"/advisors/security", nil), 200)
-	if got, want := lintNames(sec), []string{"rls_disabled_in_public", "public_bucket_allows_listing", "auth_leaked_password_protection", "auth_insufficient_mfa_options", "auth_otp_long_expiry"}; !slices.Equal(got, want) {
+	if got, want := lintNames(sec), []string{"rls_disabled_in_public", "public_bucket_allows_listing", "auth_otp_long_expiry"}; !slices.Equal(got, want) {
 		t.Errorf("security: %v, want %v", got, want)
 	}
 	perf := lintList(t, f.do("GET", "/v1/projects/"+testRef+"/advisors/performance", nil), 200)
@@ -224,8 +224,7 @@ func TestAdvisorsOfACategory(t *testing.T) {
 	// Both endpoints answer an object with a list, empty when nothing is wrong.
 	f2 := newFixture(t) // the fake database finds nothing
 	f2.meta.Rules = []pgmetaRule{{Contains: lintMarker, Status: 200, Body: `[]`}}
-	f2.do("PATCH", "/v1/projects/"+testRef+"/config/auth", map[string]any{"password_hibp_enabled": true, "mfa_phone_enroll_enabled": true, "mfa_phone_verify_enabled": true,
-		"mailer_otp_exp": 3600, "db_max_pool_size": 20, "db_max_pool_size_unit": "percent"})
+	f2.do("PATCH", "/v1/projects/"+testRef+"/config/auth", map[string]any{"mailer_otp_exp": 3600, "db_max_pool_size": 20, "db_max_pool_size_unit": "percent"})
 	for _, p := range []string{"security", "performance"} {
 		rec := f2.do("GET", "/v1/projects/"+testRef+"/advisors/"+p, nil)
 		if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"lints":[]}` {
@@ -242,18 +241,22 @@ func TestConfigurationLintsFollowTheAuthSettings(t *testing.T) {
 	sec := func() []string {
 		return lintNames(lintList(t, f.do("GET", "/v1/projects/"+testRef+"/advisors/security?lint_type=", nil), 200))
 	}
-	if got := sec(); !slices.Contains(got, "auth_leaked_password_protection") || !slices.Contains(got, "auth_otp_long_expiry") || !slices.Contains(got, "auth_insufficient_mfa_options") {
+	// Supavise starts at GoTrue's own OTP expiry of a day, which is past the hour hosted asks for.
+	if got := sec(); !slices.Contains(got, "auth_otp_long_expiry") {
 		t.Fatalf("defaults: %v", got)
+	}
+	// The leaked password and MFA settings raise no lint of their own: a hosted project with both
+	// off answers none (recorded by the CLI's end-to-end suite).
+	for _, n := range []string{"auth_leaked_password_protection", "auth_insufficient_mfa_options"} {
+		if slices.Contains(sec(), n) {
+			t.Errorf("%s is reported, though nothing is known to trigger it", n)
+		}
 	}
 	patch := func(m map[string]any) {
 		t.Helper()
 		if rec := f.do("PATCH", "/v1/projects/"+testRef+"/config/auth", m); rec.Code != 200 {
 			t.Fatalf("patch %v: %d %s", m, rec.Code, rec.Body)
 		}
-	}
-	patch(map[string]any{"password_hibp_enabled": true})
-	if slices.Contains(sec(), "auth_leaked_password_protection") {
-		t.Error("leaked password protection is on but still reported")
 	}
 	patch(map[string]any{"mailer_otp_exp": 3600})
 	if slices.Contains(sec(), "auth_otp_long_expiry") {
@@ -262,15 +265,6 @@ func TestConfigurationLintsFollowTheAuthSettings(t *testing.T) {
 	patch(map[string]any{"mailer_otp_exp": 3601})
 	if !slices.Contains(sec(), "auth_otp_long_expiry") {
 		t.Error("an expiry past an hour is not reported")
-	}
-	patch(map[string]any{"mfa_phone_enroll_enabled": true, "mfa_phone_verify_enabled": true})
-	if slices.Contains(sec(), "auth_insufficient_mfa_options") {
-		t.Error("two MFA methods are on but the lint is reported")
-	}
-	// Enrolling without verifying is not an option users can use.
-	patch(map[string]any{"mfa_phone_verify_enabled": false})
-	if !slices.Contains(sec(), "auth_insufficient_mfa_options") {
-		t.Error("a method that cannot verify counts as an option")
 	}
 	patch(map[string]any{"db_max_pool_size": 7})
 	perf := lintList(t, f.do("GET", "/v1/projects/"+testRef+"/advisors/performance", nil), 200)
@@ -355,10 +349,10 @@ func TestAdvisorsRunV2(t *testing.T) {
 	p := "/v2/projects/" + testRef + "/advisors/run"
 
 	// SQL lints and configuration lints are found by name, whatever else exists.
-	rec := f.do("POST", p, v2Body("rls_disabled_in_public", "auth_leaked_password_protection", "unused_index"))
+	rec := f.do("POST", p, v2Body("rls_disabled_in_public", "auth_otp_long_expiry", "unused_index"))
 	validateAgainstSpec(t, "POST /v2/projects/{ref}/advisors/run", rec.Body.Bytes())
 	ls := lintList(t, rec, 200)
-	if got, want := lintNames(ls), []string{"rls_disabled_in_public", "unused_index", "auth_leaked_password_protection"}; !slices.Equal(got, want) {
+	if got, want := lintNames(ls), []string{"rls_disabled_in_public", "unused_index", "auth_otp_long_expiry"}; !slices.Equal(got, want) {
 		t.Errorf("by name: %v, want %v", got, want)
 	}
 	var env struct{ Data struct{ Type string } }
@@ -369,9 +363,14 @@ func TestAdvisorsRunV2(t *testing.T) {
 
 	// A name with no finding gives nothing, without running SQL that cannot help.
 	before := f.lintRuns()
-	rec = f.do("POST", p, v2Body("auth_leaked_password_protection", "ssl_not_enforced"))
-	if got := lintNames(lintList(t, rec, 200)); !slices.Equal(got, []string{"auth_leaked_password_protection"}) {
+	rec = f.do("POST", p, v2Body("auth_otp_long_expiry", "ssl_not_enforced"))
+	if got := lintNames(lintList(t, rec, 200)); !slices.Equal(got, []string{"auth_otp_long_expiry"}) {
 		t.Errorf("config only: %v", got)
+	}
+	// The lints Supavise does not compute are asked for and answered with nothing.
+	rec = f.do("POST", p, v2Body("auth_leaked_password_protection", "auth_insufficient_mfa_options"))
+	if got := lintNames(lintList(t, rec, 200)); len(got) != 0 {
+		t.Errorf("lints that are not computed: %v", got)
 	}
 	if f.lintRuns() != before {
 		t.Error("a request for configuration lints ran the lint SQL")
