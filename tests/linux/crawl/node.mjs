@@ -13,6 +13,8 @@ const JWT = /\beyJ[\w-]+\.[\w-]+\.[\w-]+/g
 export const redact = (s) => String(s).replace(SECRET, '$1<cut>').replace(JWT, '<jwt cut>')
 
 export class Failure extends Error {}
+// Stop: a Failure that ends waitFor at once (any other error thrown by the poll is retried until the timeout, as an HTTP 502 is).
+export class Stop extends Failure {}
 
 export class Node {
   constructor(cfg) {
@@ -100,7 +102,8 @@ export class Node {
   }
 }
 
-// waitFor polls fn until it returns a truthy value; on timeout it throws with `what` and the last error.
+// waitFor polls fn until it returns a truthy value; on timeout it throws with `what` and the last error. An error thrown by fn
+// is retried, except a Stop, which is thrown as it is.
 export async function waitFor(what, fn, { timeout = 300_000, every = 2000 } = {}) {
   const end = Date.now() + timeout
   let last
@@ -109,6 +112,7 @@ export async function waitFor(what, fn, { timeout = 300_000, every = 2000 } = {}
       const v = await fn()
       if (v) return v
     } catch (e) {
+      if (e instanceof Stop) throw e
       last = e
     }
     if (Date.now() > end) throw new Failure(`timed out after ${Math.round(timeout / 1000)} s waiting for ${what}${last ? `: ${redact(last.message)}` : ''}`)
@@ -151,19 +155,32 @@ export async function deployFunction(node, ref, slug, body = 'hello') {
   if (r.status >= 300) throw new Failure(`function deploy answered ${r.status}: ${redact(r.text).slice(0, 300)}`)
 }
 
-// createBranch makes a branch through the Management API and waits until its run is over and its project is healthy.
-export async function createBranch(node, parent, name, extra = {}) {
-  const r = await node.api('POST', `/v1/projects/${parent}/branches`, { branch_name: name, ...extra })
-  const b = { id: r.json.id, ref: r.json.project_ref, name }
-  await waitBranch(node, b)
+// awake: the create-body field that keeps a branch out of idle auto-pause. The node runs with a short idle_pause_after when
+// the build knows it (cfg.idle_pause, see studio-crawl.sh), and nothing the crawl makes is used the way a person uses a branch:
+// seeding, the DNS loop and the route pass leave a fixture alone for minutes, and the node counts only requests to the branch's
+// own API host and database clients. Persistent branches are exempt from idle pause (and from expiry), so every branch the
+// crawl makes is persistent except the ones whose state is the point: the idle fixture (paused by the node), the hand-paused
+// one and the one scheduled for deletion (neither is idle-paused). Studio reads `persistent` only to group the Branches
+// page and for telemetry.
+export const awake = (cfg) => (cfg.idle_pause ? { persistent: true } : {})
+
+// createBranch makes a branch through the Management API (kept awake, see above, unless `extra` says persistent: false) and
+// waits until its run is over and its project is healthy.
+export async function createBranch(node, parent, name, extra = {}, poll = {}) {
+  const r = await node.api('POST', `/v1/projects/${parent}/branches`, { branch_name: name, ...awake(node.cfg), ...extra })
+  const b = { id: r.json.id, ref: r.json.project_ref, name, parent }
+  await waitBranch(node, b, poll)
   return b
 }
 
-export async function waitBranch(node, b) {
+// waitBranch waits for the create run of a branch ({ref, name, parent}) to end, then for its project to be healthy.
+// The run state (MIGRATIONS_PASSED, FUNCTIONS_DEPLOYED, ...*_FAILED) is the status of GET /v1/projects/{parent}/branches/{name};
+// GET /v1/branches/{id} answers the status of the branch's project instead (ACTIVE_HEALTHY, COMING_UP, ...), so it cannot tell.
+export async function waitBranch(node, b, { every = 3000, runTimeout = 900_000, healthTimeout = 300_000 } = {}) {
   await waitFor(`branch ${b.name} to finish`, async () => {
-    const r = await node.api('GET', `/v1/branches/${b.id}`)
-    if (/FAILED$/.test(r.json.status)) throw new Failure(`branch ${b.name} is ${r.json.status}`)
+    const r = await node.api('GET', `/v1/projects/${b.parent}/branches/${encodeURIComponent(b.name)}`)
+    if (/FAILED$/.test(r.json.status)) throw new Stop(`branch ${b.name} is ${r.json.status}`)
     return r.json.status === 'FUNCTIONS_DEPLOYED' || r.json.status === 'MIGRATIONS_PASSED'
-  }, { timeout: 900_000, every: 3000 })
-  await waitFor(`branch ${b.name} to be healthy`, async () => (await node.status(b.ref)) === 'ACTIVE_HEALTHY', { timeout: 300_000, every: 3000 })
+  }, { timeout: runTimeout, every })
+  await waitFor(`branch ${b.name} to be healthy`, async () => (await node.status(b.ref)) === 'ACTIVE_HEALTHY', { timeout: healthTimeout, every })
 }

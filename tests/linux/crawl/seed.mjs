@@ -22,7 +22,7 @@ import { join } from 'node:path'
 import crypto from 'node:crypto'
 
 import { readJSON } from './lib.mjs'
-import { deployFunction, Failure, Node, redact, sleep, totp, waitBranch as waitBranchReady, waitFor } from './node.mjs'
+import { awake, deployFunction, Failure, Node, redact, sleep, Stop, totp, waitBranch as waitBranchReady, waitFor } from './node.mjs'
 
 const cfg = readJSON(process.argv[2] ?? (() => { throw new Error('usage: node seed.mjs crawl-config.json') })())
 const node = new Node(cfg)
@@ -47,7 +47,7 @@ async function createProject(name, org) {
   const ref = r.json.ref
   await waitFor(`${name} to be healthy`, async () => {
     const s = await node.status(ref)
-    if (s === 'INIT_FAILED') throw new Failure(`${name} is INIT_FAILED`)
+    if (s === 'INIT_FAILED') throw new Stop(`${name} is INIT_FAILED`)
     return s === 'ACTIVE_HEALTHY'
   }, { timeout: 600_000, every: 3000 })
   return ref
@@ -77,10 +77,11 @@ async function seedData(ref, { rich }) {
   }
 }
 
+// Every branch is persistent while the node idle-pauses (awake(), node.mjs), except the three whose state is the fixture.
 async function createBranch(parent, name, extra = {}) {
   log(`branch ${name}`)
-  const r = await node.api('POST', `/v1/projects/${parent}/branches`, { branch_name: name, ...extra })
-  fx.branches[name] = { id: r.json.id, ref: r.json.project_ref, name }
+  const r = await node.api('POST', `/v1/projects/${parent}/branches`, { branch_name: name, ...awake(cfg), ...extra })
+  fx.branches[name] = { id: r.json.id, ref: r.json.project_ref, name, parent }
 }
 
 async function waitBranch(name) {
@@ -148,17 +149,18 @@ fx.projects.pending = await waitBranch('crawl-pending')
 await node.sql(fx.projects.pending, 'create table public.crawl_branch_only (id bigint generated always as identity primary key, note text)')
 await node.api('PATCH', `/v1/branches/${fx.branches['crawl-pending'].id}`, { request_review: true })
 
-await createBranch(A, 'crawl-paused')
+await createBranch(A, 'crawl-paused', { persistent: false }) // paused by hand just below: the node never undoes that
 fx.projects.paused = await waitBranch('crawl-paused')
 await node.api('POST', `/v1/projects/${fx.projects.paused}/pause`)
 await waitFor('the paused branch to be INACTIVE', async () => (await node.status(fx.projects.paused)) === 'INACTIVE', { timeout: 300_000, every: 3000 })
 
-await createBranch(A, 'crawl-scheduled')
+await createBranch(A, 'crawl-scheduled', { persistent: false }) // scheduled for deletion just below: never idle-paused
 fx.projects.scheduled = await waitBranch('crawl-scheduled')
 await node.api('DELETE', `/v1/branches/${fx.branches['crawl-scheduled'].id}?force=false`)
 
 if (cfg.idle_pause) {
-  await createBranch(A, 'crawl-idle')
+  // the one branch the node pauses: non-persistent, and nothing here or in the route pass uses it before the probe
+  await createBranch(A, 'crawl-idle', { persistent: false })
   fx.projects.idle = await waitBranch('crawl-idle')
 }
 

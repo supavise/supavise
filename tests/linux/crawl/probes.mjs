@@ -9,7 +9,7 @@ import { join } from 'node:path'
 
 import { newPage, openContext, pageText, settle, shot, signIn } from './browser.mjs'
 import { baseUrl } from './lib.mjs'
-import { createBranch, deployFunction, Failure, redact, sleep, waitFor } from './node.mjs'
+import { createBranch, deployFunction, Failure, redact, sleep, waitBranch, waitFor } from './node.mjs'
 
 const ok = (cond, msg) => {
   if (!cond) throw new Failure(msg)
@@ -147,12 +147,9 @@ export const PROBES = [
       await d.getByRole('button', { name: /^Create branch$/ }).click()
       const b = await waitFor('the branch the dialog made to be listed', async () => (await e.branchesOf(P)).find((x) => x.name === 'probe-ui'), { timeout: 60_000, every: 2000 })
       e.shared.ui = { id: b.id, ref: b.project_ref, name: 'probe-ui' }
-      await waitFor('the new branch to finish', async () => {
-        const r = await e.node.api('GET', `/v1/branches/${b.id}`)
-        if (/FAILED$/.test(r.json.status)) throw new Failure(`the branch is ${r.json.status}`)
-        return r.json.status === 'FUNCTIONS_DEPLOYED' || r.json.status === 'MIGRATIONS_PASSED'
-      }, { timeout: 900_000, every: 3000 })
-      await waitFor('the new branch to be healthy', async () => (await e.node.status(b.project_ref)) === 'ACTIVE_HEALTHY', { timeout: 300_000, every: 3000 })
+      // the dialog cannot say persistent; the node idle-pauses the others (awake(), node.mjs), so this one is made persistent too
+      if (e.cfg.idle_pause) await e.node.api('PATCH', `/v1/branches/${b.id}`, { persistent: true })
+      await waitBranch(e.node, { ...e.shared.ui, parent: P })
     },
   },
   {
