@@ -4,35 +4,53 @@ import (
 	"math"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/supavise/supavise/internal/metrics"
+	"github.com/supavise/supavise/internal/replicas"
 )
 
-// Infrastructure metrics. Supavise collects one of the attributes Studio asks for, the
-// replication lag of a read replica, from the replica controller's ring of one-minute samples
-// (24 hours, kept in memory, empty after the leader restarts). A request that names no other
-// metric than that one is answered here; any other attribute has no source and is answered as
-// before, with an empty 200, which Studio draws as an empty chart.
+// Infrastructure metrics: the series behind Studio's Database report, the Observability overview,
+// Compute and Disk page and the replica details. The node's collector (internal/metrics) samples
+// each project once a minute from its control groups, one SQL session and its disk quota, and
+// keeps the samples on disk; the replication lag of a read replica comes from the replica
+// controller's ring (internal/replicas). Which attribute means what, and which have no source,
+// is the collector's catalog (metrics.Attributes).
+//
+// The response has two shapes, as hosted's has: a request for one attribute is answered with its
+// series metadata on the response and the value on each point, a request for several with
+// values by attribute, one series entry each, and an errors entry for each attribute with no
+// source. Studio draws nothing for an attribute whose series entry is missing, so the response has
+// one for every name that was asked for, with zero for the points of an attribute Supavise cannot
+// measure (see metrics.Assemble).
+
+// MetricsSource is the collector the infra-monitoring and resource-warning routes read:
+// *metrics.Service. Nil: the routes answer with series that have no points.
+type MetricsSource interface {
+	Query(ref string, attrs []string, from, to time.Time, step time.Duration) (metrics.Result, error)
+	Warnings(ref string) (metrics.Warnings, bool)
+}
 
 func (s *Server) routesInfraMonitoring(add func(string, handlerFunc)) {
 	add("GET /platform/projects/{ref}/infra-monitoring", s.infraMonitoring)
+	add("GET /platform/projects-resource-warnings", s.projectsResourceWarnings)
 }
 
 // lagAttribute is the replication lag in seconds, Studio's name for it.
-const lagAttribute = "physical_replication_lag_physical_replication_lag_seconds"
+const lagAttribute = metrics.LagAttribute
 
 // infraIntervals are the buckets of the query's interval parameter.
 var infraIntervals = map[string]time.Duration{
 	"1m": time.Minute, "5m": 5 * time.Minute, "10m": 10 * time.Minute, "30m": 30 * time.Minute, "1h": time.Hour, "1d": 24 * time.Hour,
 }
 
-// infraAttributes are the attributes a request names: attributes (repeated or comma-separated)
-// and the older single attribute.
+// infraAttributes are the attributes a request names: attributes (repeated, with or without the
+// brackets, or comma-separated) and the older single attribute.
 func infraAttributes(r *http.Request) []string {
 	var out []string
 	q := r.URL.Query()
-	for _, v := range append(q["attributes"], q["attribute"]...) {
+	for _, v := range slices.Concat(q["attributes"], q["attributes[]"], q["attribute"]) {
 		for _, a := range strings.Split(v, ",") {
 			if a = strings.TrimSpace(a); a != "" && !slices.Contains(out, a) {
 				out = append(out, a)
@@ -42,33 +60,14 @@ func infraAttributes(r *http.Request) []string {
 	return out
 }
 
-// infraSeriesMeta is what Studio's chart needs to scale and label a series.
-func infraSeriesMeta(values []float64) map[string]any {
-	var sum, top float64
-	for _, v := range values {
-		sum += v
-		top = max(top, v)
-	}
-	avg := 0.0
-	if len(values) > 0 {
-		avg = sum / float64(len(values))
-	}
-	return map[string]any{"yAxisLimit": math.Max(1, math.Ceil(top)), "format": "s", "total": roundMilli(sum), "totalAverage": roundMilli(avg)}
-}
-
-func roundMilli(v float64) float64 { return math.Round(v*1000) / 1000 }
-
 func (s *Server) infraMonitoring(w http.ResponseWriter, r *http.Request) error {
 	p, err := s.loadProject(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		return err
 	}
 	attrs := infraAttributes(r)
-	if !slices.Contains(attrs, lagAttribute) {
-		// No metric of ours: the spec-derived stub's answer, an empty 200.
-		w.Header().Set("X-Supavise-Stub", "true")
-		w.WriteHeader(http.StatusOK)
-		return nil
+	if len(attrs) == 0 {
+		return errf(http.StatusBadRequest, "attributes is required: name at least one metric")
 	}
 	q := r.URL.Query()
 	start, err1 := time.Parse(time.RFC3339, q.Get("startDate"))
@@ -82,9 +81,10 @@ func (s *Server) infraMonitoring(w http.ResponseWriter, r *http.Request) error {
 			return errf(http.StatusBadRequest, "interval must be one of 1m, 5m, 10m, 30m, 1h or 1d")
 		}
 	}
-	// The primary has no replication lag: it has no series.
-	var points []bucketPoint
+
+	var res metrics.Result
 	if id := q.Get("databaseIdentifier"); id != "" && id != p.Ref {
+		// A read replica: its lag is the one metric Supavise has for it.
 		_, ok, err := s.replicaOf(r.Context(), p.Ref, id)
 		if err != nil {
 			return err
@@ -96,58 +96,88 @@ func (s *Server) infraMonitoring(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return replicaServiceErr(err)
 		}
-		type acc struct {
-			sum float64
-			n   int
+		res = metrics.Assemble(attrs, lagRows(samples, start, end, step), metrics.NotCollectedForReplicas)
+	} else if s.metrics != nil {
+		if res, err = s.metrics.Query(p.Ref, attrs, start, end, step); err != nil {
+			return mapErr(err)
 		}
-		sums := map[time.Time]*acc{}
-		for _, sm := range samples {
-			if sm.At.Before(start) || sm.At.After(end) || sm.Seconds < 0 {
-				continue
-			}
-			b := sm.At.UTC().Truncate(step)
-			if sums[b] == nil {
-				sums[b] = &acc{}
-			}
-			sums[b].sum += sm.Seconds
-			sums[b].n++
-		}
-		for b, a := range sums {
-			points = append(points, bucketPoint{b, roundMilli(a.sum / float64(a.n))})
-		}
-		slices.SortFunc(points, func(a, b bucketPoint) int { return a.at.Compare(b.at) })
+	} else {
+		res = metrics.Assemble(attrs, nil, "")
 	}
-	values := make([]float64, len(points))
-	for i, pt := range points {
-		values[i] = pt.v
-	}
-	meta := infraSeriesMeta(values)
-	data := make([]any, 0, len(points))
-	if len(attrs) == 1 {
-		// One attribute: the value sits on the point, with the series' metadata on the response.
-		for _, pt := range points {
-			data = append(data, map[string]any{"period_start": ts(pt.at), lagAttribute: strconv.FormatFloat(pt.v, 'f', -1, 64)})
-		}
-		meta["data"] = data
-		writeJSON(w, http.StatusOK, meta)
-		return nil
-	}
-	// Several attributes: values by attribute, one series entry each. The others have no source.
-	for _, pt := range points {
-		data = append(data, map[string]any{"period_start": ts(pt.at), "values": map[string]any{lagAttribute: strconv.FormatFloat(pt.v, 'f', -1, 64)}})
-	}
-	errs := map[string]any{}
-	for _, a := range attrs {
-		if a != lagAttribute {
-			errs[a] = map[string]any{"message": "Supavise does not collect this metric"}
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": data, "series": map[string]any{lagAttribute: meta}, "errors": errs})
+	writeJSON(w, http.StatusOK, infraResponse(attrs, res))
 	return nil
 }
 
-// bucketPoint is the mean lag of one interval.
-type bucketPoint struct {
-	at time.Time
-	v  float64
+// lagRows buckets the replica's lag samples: the mean of each interval, as the controller's ring
+// holds one point a minute. A negative lag means it was not known and is skipped.
+func lagRows(samples []replicas.LagPoint, start, end time.Time, step time.Duration) []metrics.Row {
+	type acc struct {
+		sum float64
+		n   int
+	}
+	sums := map[time.Time]*acc{}
+	for _, sm := range samples {
+		if sm.At.Before(start) || sm.At.After(end) || sm.Seconds < 0 {
+			continue
+		}
+		b := sm.At.UTC().Truncate(step)
+		if sums[b] == nil {
+			sums[b] = &acc{}
+		}
+		sums[b].sum += sm.Seconds
+		sums[b].n++
+	}
+	rows := make([]metrics.Row, 0, len(sums))
+	for b, a := range sums {
+		rows = append(rows, metrics.Row{At: b, Values: map[string]float64{lagAttribute: roundMilli(a.sum / float64(a.n))}})
+	}
+	slices.SortFunc(rows, func(a, b metrics.Row) int { return a.At.Compare(b.At) })
+	return rows
 }
+
+// infraResponse is the JSON of a result in the shape that matches the number of attributes asked.
+func infraResponse(attrs []string, res metrics.Result) map[string]any {
+	data := make([]any, 0, len(res.Rows))
+	meta := func(m metrics.Meta) map[string]any {
+		return map[string]any{"yAxisLimit": m.YAxisLimit, "format": m.Format, "total": m.Total, "totalAverage": m.TotalAverage}
+	}
+	if len(attrs) == 1 {
+		// One attribute: the value sits on the point, with the series' metadata on the response.
+		a := attrs[0]
+		for _, row := range res.Rows {
+			pt := map[string]any{"period_start": ts(row.At)}
+			if v, ok := row.Values[a]; ok {
+				pt[a] = metrics.FormatValue(a, v)
+			}
+			data = append(data, pt)
+		}
+		out := meta(res.Series[a])
+		out["data"] = data
+		return out
+	}
+	// Several attributes: values by attribute, one series entry each.
+	series := make(map[string]any, len(attrs))
+	for _, a := range attrs {
+		series[a] = meta(res.Series[a])
+	}
+	for _, row := range res.Rows {
+		vals := make(map[string]any, len(attrs))
+		for _, a := range attrs {
+			if v, ok := row.Values[a]; ok {
+				vals[a] = metrics.FormatValue(a, v)
+			}
+		}
+		data = append(data, map[string]any{"period_start": ts(row.At), "values": vals})
+	}
+	out := map[string]any{"data": data, "series": series}
+	if len(res.Errors) > 0 {
+		errs := make(map[string]any, len(res.Errors))
+		for a, msg := range res.Errors {
+			errs[a] = map[string]any{"message": msg}
+		}
+		out["errors"] = errs
+	}
+	return out
+}
+
+func roundMilli(v float64) float64 { return math.Round(v*1000) / 1000 }

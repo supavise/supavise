@@ -423,7 +423,8 @@ func TestPermissionsEndpointMatchesEnforcement(t *testing.T) {
 func TestImplementedRoutesOpenToEveryUserAreAllowlisted(t *testing.T) {
 	// The OAuth endpoints of /v1 are the clients' own: authorize, token and revoke carry no session (they
 	// are authNone, so the rule never decides), and the project-claim stub is open like its siblings.
-	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/v1/oauth/)`)
+	// The resource warnings are a list too: they name only the projects the caller can see.
+	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/v1/oauth/)`)
 	for key := range newFixture(t).srv.implemented() {
 		m, p, _ := strings.Cut(key, " ")
 		if n := routeNeed(m, p); n.kind == needAny && !open.MatchString(p) {
