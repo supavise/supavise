@@ -237,6 +237,54 @@ func TestServiceReadsARestartedUnitAsGrowthFromZero(t *testing.T) {
 	want(t, r.latest(), CPUUser, 20)
 }
 
+// A unit that systemd stopped after an OOM kill comes back in a new control group with the counter
+// at zero. The slice keeps the kernel's count: a restart in a minute when it grew is a kill; a
+// restart when it did not, or a growth with no restart, is not one more than the unit's counter says.
+func TestServiceCountsAnOOMKillThatRestartedTheUnit(t *testing.T) {
+	steady := unitFiles{user: 100_000_000, memMax: "max", oomKill: 0}
+	restarted := unitFiles{user: 2_000_000, memMax: "max", oomKill: 0} // a new group: its counters start over
+	for name, c := range map[string]struct {
+		sliceBefore, sliceAfter uint64
+		after                   unitFiles
+		want                    float64
+	}{
+		"restarted, the slice counted a kill":  {4, 5, restarted, 1},
+		"restarted, the slice did not":         {4, 4, restarted, 0},
+		"not restarted, the slice grew":        {4, 5, unitFiles{user: 160_000_000, memMax: "max"}, 0},
+		"restarted, the slice count went back": {4, 1, restarted, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t, nil)
+			writeSliceKills(t, r.cg, c.sliceBefore)
+			r.units(steady, unitFiles{}, unitFiles{})
+			r.tick(t0.Add(2 * time.Second))
+			writeSliceKills(t, r.cg, c.sliceAfter)
+			r.units(c.after, unitFiles{}, unitFiles{})
+			r.tick(t0.Add(62 * time.Second))
+			want(t, r.latest(), OOMKills, c.want)
+		})
+	}
+
+	// The first tick has no earlier count to compare with: a restart then is not a kill.
+	r := newRig(t, nil)
+	r.units(steady, unitFiles{}, unitFiles{})
+	r.tick(t0.Add(2 * time.Second))
+	writeSliceKills(t, r.cg, 9)
+	r.units(restarted, unitFiles{}, unitFiles{})
+	r.tick(t0.Add(62 * time.Second))
+	want(t, r.latest(), OOMKills, 0)
+
+	// A kill the unit's own counter shows (the unit kept its group) is counted once, not twice.
+	r = newRig(t, nil)
+	writeSliceKills(t, r.cg, 1)
+	r.units(steady, unitFiles{}, unitFiles{})
+	r.tick(t0.Add(2 * time.Second))
+	writeSliceKills(t, r.cg, 2)
+	r.units(unitFiles{user: 160_000_000, memMax: "max", oomKill: 1}, unitFiles{}, unitFiles{})
+	r.tick(t0.Add(62 * time.Second))
+	want(t, r.latest(), OOMKills, 1)
+}
+
 // A project without a CPU quota is measured against the node's cores.
 func TestServiceMeasuresAProjectWithoutAQuotaAgainstTheNode(t *testing.T) {
 	r := newRig(t, nil)

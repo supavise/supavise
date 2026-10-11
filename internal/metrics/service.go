@@ -67,9 +67,14 @@ type Options struct {
 type Service struct {
 	o Options
 
-	mu     sync.Mutex
-	proj   map[string]*projState
-	node   NodeSample
+	mu   sync.Mutex
+	proj map[string]*projState
+	node NodeSample
+	// slice is the OOM kill count of supavise.slice at the last tick and how much it grew then.
+	slice struct {
+		kills, grew uint64
+		known       bool
+	}
 	raised map[string]bool
 	swept  time.Time
 	// warned is when each kind of failure was last logged: a full disk would otherwise write a line
@@ -171,6 +176,7 @@ func (s *Service) Tick(ctx context.Context) {
 	defer cancel()
 	now := s.now()
 	s.sampleNode(now)
+	s.sampleSlice()
 
 	ps, err := s.o.Projects.ListProjects(ctx)
 	if err != nil {
@@ -265,6 +271,19 @@ func (s *Service) sampleNode(now time.Time) {
 	s.mu.Unlock()
 }
 
+// sampleSlice reads the kernel's count of the OOM kills below supavise.slice and keeps how much it
+// grew since the previous tick (see sampleProject for what it is for).
+func (s *Service) sampleSlice() {
+	n, ok := s.o.Cgroup.SliceOOMKills()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.slice.grew = 0
+	if ok && s.slice.known && n > s.slice.kills {
+		s.slice.grew = n - s.slice.kills
+	}
+	s.slice.kills, s.slice.known = n, ok
+}
+
 // Node returns the node's memory at the last sample.
 func (s *Service) Node() NodeSample {
 	s.mu.Lock()
@@ -345,6 +364,7 @@ type readings struct {
 func (s *Service) read(ctx context.Context, p registry.Project, now time.Time, st *projState) (smp Sample, next readings, ok bool) {
 	s.mu.Lock()
 	prevAt, prevUnits, prevIO := st.prevAt, st.prevUnits, st.prevIO
+	sliceKills := s.slice.grew
 	s.mu.Unlock()
 
 	next.units = map[string]UnitStats{}
@@ -385,12 +405,22 @@ func (s *Service) read(ctx context.Context, p registry.Project, now time.Time, s
 		cores := s.cores(p)
 		wallUs := dt.Seconds() * 1e6 * cores
 		var user, system, throttled, oom float64
+		restarted := false
 		for svc, u := range next.units {
-			pu := prevUnits[svc] // zero when the unit is new: its whole usage is the delta
+			pu, had := prevUnits[svc] // zero when the unit is new: its whole usage is the delta
+			restarted = restarted || (had && u.Restarted(pu))
 			user += counterDelta(u.CPUUserUsec, pu.CPUUserUsec)
 			system += counterDelta(u.CPUSystemUsec, pu.CPUSystemUsec)
 			throttled += counterDelta(u.ThrottledUsec, pu.ThrottledUsec)
 			oom += counterDelta(u.OOMKill, pu.OOMKill)
+		}
+		// With systemd's default OOMPolicy=stop a unit whose process the kernel killed for lack of
+		// memory is stopped and started again in a new control group, whose counter says nothing of
+		// the kill. The kernel's count for the whole slice does: a project whose unit started over in
+		// a minute when that count grew, and whose own counters show no kill, lost at least one. A
+		// kill of another project in the same minute is taken for this project's too.
+		if oom == 0 && restarted && sliceKills > 0 {
+			oom = 1
 		}
 		userPct, systemPct := 100*user/wallUs, 100*system/wallUs
 		if sum := userPct + systemPct; sum > 100 { // each unit has the quota to itself, so the units can add up past it

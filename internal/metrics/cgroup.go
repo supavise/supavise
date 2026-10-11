@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/supavise/supavise/internal/config"
 )
@@ -38,6 +39,18 @@ type UnitStats struct {
 	OOMKill uint64
 	// MemMax is memory.max; 0 means "max" (no limit).
 	MemMax uint64
+	// ID names this control group: the inode of its directory, which a restarted unit gets anew
+	// because systemd removes the group when the unit stops. 0 when the filesystem has no inode.
+	ID uint64
+}
+
+// Restarted reports whether u, read after prev, is a different run of the unit: another control
+// group, or counters that went backward, which only a group that started over from zero shows.
+func (u UnitStats) Restarted(prev UnitStats) bool {
+	if u.ID != 0 && prev.ID != 0 && u.ID != prev.ID {
+		return true
+	}
+	return u.CPUUsageUsec < prev.CPUUsageUsec || u.OOMKill < prev.OOMKill
 }
 
 // ErrNoUnit says the unit has no control group: it is not running.
@@ -57,6 +70,11 @@ func (c Cgroup) dir(unit string) string {
 func (c Cgroup) ReadUnit(unit string) (UnitStats, error) {
 	dir := c.dir(unit)
 	var u UnitStats
+	if fi, err := os.Stat(dir); err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			u.ID = uint64(st.Ino)
+		}
+	}
 	cpu, err := readFlat(filepath.Join(dir, "cpu.stat"))
 	if errors.Is(err, fs.ErrNotExist) {
 		if _, serr := os.Stat(dir); serr != nil {
@@ -97,6 +115,22 @@ func (c Cgroup) ReadUnit(unit string) (UnitStats, error) {
 		}
 	}
 	return u, nil
+}
+
+// SliceOOMKills is the oom_kill line of supavise.slice's memory.events: the kernel counts the
+// kills in every group below the slice there, and keeps them when a group is removed, which the
+// count of a unit that restarted does not. ok is false when the file cannot be read.
+func (c Cgroup) SliceOOMKills() (n uint64, ok bool) {
+	root := c.Root
+	if root == "" {
+		root = DefaultCgroupRoot
+	}
+	events, err := readFlat(filepath.Join(root, config.Slice, "memory.events"))
+	if err != nil {
+		return 0, false
+	}
+	n, ok = events["oom_kill"]
+	return n, ok
 }
 
 // SliceExists reports whether the control group of supavise.slice is there. It is not on a host
