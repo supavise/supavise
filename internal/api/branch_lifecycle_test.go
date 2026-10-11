@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/supavise/supavise/internal/registry"
+	"github.com/supavise/supavise/internal/reqstats"
 )
 
 func makeBranch(t *testing.T, f *fixture, name string) (ref, id string) {
@@ -139,5 +140,38 @@ func TestSQLCallWakesAnIdleBranchButNotAnOwnersPause(t *testing.T) {
 	}
 	if code := f.do("POST", "/v1/projects/"+testRef+"/database/query", map[string]any{"query": "select 1"}).Code; code != 409 {
 		t.Fatalf("a query on a paused production project: %d", code)
+	}
+}
+
+// A call that runs SQL on a project is use the idle pause of branches has to see: the session it opens is
+// gone when the call returns, so pg_stat_activity shows nothing. It is not a request to the project's API
+// and stays out of the request charts.
+func TestSQLCallCountsAsUseButNotAsARequest(t *testing.T) {
+	now := time.Date(2026, 10, 10, 12, 30, 20, 0, time.UTC)
+	f, stats := usageFixture(t, now)
+	if _, ok := stats.Last(testRef); ok {
+		t.Fatal("the project has activity before any call")
+	}
+	if code := f.do("POST", "/v1/projects/"+testRef+"/database/query", map[string]any{"query": "select 1"}).Code; code != 200 && code != 201 {
+		t.Fatalf("query: %d", code)
+	}
+	if got, ok := stats.Last(testRef); !ok || !got.Equal(now) {
+		t.Fatalf("last use after a query = %v, %v; want %v", got, ok, now)
+	}
+	for _, b := range stats.Series(testRef, now.Add(-time.Hour), now, reqstats.Minute) {
+		if b.Counts.Total() != 0 {
+			t.Fatalf("a query was counted as a request: %v", b)
+		}
+	}
+	// A paused project that is not woken is not used.
+	if err := f.reg.SetProjectStatus(context.Background(), testRef, registry.StatusInactive); err != nil {
+		t.Fatal(err)
+	}
+	stats.Forget(testRef)
+	if code := f.do("POST", "/v1/projects/"+testRef+"/database/query", map[string]any{"query": "select 1"}).Code; code != 409 {
+		t.Fatalf("query on a paused project: %d", code)
+	}
+	if _, ok := stats.Last(testRef); ok {
+		t.Fatal("a refused call counted as use")
 	}
 }

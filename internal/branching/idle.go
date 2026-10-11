@@ -24,10 +24,15 @@ import (
 //     wake, a resume by hand all start the clock again);
 //   - an HTTP request to its API (any host: derived, custom or vanity) in the period, or one still
 //     being served, a WebSocket included (internal/reqstats);
-//   - a database client that ran a statement in the period, or is running one now: the pooler's
-//     clients, Studio's table editor and SQL editor, a psql session. The services that only act
-//     for an API request (GoTrue, PostgREST, Storage) and pg_cron are not clients, because their
-//     work already shows as an API request or is the branch's own.
+//   - a Management API call that ran SQL on the branch in the period: Studio's SQL and table editors,
+//     MCP's execute_sql and apply_migration, a migration the CLI pushed. Each opens a session and closes
+//     it before it answers, which no sample of the database can see, so api.Server.running marks the
+//     branch used (reqstats.Counter.Touch);
+//   - a database client the sweep finds connected: one running a statement now, or whose last
+//     statement ended less than the period ago (the pooler's clients, a psql session that is still open).
+//     A session that opened and closed between two sweeps leaves nothing to find. The services that
+//     only act for an API request (GoTrue, PostgREST, Storage) and pg_cron are not clients, because
+//     their work already shows as an API request or is the branch's own.
 //
 // Only the owner's pause is never undone by the node: a branch the owner paused by hand has no
 // "idle" record (registry.LifecycleStore) and stays paused until Resume. Persistent branches, branches
@@ -35,10 +40,11 @@ import (
 // into their parent) and the default branch are never paused. A cluster of more than one server pauses
 // nothing: a request that reaches another server's proxy could not wake the branch (see the README).
 
-// Activity says how recently a project served HTTP requests. *reqstats.Counter satisfies it.
+// Activity says how recently a project was used over HTTP or the Management API. *reqstats.Counter
+// satisfies it.
 type Activity interface {
-	// Last is the time of the latest request counted for ref; ok is false when none was counted
-	// since the daemon started.
+	// Last is the time of the latest request counted for ref, or of the latest Management API call that
+	// ran SQL on it; ok is false when neither happened since the daemon started.
 	Last(ref string) (t time.Time, ok bool)
 	// Active is the number of requests being served now (a WebSocket is one for as long as it is open).
 	Active(ref string) int
@@ -120,6 +126,9 @@ func (s *Service) IdleSweep(ctx context.Context) (*IdleResult, error) {
 			// joins is started again; this server pauses no more of them.
 			if pz, ok := pauses[p.Ref]; ok && pz.Reason == registry.PauseIdle && p.Status == registry.StatusInactive {
 				if err := s.eng.Resume(ctx, p.Ref); err != nil {
+					// RunIdle drops the result, so the log is the only place an operator learns that the
+					// branch stays asleep (not enough memory on the node, say).
+					s.log.Warn("could not start an idle branch when a second server joined; it stays paused", "ref", p.Ref, "err", err)
 					res.Failed[p.Ref] = err.Error()
 					continue
 				}

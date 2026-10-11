@@ -23,7 +23,7 @@ A project that has counted nothing for eight days is dropped. `Add` checks for s
 
 ## Last request and open requests
 
-`Last(ref)` is the time of the latest request counted for a project, to the nanosecond (`ok` false when none was counted since the process started), and `Active(ref)` the number being served now: the proxy brackets each forward with `Begin(ref)` and the function it returns. They are what the idle pause of branches reads (`internal/branching/README.md`, "Idle pause"): a branch is not idle while a WebSocket is open or a request arrived in the period. A project with an open request is not pruned. Both are in memory like the counts, so a restart of the daemon forgets them, and the idle pause starts its clocks again at the restart.
+`Last(ref)` is the time of the latest request counted for a project, to the nanosecond (`ok` false when none was counted since the process started), and `Active(ref)` the number being served now. `Touch(ref, t)` moves `Last` without counting a request: the Management API calls it for a call that ran SQL on the project, which is use the idle pause should see and not traffic for the request charts. The proxy brackets each forward with `Begin(ref)` and the function it returns. `Last` and `Active` are what the idle pause of branches reads (`internal/branching/README.md`, "Idle pause"): a branch is not idle while a WebSocket is open or a request arrived in the period. A project with an open request is not pruned. Both are in memory like the counts, so a restart of the daemon forgets them, and the idle pause starts its clocks again at the restart.
 
 ## Concurrency
 

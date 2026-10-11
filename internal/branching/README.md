@@ -372,11 +372,16 @@ each branch homed on this server.
 
 What counts as use: the branch was seen running less than the period ago (a restart of the daemon, a create,
 a wake or a resume starts the clock again); an HTTP request to its API on any of its hosts in the period, or one
-still being served, a WebSocket included (`reqstats.Counter.Last` and `Active`); a database client that ran a
-statement in the period or runs one now (`pg_stat_activity`: the pooler's users, Studio's SQL and table editors,
-`psql`). The roles of GoTrue, PostgREST and Storage, `pg_cron` and the loop's own session are not clients,
-because what they do for a client came in through the proxy, which counts it. A database that cannot be read
-leaves the branch running.
+still being served, a WebSocket included (`reqstats.Counter.Last` and `Active`); a Management API call that ran
+SQL on the branch in the period (Studio's SQL and table editors, MCP's `execute_sql` and `apply_migration`, a
+migration the CLI pushed): it opens a session and closes it before it answers, so `api.Server.running` marks the
+branch used with `reqstats.Counter.Touch`, which moves `Last` and counts no request; a database client the loop
+finds connected (`pg_stat_activity`: a session running a statement now, or whose last statement ended less than the
+period ago, such as the pooler's users or a `psql` that is still open). A session that opened and closed between two
+sweeps leaves nothing to find, so a `psql -c` or a direct `supabase db push` against the database port alone is not
+noticed (the loop looks every `sweep_interval_seconds`, or a third of the period when that is shorter). The roles of
+GoTrue, PostgREST and Storage, `pg_cron` and the loop's own session are not clients, because what they do for a
+client came in through the proxy, which counts it. A database that cannot be read leaves the branch running.
 
 Never paused: persistent branches, branches scheduled for deletion, the default branch (the project itself),
 a branch with an operation in flight (in this process, in another, an unfinished action run, or a merge into its
