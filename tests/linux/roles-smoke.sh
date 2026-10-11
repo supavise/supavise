@@ -18,7 +18,9 @@
 # - Database Webhooks: a Read-only member is refused "Enable webhooks", a Developer's call creates the
 #   supabase_functions schema and its role, a second call changes nothing, and a webhook that Studio
 #   creates (a trigger on supabase_functions.http_request through pg-meta) answers an insert with a
-#   request that a local HTTP server receives and a net._http_response row with its status;
+#   request that a local HTTP server receives and a net._http_response row with its status; the script
+#   runs as a superuser, so a Developer's own supabase_functions schema is refused, a trigger the
+#   Developer adds to the migrations table does not fire, and a role of theirs is not dropped;
 # - the dashboard's honesty about logs: a log query answers an error that names `supavise logs <ref>`
 #   (never a bare empty result), `supavise logs` prints the project's Postgres lines and only the
 #   project's lines of the shared services, and the project home's request chart counts the
@@ -335,7 +337,40 @@ expect 403 "${PAT[ro]}" POST "$CFG/database/webhooks/enable"
 code=$(papi "${JWT[ro]}" POST "/platform/database/$REF/hook-enable")
 [[ $code == 403 ]] || fail "a read-only member enabled webhooks through the dashboard route: $code"
 [[ $(sql "select to_regnamespace('supabase_functions') is not null") == f ]] || fail "a refused call created supabase_functions"
+# The script runs as a superuser, and a Developer (the postgres role) can make objects before Enable is called. Trying the two
+# ways to turn that into superuser code: a supabase_functions schema of the Developer's own with a trigger on its migrations
+# table (the script's INSERT would fire it), and a role named supabase_pg_net_admin (upstream's cleanup reassigns what it owns
+# to supabase_admin). Setup that the pinned Postgres does not allow a Developer is not an attack, so it is skipped with a note.
+devq() { # SQL: run SQL through pg-meta as the Developer (the postgres role); the status is the result
+  papi "${JWT[dev]}" POST "/platform/pg-meta/$REF/query" "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$1")"
+}
+ok2xx() { [[ $1 == 200 || $1 == 201 ]]; }
+ok2xx "$(devq "create table public.hook_spy_log (who text, su boolean);
+create function public.hook_spy() returns trigger language plpgsql as \$\$ begin insert into public.hook_spy_log select current_user, rolsuper from pg_roles where rolname = current_user; return null; end \$\$;")" \
+  || fail "a Developer could not create the spy table and function: $(head -c 300 "$WORK/last.json")"
+PGNET_ROLE=0
+if ok2xx "$(devq "create role supabase_pg_net_admin")"; then PGNET_ROLE=1; else log "note: a Developer cannot create the role supabase_pg_net_admin here; that check is skipped"; fi
+if ok2xx "$(devq "create schema supabase_functions;
+create table supabase_functions.migrations (version text primary key, inserted_at timestamptz not null default now());
+create trigger spy before insert on supabase_functions.migrations for each row execute function public.hook_spy();
+create trigger spy_stmt before insert on supabase_functions.migrations for each statement execute function public.hook_spy();")"; then
+  code=$(papi "${JWT[dev]}" POST "/platform/database/$REF/hook-enable")
+  [[ $code == 400 ]] || fail "enabling webhooks over a schema the Developer made answered $code, want 400: $(head -c 300 "$WORK/last.json")"
+  grep -q "not to supabase_admin" "$WORK/last.json" || { cat "$WORK/last.json" >&2; fail "the refusal does not say that the schema does not belong to supabase_admin"; }
+  [[ $(sql "select count(*) from public.hook_spy_log") == 0 ]] || { sql "select * from public.hook_spy_log" >&2; fail "enabling webhooks fired a trigger of the project's as $(sql "select string_agg(who || ' superuser=' || su, ', ') from public.hook_spy_log")"; }
+  [[ $(sql "select to_regprocedure('supabase_functions.http_request()') is null and to_regclass('supabase_functions.hooks') is null") == t ]] \
+    || fail "a refused enable left the webhooks objects behind"
+  expect 201 "${PAT[dev]}" POST "$CFG/database/query" '{"query":"drop schema supabase_functions cascade"}'
+else
+  log "note: a Developer cannot create a schema or trigger here; the check of a schema the project made is skipped"
+  devq "drop schema if exists supabase_functions cascade" >/dev/null
+fi
+[[ $(sql "select to_regnamespace('supabase_functions') is not null") == f ]] || fail "supabase_functions is still there after the refused-schema check"
 expect 201 "${PAT[dev]}" POST "$CFG/database/webhooks/enable"
+if [[ $PGNET_ROLE == 1 ]]; then
+  [[ $(sql "select count(*) from pg_roles where rolname = 'supabase_pg_net_admin'") == 1 ]] || fail "enabling webhooks dropped the role supabase_pg_net_admin that the Developer made"
+  sql "drop role supabase_pg_net_admin"
+fi
 [[ $(sql "select to_regprocedure('supabase_functions.http_request()') is not null and exists (select 1 from pg_extension where extname = 'pg_net') and exists (select 1 from pg_roles where rolname = 'supabase_functions_admin')") == t ]] \
   || fail "enabling webhooks left no supabase_functions.http_request(), pg_net or supabase_functions_admin"
 # Studio shows "enabled" when the schema is listed; the function runs as its owner, which is not postgres.
@@ -349,6 +384,18 @@ before=$(sql "select count(*) from supabase_functions.migrations")
 code=$(papi "${JWT[dev]}" POST "/platform/database/$REF/hook-enable")
 [[ $code == 201 ]] || fail "enabling webhooks a second time answered $code"
 [[ $(sql "select count(*) from supabase_functions.migrations") == "$before" ]] || fail "a second enable added migration rows"
+# Once the tables exist, the Developer holds privileges on them and can add a trigger. A repeated enable must not run it: it
+# writes no row into a table that exists (a BEFORE INSERT trigger fires even for an INSERT ... ON CONFLICT DO NOTHING).
+if ok2xx "$(devq "create trigger spy before insert on supabase_functions.migrations for each row execute function public.hook_spy();
+create trigger spy_stmt before insert on supabase_functions.migrations for each statement execute function public.hook_spy();")"; then
+  code=$(papi "${JWT[dev]}" POST "/platform/database/$REF/hook-enable")
+  [[ $code == 201 ]] || fail "enabling webhooks with a trigger on the migrations table answered $code: $(head -c 300 "$WORK/last.json")"
+  [[ $(sql "select count(*) from public.hook_spy_log") == 0 ]] || fail "a repeated enable ran the project's trigger as $(sql "select string_agg(who || ' superuser=' || su, ', ') from public.hook_spy_log")"
+  ok2xx "$(devq "drop trigger spy on supabase_functions.migrations; drop trigger spy_stmt on supabase_functions.migrations;")" || fail "could not drop the spy triggers"
+else
+  log "note: a Developer cannot add a trigger to supabase_functions.migrations here; that check is skipped"
+fi
+devq "drop function public.hook_spy(); drop table public.hook_spy_log;" >/dev/null
 # What Studio does next: create the webhook as a trigger through pg-meta (the postgres role), here on a table the Developer owns.
 expect 201 "${PAT[dev]}" POST "$CFG/database/query" '{"query":"create table public.hook_t (id int primary key, v text)"}'
 code=$(papi "${JWT[dev]}" POST "/platform/pg-meta/$REF/query" "{\"query\":\"create trigger roles_hook after insert on public.hook_t for each row execute function supabase_functions.http_request('http://127.0.0.1:$P_HOOK/roles-hook', 'POST', '{\\\"Content-Type\\\":\\\"application/json\\\"}', '{}', '5000')\"}")
@@ -387,9 +434,20 @@ $SVLOG logs "$REF" --service postgres -n 20000 >"$WORK/pglog.txt" 2>"$WORK/pglog
 [[ -s $WORK/pglog.txt ]] || { cat "$WORK/pglog.err" >&2; fail "supavise logs printed no Postgres line"; }
 grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z postgres +' "$WORK/pglog.txt" || { head -5 "$WORK/pglog.txt" >&2; fail "supavise logs lines are not '<time> postgres <message>'"; }
 grep -q "ready to accept connections" "$WORK/pglog.txt" || { tail -5 "$WORK/pglog.txt" >&2; fail "supavise logs does not show the Postgres start"; }
-# A shared service shows only the lines that mention the project.
-$SVLOG logs "$REF" --service realtime -n 500 >"$WORK/rtlog.txt" 2>/dev/null || fail "supavise logs --service realtime failed"
-if [[ -s $WORK/rtlog.txt ]] && grep -v "$REF" "$WORK/rtlog.txt" | grep -q .; then head -3 "$WORK/rtlog.txt" >&2; fail "supavise logs shows realtime lines that do not mention the project"; fi
+# A shared service shows only the lines that mention the project. Realtime and Storage log at warning level, so the
+# journal holds a line only when one of them reports a problem: provoke one per service (a Realtime join with a
+# malformed token, a Storage call with a bad key, a pooler login with a wrong password), then require that every line
+# a service prints mentions the ref. A service that prints nothing is reported, not failed: whether its warning
+# carries the ref depends on the service's logger, which this test cannot see.
+ws_join "$P_REALTIME" "$REF.realtime.internal" "not-a-token" >/dev/null 2>&1 || true
+curl -s -o /dev/null -m 10 -H "Host: $REF.api.$SUPAVISE_DOMAIN" -H "apikey: not-a-token" -H "Authorization: Bearer not-a-token" "http://127.0.0.1/storage/v1/bucket" || true
+PGPASSWORD=a-wrong-password "$PSQL" "host=127.0.0.1 port=$P_SESSION user=postgres.$REF dbname=postgres sslmode=disable connect_timeout=10" -Atc 'select 1' </dev/null >/dev/null 2>&1 || true
+sleep 2
+for svc in realtime storage pooler functions; do
+  $SVLOG logs "$REF" --service "$svc" -n 500 >"$WORK/shared-$svc.txt" 2>/dev/null || fail "supavise logs --service $svc failed"
+  if grep -v "$REF" "$WORK/shared-$svc.txt" | grep -q .; then head -3 "$WORK/shared-$svc.txt" >&2; fail "supavise logs shows $svc lines that do not mention the project"; fi
+  log "supavise logs --service $svc: $(wc -l <"$WORK/shared-$svc.txt" | tr -d ' ') line(s) that mention the project"
+done
 # Every service together, a window, and the refusals.
 $SVLOG logs "$REF" -n 50 --since 1d >"$WORK/alllog.txt" 2>/dev/null || fail "supavise logs (all services, --since 1d) failed"
 [[ $(wc -l <"$WORK/alllog.txt") -le 50 ]] || fail "supavise logs -n 50 printed more than 50 lines"
