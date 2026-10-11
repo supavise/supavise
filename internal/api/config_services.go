@@ -239,6 +239,33 @@ func (s *Server) getStorage(key string) handlerFunc {
 	}
 }
 
+// errNoImageTransformation is the answer to a save that switches image transformation on. Storage resizes
+// images through imgproxy, which a node does not run: the switch would save, the toast would say "Successfully
+// updated storage settings", and every render URL would answer 404. The reason is a 4xx, which the dashboard
+// and the CLI show as the error.
+var errNoImageTransformation = errf(http.StatusBadRequest, "Image transformation is not available on this Supavise node: Storage resizes images through imgproxy, which the node does not run, so a render URL would not work. "+
+	"Leave it off (in config.toml: [storage.image_transformation] enabled = false).")
+
+// refuseImageTransformation answers 400 when patch switches image transformation from off to on. A save that
+// leaves it on, because it was saved before this answer existed, or one that carries it off, passes: Studio
+// saves the whole features object with every change of the upload limit.
+func (s *Server) refuseImageTransformation(ctx context.Context, ref string, patch map[string]any) error {
+	features, _ := patch["features"].(map[string]any)
+	it, _ := features["imageTransformation"].(map[string]any)
+	if on, _ := it["enabled"].(bool); !on {
+		return nil
+	}
+	st, err := s.settings.Get(ctx, ref, projectconfig.Storage)
+	if err != nil {
+		return err
+	}
+	cur, _ := st.StorageFeatures()["imageTransformation"].(map[string]any)
+	if already, _ := cur["enabled"].(bool); already {
+		return nil
+	}
+	return errNoImageTransformation
+}
+
 func (s *Server) patchStorage(key, viewKey string) handlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) error {
 		p, err := s.settingsProject(r)
@@ -247,6 +274,9 @@ func (s *Server) patchStorage(key, viewKey string) handlerFunc {
 		}
 		in, err := patchBody(r)
 		if err != nil {
+			return err
+		}
+		if err := s.refuseImageTransformation(r.Context(), p.Ref, in); err != nil {
 			return err
 		}
 		ch, _, err := s.saveSettings(r.Context(), p, projectconfig.Storage, in, lifecycle.ApplyOptions{})
