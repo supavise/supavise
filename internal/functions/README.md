@@ -61,6 +61,7 @@ Without Docker, `supabase functions deploy` uploads the sources (CLI v2.119.0), 
 |---|---|
 | API change (hook) | `SyncProject(ref)`: env file, then every function of the project; links of functions the store no longer has are removed |
 | `supavise projects rotate-keys` | the command calls `SyncProject(ref)` itself after the keys changed, so functions check the new JWT secret at once instead of at the next reconcile of a running API server |
+| `PATCH /platform/projects/{ref}/config/secrets` | the API tells the hook after the JWT secret changed (`SyncProject(ref)` writes the env file), so functions check the new secret before the request answers; a failure is logged and the reconcile repeats it |
 | every `reconcile_seconds`, and at start | `Reconcile`: the same for every project but `system`, then `collectGone`; this is what makes restored data and a failed first attempt show up |
 | project delete, pause, resume | the API tells the hook after each, so a deleted or paused project's keys and secrets leave the disk at once; `supavise projects delete` calls `RemoveFiles(cfg, ref)`; any other deletion is found by the next `SyncProject(ref)` or `Reconcile`. A project in a status the proxy does not serve (`INACTIVE`, `PAUSING`, `GOING_DOWN`, `REMOVED`, `INIT_FAILED`) has no files, and resuming rebuilds them from the store |
 

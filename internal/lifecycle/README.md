@@ -118,6 +118,17 @@ new function stays callable through `rpc`, on hosted too. Objects that exist kee
   (`project.delete_started`, `project.delete_backup_done`) without a second backup.
 - `RotateKeys`: new JWT secret, legacy and opaque keys; database passwords unchanged; GoTrue and
   PostgREST restart, fleet tenants update; previous keys are restored on error.
+- `SetJWTSecret` (`JWTSecretSetter`): the project's JWT secret becomes the one given, the legacy `anon` and
+  `service_role` keys are signed with it again, everything else stays (the publishable and secret keys, the
+  passwords). `RotateKeys` and `SetJWTSecret` share `applyKeys`: the keys are sealed, GoTrue and PostgREST
+  restart on them, the fleet tenants update, and the previous keys are restored on error (a
+  `*JWTSecretError` names the step: store, restart or tenants). When putting the previous keys back fails
+  too, `applyKeys` reports it (each failure is logged with the ref) and the error says the previous keys
+  could not be restored (`JWTSecretError.NotRestored`; the text of `RotateKeys` changes the same way): the
+  registry, a unit or a tenant may then hold the new keys. A paused project only stores the keys.
+  The secret the project already has changes nothing. Not done here, because the engine does not own it: the Edge
+  Functions environment (the API writes it through `Deps.Functions`, `rotate-keys` through
+  `syncFunctions`) and the PostgREST of read replicas on other nodes.
 - `Health`: unit state plus SQL ping, GoTrue `/health`, PostgREST `/`; moves `ACTIVE_HEALTHY` and
   `ACTIVE_UNHEALTHY` to match.
 - `StartActive`: starts every active project (after a reboot or `supavise system stop`), one at a

@@ -31,6 +31,7 @@ func TestEngineRefusesAProjectHomedElsewhereWithoutARouter(t *testing.T) {
 		"delete":   func() error { return c.e.Delete(ctx, ref) },
 		"rotate":   func() error { _, err := c.e.RotateKeys(ctx, ref); return err },
 		"password": func() error { return c.e.SetDatabasePassword(ctx, ref, "new-password") },
+		"jwt":      func() error { _, err := c.e.SetJWTSecret(ctx, ref, strings.Repeat("s", 40)); return err },
 		"settings": func() error {
 			_, err := c.e.ApplyConfig(ctx, ref, projectconfig.PostgREST, ApplyOptions{})
 			return err

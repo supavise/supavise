@@ -55,5 +55,5 @@ The CLI has no flag or environment variable for the Management API URL (`SUPABAS
 ## Not covered yet
 
 - Studio (Playwright): `tests/e2e/studio-smoke.mjs` is a separate script that needs the platform build.
-- OAuth providers, SAML, MFA, phone auth, anonymous sign-ins, the S3-compatible Storage protocol, image transforms, Realtime authorization (private channels), `supabase db dump|pull|diff` (they run `pg_dump` in a container) and `supabase start`.
+- OAuth providers, SAML, MFA, phone auth, anonymous sign-ins, the S3-compatible Storage protocol, image transforms, Realtime authorization (private channels), `supabase db dump|pull|diff` (they run `pg_dump` in a container; `tests/linux/migrate-smoke.sh` runs `db dump` against the pooler) and `supabase start`.
 - `supabase db push` through the direct host: on a node that uses the `<ip>.sslip.io` default name, `db.<ref>.api.<ip>.sslip.io` resolves to the node and answers on 5432 (Supavisor), where the user `postgres` without a tenant is refused, so the CLI never falls back to the pooler. The suite uses a name that does not resolve; a node needs a decision on how it answers a direct database host.

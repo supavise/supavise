@@ -119,6 +119,8 @@ These are the documented routes for which an empty stub is not enough: the page 
 | P1 | PATCH | `/platform/projects/{ref}/config/pgbouncer` | 200 `UpdatePoolingConfigResponse_Output` (requires `pgbouncer_enabled`, `pgbouncer_status`) |
 | P1 | GET | `/platform/projects/{ref}/config/postgrest` | 200 `GetPostgrestConfigResponse_Output` |
 | P1 | PATCH | `/platform/projects/{ref}/config/postgrest` | 200 `UpdatePostgrestConfigResponse_Output` |
+| P1 | PATCH | `/platform/projects/{ref}/config/secrets` | 200 `UpdateSecretsResponse_Output`; Studio sends `{jwt_secret, change_tracking_id}` from the Legacy JWT secret page. See "Legacy JWT secret" |
+| P1 | GET | `/platform/projects/{ref}/config/secrets/update-status` | 200 `GetJwtSecretUpdateStatus_Output`; `update_status` is null or `{change_tracking_id, status, progress, error?}` |
 | P1 | GET | `/platform/projects/{ref}/config/realtime` | 200 `RealtimeConfigResponse_Output` |
 | P1 | PATCH | `/platform/projects/{ref}/config/realtime` | 204 no body |
 | P1 | GET | `/platform/projects/{ref}/config/storage` | 200 `StorageConfigResponse_Output` |
@@ -163,11 +165,11 @@ These are the documented routes for which an empty stub is not enough: the page 
 | P1 | GET | `/v1/projects/{ref}/api-keys/{id}` | 200 `ApiKeyResponse_Output` |
 | P1 | DELETE | `/v1/projects/{ref}/api-keys/{id}` | 200 `ApiKeyResponse_Output` |
 | P1 | GET | `/v1/projects/{ref}/config/auth/signing-keys` | 200 `SigningKeysResponse_Output` |
-| P1 | POST | `/v1/projects/{ref}/config/auth/signing-keys` | 201 `SigningKeyResponse_Output` |
-| P1 | GET | `/v1/projects/{ref}/config/auth/signing-keys/legacy` | 200 `SigningKeyResponse_Output` |
-| P1 | POST | `/v1/projects/{ref}/config/auth/signing-keys/legacy` | 201 `SigningKeyResponse_Output` |
-| P1 | PATCH | `/v1/projects/{ref}/config/auth/signing-keys/{id}` | 200 `SigningKeyResponse_Output` |
-| P1 | DELETE | `/v1/projects/{ref}/config/auth/signing-keys/{id}` | 200 `SigningKeyResponse_Output` |
+| P1 | POST | `/v1/projects/{ref}/config/auth/signing-keys` | 501: signing keys are not supported |
+| P1 | GET | `/v1/projects/{ref}/config/auth/signing-keys/legacy` | 404: the legacy secret is not migrated to a signing key (Studio then offers "Change legacy JWT secret") |
+| P1 | POST | `/v1/projects/{ref}/config/auth/signing-keys/legacy` | 501: signing keys are not supported |
+| P1 | PATCH | `/v1/projects/{ref}/config/auth/signing-keys/{id}` | 501: signing keys are not supported |
+| P1 | DELETE | `/v1/projects/{ref}/config/auth/signing-keys/{id}` | 501: signing keys are not supported |
 | P1 | GET | `/v1/projects/{ref}/config/auth/third-party-auth` | 200 array of `ThirdPartyAuth_Output` |
 | P1 | POST | `/v1/projects/{ref}/config/auth/third-party-auth` | 201 `ThirdPartyAuth_Output` |
 | P1 | DELETE | `/v1/projects/{ref}/config/auth/third-party-auth/{tpa_id}` | 200 `ThirdPartyAuth_Output` |
@@ -202,6 +204,19 @@ The Security Advisor, the Performance Advisor, the advisor panel and the project
 - **Lints from the Auth settings.** Hosted adds a few findings computed from the project's configuration to the same answer; the CLI's recorded response of a new project (v2.120.0) holds `auth_db_connections_absolute` (INFO, `PERFORMANCE`, `metadata` `{"type": "auth", "entity": "Auth"}`) and no security finding, although `password_hibp_enabled` and every MFA method are off. Supavise reports `auth_db_connections_absolute` and `auth_otp_long_expiry`. It does not report `auth_leaked_password_protection` or `auth_insufficient_mfa_options`, because nothing recorded says what triggers them, nor the compliance lints of the spec's name list (`ssl_not_enforced`, `log_connections_not_enabled`, `network_restrictions_not_set`, `pitr_not_enabled` and the others; `internal/advisors/config.go` gives the reason for each). A new Supavise project starts at `mailer_otp_exp` 86400 and `db_max_pool_size` 5, where a new hosted project starts at 3600 and 10, so it also answers `auth_otp_long_expiry`.
 - **Health lints.** `POST /v2/projects/{ref}/advisors/run` asks for lints by name (1 to 10). `useProjectHealthLintsQuery` drops `project_not_active` and `advisor_check_unavailable` from what it shows, and so does the MCP server, which is how Supavise answers the checks it cannot run.
 - **Advisor Rules.** The "Disable Advisor rules" feature preview lists, creates, edits and deletes `notifications/advisor/exceptions`. Studio sends `{"lint_name": ..., "is_disabled": true}` with no member for a rule of the whole project, and reads `run-lints` again afterwards. A GET answers `{"exceptions": []}` when nothing is set; every field of a rule except `id`, `project_ref`, `is_disabled`, `last_updated_by` and `inserted_at` is null when unset.
+
+## Legacy JWT secret
+
+Project settings, JWT keys, Legacy JWT secret is Studio's page for the secret that signs the `anon` and `service_role` keys and the sessions GoTrue issues. It reads `GET /platform/projects/{ref}/config/postgrest` for the secret and `GET /v1/projects/{ref}/config/auth/signing-keys/legacy` to decide what to offer, and it changes the secret with `PATCH /platform/projects/{ref}/config/secrets`.
+
+| Call | What Studio does with it | What Supavise answers |
+|---|---|---|
+| `GET /v1/projects/{ref}/config/auth/signing-keys/legacy` | shows "Change legacy JWT secret" only when this call fails, and "Legacy JWT secret has been migrated to new JWT Signing Keys" when it succeeds | `404` for every project, as on a hosted project that has not migrated its secret. The spec-derived stub answered `200` with a made-up key, which hid the button |
+| `PATCH /platform/projects/{ref}/config/secrets` `{jwt_secret, change_tracking_id}` | "Generate a random secret" sends `ROLL`; "Create my own secret" sends the text, which the form limits to 32 characters or more without `@` or `$` | `200 {message}` once the change is done: the secret is applied (a random 40-character one for `ROLL`), the `anon` and `service_role` keys are signed again, GoTrue and PostgREST restart, the Realtime and Storage tenants and the Edge Functions follow. `400` for a secret under 32 characters, a first character of `@`, `{` or `[`, or control characters (`$` and `@` inside are accepted). `409` while the project is in a state that cannot restart, `500` with the previous secret restored when a step fails. Owners and Administrators only (`infra:Execute` on `queue_job.projects.update_jwt`, the check behind the button) |
+| `GET /platform/projects/{ref}/config/secrets/update-status` | polls every second while `status` is `0` (updating) and toasts the result when it turns to `1` or `2` | `{update_status: null}` until the first change since the API server started, then `{change_tracking_id, status, progress}`: `status` `1` and `progress` `5` when done, `2` with `error` `1`, `2` or `5` when the store, the restart or the tenant step failed. The change runs inside the `PATCH`, so the status is final by the time Studio asks, except for a request that arrives while the work is running |
+| `POST` and `PATCH`, `DELETE` under `/v1/projects/{ref}/config/auth/signing-keys` | "Migrate JWT secret", "Create a standby key", rotate, revoke | `501` with a message that points to the legacy secret. GoTrue here signs with the legacy secret only (HS256), so a signing key would be a record that nothing signs with |
+
+Not reproduced: hosted's 20-minute wait between two changes, and its "up to 2 minutes" of errors while the project restarts (here the restart takes seconds and requests that reach a unit during it fail).
 
 ## Read replicas
 
