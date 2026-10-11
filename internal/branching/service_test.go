@@ -37,9 +37,9 @@ func TestCreateSchemaOnlyReplaysMigrationsAndSeed(t *testing.T) {
 	if !strings.Contains(b.Detail, "3 migration(s)") || !strings.Contains(b.Detail, "seed") {
 		t.Fatalf("detail = %q", b.Detail)
 	}
-	// The default 7 day lifetime starts when the branch is ready.
-	if b.ExpiresAt == nil || !b.ExpiresAt.Equal(h.clock().Add(7*24*time.Hour)) {
-		t.Fatalf("expires at %v", b.ExpiresAt)
+	// Like a hosted branch, one made without a lifetime never expires: [branching] default_ttl is opt-in.
+	if b.ExpiresAt != nil {
+		t.Fatalf("expires at %v, want none by default", b.ExpiresAt)
 	}
 	req := h.eng.creates[0]
 	if req.Class != "micro" || req.Branch == nil || req.Branch.ParentRef != parentRef || req.Seed != nil || req.Name != "feature/login" {
@@ -541,8 +541,18 @@ func TestResetWithDataGetsNewCredentials(t *testing.T) {
 	}
 }
 
+// A node that sets [branching] default_ttl gives a branch that lifetime when it is ready, and a branch
+// made ephemeral again starts it over.
+func TestConfiguredLifetimeStartsWhenTheBranchIsReady(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.Branching.DefaultTTL = "7d" })
+	b := h.create("a", nil)
+	if b.ExpiresAt == nil || !b.ExpiresAt.Equal(h.clock().Add(7*24*time.Hour)) {
+		t.Fatalf("expires at %v", b.ExpiresAt)
+	}
+}
+
 func TestUpdate(t *testing.T) {
-	h := newHarness(t, nil)
+	h := newHarness(t, func(c *config.Config) { c.Branching.DefaultTTL = "7d" })
 	ctx := context.Background()
 	a := h.create("a", nil)
 	h.create("b", nil)

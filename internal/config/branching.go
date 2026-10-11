@@ -10,8 +10,23 @@ import (
 // Branching is the [branching] config section (docs/design.md section 9a).
 type Branching struct {
 	// DefaultTTL is how long a non-persistent branch lives before the sweeper deletes it:
-	// a Go duration ("36h") or whole days ("7d"). Empty means 7d; "0" or "off" never expires.
+	// a Go duration ("36h") or whole days ("7d"). Empty, "0" and "off" never expire, as on
+	// hosted: a branch made from the dashboard, the API, the CLI or MCP lives until it is
+	// deleted, and a branch tied to a pull request lives until the pull request closes. A
+	// node that wants a ceiling sets one here.
 	DefaultTTL string `toml:"default_ttl"`
+	// IdlePauseAfter is how long a non-persistent branch may go without an HTTP request to its
+	// API and without a database client before the node pauses it: a Go duration ("45m") or
+	// whole days. Empty means 30m; "0" and "off" never pause. The first request or database
+	// connection after a pause starts the branch again (docs/design.md section 9).
+	IdlePauseAfter string `toml:"idle_pause_after"`
+	// IdleWakeTimeoutSeconds bounds how long a request or a database connection waits for a
+	// branch that is waking up (0 means 60). A request that waits longer gets 503 with
+	// Retry-After; a database client reconnects.
+	IdleWakeTimeoutSeconds int `toml:"idle_wake_timeout_seconds"`
+	// ExpiryWarningHours is how long before a branch with a custom or vanity hostname expires
+	// the node raises branch.expiring and posts to the branch's notify_url (0 means 24).
+	ExpiryWarningHours int `toml:"expiry_warning_hours"`
 	// DefaultClass is the project class of a branch that does not ask for an instance size.
 	// Empty means "micro": branches are disposable and a node runs many of them.
 	DefaultClass string `toml:"default_class"`
@@ -44,7 +59,9 @@ type Branching struct {
 }
 
 const (
-	defaultBranchTTL      = 7 * 24 * time.Hour
+	defaultIdlePause      = 30 * time.Minute
+	defaultIdleWake       = 60 * time.Second
+	defaultExpiryWarning  = 24 * time.Hour
 	defaultMaxPerProject  = 10
 	defaultMaxBranches    = 50
 	defaultSweepInterval  = time.Minute
@@ -53,25 +70,54 @@ const (
 )
 
 // TTL returns the default lifetime of a non-persistent branch; ok is false when branches
-// do not expire by default.
+// do not expire by default (the default).
 func (b Branching) TTL() (d time.Duration, ok bool, err error) {
-	s := strings.ToLower(strings.TrimSpace(b.DefaultTTL))
+	return parseLifespan("default_ttl", b.DefaultTTL, 0)
+}
+
+// IdlePause returns how long a non-persistent branch may sit idle before it is paused; ok is false
+// when idle pause is off.
+func (b Branching) IdlePause() (d time.Duration, ok bool, err error) {
+	return parseLifespan("idle_pause_after", b.IdlePauseAfter, defaultIdlePause)
+}
+
+// IdleWakeTimeout is how long a request or a database connection waits for a branch to wake.
+func (b Branching) IdleWakeTimeout() time.Duration {
+	if b.IdleWakeTimeoutSeconds <= 0 {
+		return defaultIdleWake
+	}
+	return time.Duration(b.IdleWakeTimeoutSeconds) * time.Second
+}
+
+// ExpiryWarning is how long before the expiry of a branch with a hostname the warning goes out.
+func (b Branching) ExpiryWarning() time.Duration {
+	if b.ExpiryWarningHours <= 0 {
+		return defaultExpiryWarning
+	}
+	return time.Duration(b.ExpiryWarningHours) * time.Hour
+}
+
+// parseLifespan reads a duration setting: a Go duration, whole days ("7d"), or "0", "off" and
+// "never" for none. An empty value is def, and none when def is zero.
+func parseLifespan(key, v string, def time.Duration) (d time.Duration, ok bool, err error) {
+	s := strings.ToLower(strings.TrimSpace(v))
 	switch s {
 	case "":
-		return defaultBranchTTL, true, nil
+		return def, def > 0, nil
 	case "0", "off", "never":
 		return 0, false, nil
 	}
+	bad := fmt.Errorf("config: branching.%s %q: want a duration like 36h, whole days like 7d, or off", key, v)
 	if days, found := strings.CutSuffix(s, "d"); found {
 		n, perr := strconv.Atoi(days)
 		if perr != nil || n <= 0 {
-			return 0, false, fmt.Errorf("config: branching.default_ttl %q: want a duration like 36h, whole days like 7d, or off", b.DefaultTTL)
+			return 0, false, bad
 		}
 		return time.Duration(n) * 24 * time.Hour, true, nil
 	}
 	d, perr := time.ParseDuration(s)
 	if perr != nil || d <= 0 {
-		return 0, false, fmt.Errorf("config: branching.default_ttl %q: want a duration like 36h, whole days like 7d, or off", b.DefaultTTL)
+		return 0, false, bad
 	}
 	return d, true, nil
 }
@@ -124,6 +170,12 @@ func (b Branching) SoftDeleteGrace() time.Duration {
 func (b Branching) validate() error {
 	if _, _, err := b.TTL(); err != nil {
 		return err
+	}
+	if _, _, err := b.IdlePause(); err != nil {
+		return err
+	}
+	if b.IdleWakeTimeoutSeconds < 0 || b.ExpiryWarningHours < 0 {
+		return fmt.Errorf("config: branching.idle_wake_timeout_seconds and expiry_warning_hours must not be negative")
 	}
 	switch b.Clone {
 	case "", "auto", "backup":
