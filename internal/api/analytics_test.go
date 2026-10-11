@@ -278,3 +278,66 @@ func TestDeletingAProjectDropsItsUsage(t *testing.T) {
 		t.Errorf("the collector was told to forget %v", mx.refs)
 	}
 }
+
+// Reports' chart blocks pick daily metrics. The ones a node counts (requests by service) answer one point for
+// each UTC day; the others say there is no data, which Studio draws as an empty chart and not as zeros.
+func TestDailyStats(t *testing.T) {
+	now := time.Date(2026, 10, 10, 12, 30, 20, 0, time.UTC)
+	f, stats := usageFixture(t, now)
+	stats.Add(testRef, reqstats.Rest, now)
+	stats.Add(testRef, reqstats.Rest, now.Add(-time.Hour))
+	stats.Add(testRef, reqstats.Rest, now.Add(-26*time.Hour)) // yesterday
+	stats.Add(testRef, reqstats.Auth, now)
+	stats.Add(testRef, reqstats.Functions, now)
+	stats.Add("bbbbbbbbbbbbbbbbbbbb", reqstats.Rest, now) // another project
+	get := func(attr string) map[string]any {
+		t.Helper()
+		path := "/platform/projects/" + testRef + "/daily-stats?attribute=" + attr +
+			"&startDate=" + now.Add(-2*24*time.Hour).Format(time.RFC3339) + "&endDate=" + now.Format(time.RFC3339)
+		rec := f.do("GET", path, nil)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", attr, rec.Code, rec.Body)
+		}
+		if rec.Header().Get("X-Supavise-Stub") != "" {
+			t.Error("served by the stub")
+		}
+		return bodyMap(t, rec)
+	}
+	rest := get("total_rest_requests")
+	points := rest["data"].([]any)
+	if len(points) != 3 || rest["total"] != float64(3) || rest["yAxisLimit"] != float64(2) || rest["hasNoData"] != nil {
+		t.Fatalf("rest requests: %v", rest)
+	}
+	last := points[2].(map[string]any)
+	if last["period_start"] != "2026-10-10T00:00:00.000Z" || last["total_rest_requests"] != float64(2) {
+		t.Errorf("today's point: %v", last)
+	}
+	if first := points[1].(map[string]any); first["total_rest_requests"] != float64(1) {
+		t.Errorf("yesterday's point: %v", first)
+	}
+	if all := get("total_requests"); all["total"] != float64(5) {
+		t.Errorf("total_requests: %v", all["total"])
+	}
+	if fn := get("total_func_invocations"); fn["total"] != float64(1) {
+		t.Errorf("total_func_invocations: %v", fn["total"])
+	}
+	// A metric the node does not keep.
+	none := get("total_egress")
+	if none["hasNoData"] != true || len(none["data"].([]any)) != 0 {
+		t.Errorf("total_egress: %v", none)
+	}
+	// Bad input.
+	for _, q := range []string{"", "attribute=total_requests&startDate=yesterday&endDate=" + now.Format(time.RFC3339)} {
+		if rec := f.do("GET", "/platform/projects/"+testRef+"/daily-stats?"+q, nil); rec.Code != 400 {
+			t.Errorf("query %q: %d", q, rec.Code)
+		}
+	}
+	if rec := f.do("GET", "/platform/projects/bbbbbbbbbbbbbbbbbbbb/daily-stats?attribute=total_requests&startDate="+now.Add(-time.Hour).Format(time.RFC3339)+"&endDate="+now.Format(time.RFC3339), nil); rec.Code != 404 {
+		t.Errorf("an unknown project: %d", rec.Code)
+	}
+	// A server without a counter has no data.
+	f.srv.requests = nil
+	if got := get("total_requests"); got["hasNoData"] != true {
+		t.Errorf("without a counter: %v", got)
+	}
+}
