@@ -72,8 +72,13 @@ func (d *fakeSchemaDB) Record(_ context.Context, ref string, ms []Migration) ([]
 	var done []string
 	for _, m := range ms {
 		have := false
-		for _, x := range d.migs[ref] {
-			have = have || x.Version == m.Version
+		for i, x := range d.migs[ref] {
+			if x.Version == m.Version {
+				have = true
+				if m.Covered != "" {
+					d.migs[ref][i].Covered = m.Covered
+				}
+			}
 		}
 		if !have {
 			d.migs[ref] = append(d.migs[ref], m)
@@ -430,8 +435,9 @@ func TestResetKeepsFunctionsAndSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mustState(c.wait(b.Ref), registry.BranchFunctionsDeployed)
-	if got := c.fns.slugs(b.Ref); !reflect.DeepEqual(got, []string{"hello"}) || len(c.fns.applied) != before {
-		t.Fatalf("a reset touched the branch's functions: %v, applied %d -> %d", got, before, len(c.fns.applied))
+	// The functions are the same rows; the runtime is told once to serve them again.
+	if got := c.fns.slugs(b.Ref); !reflect.DeepEqual(got, []string{"hello"}) || len(c.fns.applied) != before+1 || c.fns.applied[before] != b.Ref {
+		t.Fatalf("a reset changed the branch's functions: %v, applied %v", got, c.fns.applied)
 	}
 	// The recreate asks for no settings: the branch keeps its own.
 	last := c.eng.creates[len(c.eng.creates)-1]

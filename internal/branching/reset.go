@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/supavise/supavise/internal/backup"
@@ -169,7 +170,14 @@ func (s *Service) resetHistory(ctx context.Context, b *Branch, parent *registry.
 	own, err := s.db.Migrations(ctx, b.Ref)
 	use := err == nil && len(own) > 0
 	pool := own
-	if !use {
+	if use {
+		// A diff recorded on the branch and not merged yet holds everything the branch changed, the
+		// migrations only the branch has included: replaying both would create their tables twice.
+		if pm, perr := s.db.Migrations(ctx, parent.Ref); perr == nil {
+			own = coverByRecordedDiff(own, pm)
+		}
+		pool = own
+	} else {
 		pool = nil
 		if version != "" && version != "0" {
 			if pool, err = s.db.Migrations(ctx, parent.Ref); err != nil {
@@ -191,4 +199,34 @@ func (s *Service) resetHistory(ctx context.Context, b *Branch, parent *registry.
 		}
 	}
 	return own, use, nil
+}
+
+// coverByRecordedDiff marks as covered the branch's own migrations (those the parent lacks) that are
+// older than a recorded schema diff of the branch (a branch_merge_* migration the parent lacks): that
+// diff was made from the branch's schema when it was recorded and holds their changes. The marked
+// ones are recorded when the history is replayed and not run; the diff runs.
+func coverByRecordedDiff(own, parent []Migration) []Migration {
+	have := make(map[string]bool, len(parent))
+	for _, m := range parent {
+		have[m.Version] = true
+	}
+	var only []Migration
+	for _, m := range own {
+		if !have[m.Version] {
+			only = append(only, m)
+		}
+	}
+	rec := recordedDiff(only)
+	if rec == nil {
+		return own
+	}
+	out := make([]Migration, len(own))
+	for i, m := range own {
+		if !have[m.Version] && m.Covered == "" && m.Version < rec.Version && m.Version != rec.Version &&
+			!strings.HasPrefix(m.Name, mergeMigrationPrefix) && !strings.HasPrefix(m.Name, pushMigrationPrefix) {
+			m.Covered = rec.Version
+		}
+		out[i] = m
+	}
+	return out
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/supavise/supavise/internal/branching/schemadiff"
@@ -71,7 +72,15 @@ func (s *Service) baselineFor(ctx context.Context, j *createJob) ([]Migration, e
 	if err != nil {
 		return nil, fmt.Errorf("read the roles of the branch: %w", err)
 	}
-	plan := schemadiff.Diff(nil, snap, schemadiff.Options{RoleExists: func(n string) bool { return roles[n] }})
+	// A policy or trigger on a table of a managed schema needs that table on the branch.
+	have, err := s.managedTables(ctx, sd, j.ref, snap)
+	if err != nil {
+		return nil, err
+	}
+	plan := schemadiff.Diff(nil, snap, schemadiff.Options{
+		RoleExists:  func(n string) bool { return roles[n] },
+		TableExists: func(key string) bool { return have[key] },
+	})
 	for _, u := range plan.Unsupported {
 		s.logRun(ctx, "not captured in the baseline: %s", u)
 	}
@@ -171,4 +180,39 @@ func (s *Service) recordBase(ctx context.Context, branchRef, source string) {
 		return
 	}
 	s.logRun(ctx, "recorded the schema base of the branch (%d objects)", len(snap.Objects))
+}
+
+// managedTables returns the keys of the tables and views, in the managed schemas the snapshot hangs
+// policies or triggers on, that exist on the project ref.
+func (s *Service) managedTables(ctx context.Context, sd SchemaDatabase, ref string, snap *schemadiff.Snapshot) (map[string]bool, error) {
+	idx := map[string]bool{}
+	for i := range snap.Objects {
+		idx[snap.Objects[i].Key] = true
+	}
+	schemas := map[string]bool{}
+	for i := range snap.Objects {
+		o := &snap.Objects[i]
+		if (o.Kind == schemadiff.KindPolicy || o.Kind == schemadiff.KindTrigger) && o.Parent != "" && !idx[o.Parent] {
+			if parts := strings.SplitN(o.Parent, "|", 3); len(parts) == 3 {
+				schemas[parts[1]] = true
+			}
+		}
+	}
+	have := map[string]bool{}
+	if len(schemas) == 0 {
+		return have, nil
+	}
+	list := make([]string, 0, len(schemas))
+	for n := range schemas {
+		list = append(list, n)
+	}
+	sort.Strings(list)
+	managed, err := sd.Snapshot(ctx, ref, schemadiff.ReadOptions{Schemas: list})
+	if err != nil {
+		return nil, fmt.Errorf("read the managed schemas of the branch: %w", err)
+	}
+	for i := range managed.Objects {
+		have[managed.Objects[i].Key] = true
+	}
+	return have, nil
 }

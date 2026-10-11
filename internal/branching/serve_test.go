@@ -7,7 +7,7 @@ package branching_test
 //	SUPAVISE_BRANCH_SERVE_FILE=$PWD/stack.json SUPAVISE_TEST_UNPACKED=~/.cache/sbctl/unpacked \
 //	  go test ./internal/branching -run TestServe -timeout 60m
 //
-// The file gets {api_url, pat, parent_ref, state_dir, config, notify_secret}; delete it to stop
+// The file gets {api_url, pat, parent_ref, state_dir, config, notify_secret, psql, parent_admin_dsn}; delete it to stop
 // everything. SUPAVISE_BRANCH_SERVE_PRIVATE_NOTIFY=1 lets a branch's notify_url point at loopback, for
 // a receiver the test script runs (tests/linux/branching/runs.sh).
 
@@ -33,6 +33,7 @@ import (
 	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/lifecycle"
+	"github.com/supavise/supavise/internal/members"
 	"github.com/supavise/supavise/internal/registry"
 	"github.com/supavise/supavise/internal/secrets"
 )
@@ -65,7 +66,13 @@ func TestServe(t *testing.T) {
 	if len(pgmeta) == 0 {
 		t.Fatal("no pgmeta artifact")
 	}
-	state, err := os.MkdirTemp("/tmp", "sbts")
+	// SUPAVISE_BRANCH_SERVE_STATE_DIR puts the node's files on a filesystem of the caller's choice (the
+	// XFS of branching-xfs.sh, where a branch with data is cloned with FICLONE).
+	stateParent := os.Getenv("SUPAVISE_BRANCH_SERVE_STATE_DIR")
+	if stateParent == "" {
+		stateParent = "/tmp"
+	}
+	state, err := os.MkdirTemp(stateParent, "sbts")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +86,9 @@ func TestServe(t *testing.T) {
 		t.Fatalf("go build: %v\n%s", err, b)
 	}
 
-	base := freeBase(t, 40)
+	// Room for about 30 projects (three ports each from base+2), then the API and pgmeta, so that a script
+	// that makes a dozen branches (tests/linux/branching/content.sh) does not run into them.
+	base := freeBase(t, 140)
 	cfg := config.Default()
 	cfg.StateDir = filepath.Join(state, "s")
 	cfg.KeyPath = filepath.Join(state, "master.key")
@@ -90,7 +99,7 @@ func TestServe(t *testing.T) {
 	cfg.Backup.Backend = "file://" + filepath.Join(state, "backups")
 	cfg.Backup.ArchiveTimeoutSeconds = 30
 	cfg.Ports.SystemPostgres, cfg.Ports.SystemGoTrue, cfg.Ports.ProjectBase = base, base+1, base+2
-	cfg.Ports.PGMeta = base + 36 // and +1 for its admin app
+	cfg.Ports.PGMeta = base + 132 // and +1 for its admin app
 	cfg.API.PGMetaCryptoKey = "serve-test-key"
 	cfg.Branching.SweepIntervalSeconds = 5
 	cfg.Branching.AllowPrivateNotifyURLs = os.Getenv("SUPAVISE_BRANCH_SERVE_PRIVATE_NOTIFY") != ""
@@ -141,7 +150,15 @@ func TestServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	bk.SetManager(n.Engine)
-	svc, err := branching.New(branching.Deps{Cfg: cfg, Registry: n.Registry, Secrets: n.Secrets, Engine: n.Engine, Backup: bk, CreateWait: 60 * time.Second})
+	// The API's store of Edge Functions, shared by the API and by branching, which copies a parent's
+	// functions into its branches (tests/linux/branching/content.sh reads them back over HTTP).
+	pg, ok := n.Registry.(*registry.Postgres)
+	if !ok {
+		t.Fatalf("the registry is %T, want Postgres", n.Registry)
+	}
+	fnStore := api.NewPGStore(pg.Pool())
+	svc, err := branching.New(branching.Deps{Cfg: cfg, Registry: n.Registry, Secrets: n.Secrets, Engine: n.Engine, Backup: bk, CreateWait: 60 * time.Second,
+		Functions: api.NewBranchFunctions(fnStore, n.Secrets)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,8 +185,11 @@ func TestServe(t *testing.T) {
 	}
 	c.Close(ctx)
 
-	srv := api.New(api.Deps{Registry: n.Registry, Secrets: n.Secrets, Manager: n.Engine, Config: cfg, Branching: svc, CreateWait: 30 * time.Second})
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", base+34))
+	srv, err := api.NewServer(api.Deps{Registry: n.Registry, Secrets: n.Secrets, Manager: n.Engine, Config: cfg, Branching: svc, CreateWait: 30 * time.Second, Store: fnStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", base+130))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,17 +197,32 @@ func TestServe(t *testing.T) {
 	go hs.Serve(ln) //nolint:errcheck
 	defer hs.Close()
 
+	// The token's user owns every organization, as the claimed first user of a node does: without a seat the
+	// API refuses SQL, migrations and function calls on the parent (tests/linux/branching/*.sh use them).
+	const serveUser = "11111111-2222-4333-8444-555555555555"
+	orgs, err := n.Registry.ListOrganizations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range orgs {
+		if err := srv.Members().EnsureOwner(ctx, members.OrgRef{ID: o.ID, Slug: o.Slug}, serveUser); err != nil {
+			t.Fatal(err)
+		}
+	}
 	pat := secrets.NewPAT()
-	if err := n.Registry.CreateAccessToken(ctx, &registry.AccessToken{UserID: "11111111-2222-4333-8444-555555555555", Name: "serve", Hash: secrets.HashToken(pat), Prefix: pat[:8]}); err != nil {
+	if err := n.Registry.CreateAccessToken(ctx, &registry.AccessToken{UserID: serveUser, Name: "serve", Hash: secrets.HashToken(pat), Prefix: pat[:8]}); err != nil {
 		t.Fatal(err)
 	}
 	notifySecret, err := svc.NotifySecret(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// For a script that has to change the parent as a superuser (ALTER SYSTEM) and to read a branch's data
+	// directory: a psql of the unpacked Postgres, and the parent's supabase_admin connection string.
+	adminDSN, _ := n.Engine.ConnString(ctx, parent.Ref, "supabase_admin")
 	info, _ := json.MarshalIndent(map[string]any{
 		"api_url": "http://" + ln.Addr().String(), "pat": pat, "parent_ref": parent.Ref, "state_dir": cfg.StateDir, "config": cfgPath,
-		"notify_secret": notifySecret,
+		"notify_secret": notifySecret, "psql": filepath.Join(arts[config.SvcPostgres], "bin", "psql"), "parent_admin_dsn": adminDSN,
 	}, "", "  ")
 	if err := os.WriteFile(out, info, 0o600); err != nil {
 		t.Fatal(err)

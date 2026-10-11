@@ -53,7 +53,9 @@ func newBranching(ctx context.Context, cfg *config.Config, n *lifecycle.Node) (*
 	}
 	deps := branching.Deps{Cfg: cfg, Registry: n.Registry, Secrets: n.Secrets, Engine: n.Engine, Backup: bk, Log: log}
 	if pg, ok := n.Registry.(*registry.Postgres); ok {
-		deps.Functions = api.FunctionDigests(api.NewPGStore(pg.Pool()))
+		// The carrier copies a parent's Edge Functions into a new branch and deploys a branch's to its parent;
+		// the running daemon's syncer serves the rows at its next reconcile.
+		deps.Functions = api.NewBranchFunctions(api.NewPGStore(pg.Pool()), n.Secrets)
 	}
 	return branching.New(deps)
 }
@@ -342,15 +344,15 @@ CLI and MCP server.`,
 		return s.Merge(ctx, ref, in)
 	})
 	merge.Flags().BoolVar(&force, "force", false, "merge despite divergence (versions that differ in content are skipped)")
-	reset := action("reset", "Recreate the branch from its parent (everything written to the branch is lost)", func(ctx context.Context, s *branching.Service, ref string, in branching.ActionInput) (string, error) {
+	reset := action("reset", "Recreate the branch's database from its own recorded migrations (tables, rows and changes made outside migrations are lost)", func(ctx context.Context, s *branching.Service, ref string, in branching.ActionInput) (string, error) {
 		return s.Reset(ctx, ref, in)
 	})
-	push := action("push", "Apply the parent's new migrations to the branch (rebase)", func(ctx context.Context, s *branching.Service, ref string, in branching.ActionInput) (string, error) {
+	push := action("push", "Bring the parent's new migrations, schema changes and Edge Functions into the branch (rebase)", func(ctx context.Context, s *branching.Service, ref string, in branching.ActionInput) (string, error) {
 		return s.Push(ctx, ref, in)
 	})
 	push.Flags().BoolVar(&force, "force", false, "push despite versions that differ in content (they are skipped)")
 
-	diff := run("diff <id-or-ref|name>", "Show the migrations a merge would apply", cobra.ExactArgs(1), func(ctx context.Context, cmd *cobra.Command, svc *branching.Service, a []string) error {
+	diff := run("diff <id-or-ref|name>", "Show what the branch changed in its schema, as SQL (nothing when it changed none)", cobra.ExactArgs(1), func(ctx context.Context, cmd *cobra.Command, svc *branching.Service, a []string) error {
 		b, err := selectBranch(ctx, svc, project, a[0])
 		if err != nil {
 			return err

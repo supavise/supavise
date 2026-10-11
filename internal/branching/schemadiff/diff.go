@@ -14,6 +14,12 @@ type Options struct {
 	// roles that do not exist (and is left out when none is left), and each is named in Result.Notes.
 	// The baseline of a branch uses it: custom roles are not copied to a new branch.
 	RoleExists func(name string) bool
+	// TableExists, when set, says whether a table or view that the snapshot being created does not hold
+	// (a table of a managed schema such as storage.objects, where a user added a policy or a trigger)
+	// exists on the target; key is the object key ("table|storage|objects"). A policy or trigger on one
+	// that does not is left out and named in Result.Notes: Storage, for one, may not have set up a new
+	// branch yet. The baseline of a branch uses it.
+	TableExists func(key string) bool
 	// KeepRemoved leaves out what the target has and the source lacks (no DROP, and no replacement
 	// that needs one). Without a stored base a branch cannot tell what it removed from what its
 	// parent added later, so the diff of such a branch carries additions and changes only.
@@ -561,6 +567,9 @@ func (d *differ) createSQL(o *Object) []string {
 		}
 		return []string{"CREATE MATERIALIZED VIEW " + o.Name + opts + " AS " + o.Def + " WITH DATA"}
 	case KindPolicy:
+		if d.missingTable(o) {
+			return nil
+		}
 		roles := d.policyRoles(o)
 		if roles == nil {
 			return nil
@@ -569,6 +578,9 @@ func (d *differ) createSQL(o *Object) []string {
 		c.List = roles
 		return []string{policyDDL(&c)}
 	case KindTrigger:
+		if d.missingTable(o) {
+			return nil
+		}
 		out := []string{o.Def}
 		if o.Attr["enabled"] == "D" {
 			out = append(out, "ALTER TABLE "+o.Attr["table"]+" DISABLE TRIGGER "+o.Name)
@@ -583,6 +595,15 @@ func (d *differ) createSQL(o *Object) []string {
 		return []string{o.Def}
 	}
 	return nil
+}
+
+// missingTable reports whether o hangs on a table the target lacks (and says so in the notes).
+func (d *differ) missingTable(o *Object) bool {
+	if d.opt.TableExists == nil || d.ti[o.Parent] != nil || d.opt.TableExists(o.Parent) {
+		return false
+	}
+	d.res.Notes = append(d.res.Notes, fmt.Sprintf("%s %s on %s was left out: the table does not exist here", o.Kind, o.Name, o.Attr["table"]))
+	return true
 }
 
 // policyRoles returns the roles a policy is created for, without those the target lacks. A policy
@@ -862,7 +883,17 @@ func (d *differ) columnAlters(f, t *Object) []string {
 		if b["coll"] != "" {
 			s += " COLLATE " + b["coll"]
 		}
+		// A default that cannot be cast to the new type makes the change fail: drop it for the
+		// change and set it again after.
+		dk := key(KindDefault, strings.Join(strings.Split(t.Key, "|")[1:], "|"))
+		def := d.ti[dk]
+		if def != nil && d.fi[dk] != nil {
+			out = append(out, pre+"DROP DEFAULT")
+		}
 		out = append(out, s+" USING "+t.Name+"::"+b["type"])
+		if def != nil && d.fi[dk] != nil {
+			out = append(out, pre+"SET DEFAULT "+def.Def)
+		}
 	}
 	if a["gen"] != b["gen"] || a["expr"] != b["expr"] {
 		switch {

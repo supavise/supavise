@@ -88,6 +88,20 @@ func (s *Service) carryAtCreate(ctx context.Context, parentRef, branchRef string
 	return nil
 }
 
+// serveKeptFunctions is the deploy step of a reset: the branch keeps its Edge Functions and secrets
+// (they live in the API's store, not in the cluster that was rebuilt), and the runtime is told to
+// serve them again now and not at its next reconcile, which dropped them while the cluster was gone.
+func (s *Service) serveKeptFunctions(ctx context.Context, branchRef string) error {
+	c := s.carrier()
+	if c == nil {
+		return nil
+	}
+	if err := c.Applied(ctx, branchRef); err != nil {
+		return fmt.Errorf("start the branch's Edge Functions: %w", err)
+	}
+	return nil
+}
+
 // pushFunctions brings the parent's Edge Functions into the branch: a function the parent has and the
 // branch lacks is added, and one both have in another form is overwritten with the parent's, unless
 // only the branch changed it. Functions only the branch has are left alone, and nothing is deleted

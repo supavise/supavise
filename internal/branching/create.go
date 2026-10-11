@@ -381,6 +381,8 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		if err := s.carryAtCreate(ctx, j.parent.Ref, j.ref, j.in.Secrets); err != nil {
 			return "", err
 		}
+	} else if err := s.serveKeptFunctions(ctx, j.ref); err != nil {
+		return "", err
 	}
 	payload := map[string]any{"branch": j.ref, "name": j.in.Name, "method": method, "with_data": j.in.WithData, "ms": s.now().Sub(started).Milliseconds()}
 	if stats != nil {

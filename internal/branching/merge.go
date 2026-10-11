@@ -147,11 +147,11 @@ func (s *Service) mergeHistory(ctx context.Context, b *Branch, parent *registry.
 		}
 		return nil
 	}
-	res, err := s.db.Apply(ctx, parent.Ref, apply, ApplyOptions{Atomic: true, LockTimeout: mergeLockTimeout, Verify: verify})
+	res, err := s.applyHistory(ctx, parent.Ref, apply, ApplyOptions{Atomic: true, LockTimeout: mergeLockTimeout, Verify: verify})
 	if err != nil {
 		return "", fmt.Errorf("apply to the parent (rolled back where the SQL allows): %w", err)
 	}
-	detail := fmt.Sprintf("merged %d migration(s) into %s: %s", res.Applied, parent.Ref, versions(apply))
+	detail := fmt.Sprintf("merged %d migration(s) into %s: %s", len(apply), parent.Ref, versions(apply))
 	if res.NonAtomic {
 		detail += " (not atomic: a statement cannot run inside a transaction)"
 	}
@@ -209,7 +209,10 @@ func (s *Service) mergeRecorded(ctx context.Context, b *Branch, parent *registry
 	if err != nil {
 		return "", fmt.Errorf("apply to the parent (rolled back where the SQL allows): %w", err)
 	}
-	// The branch's other migrations are part of what the diff ran: they only join the parent's history.
+	// The branch's other migrations are part of what the diff ran. They join the parent's history as
+	// covered by the diff (kept, not run again: a replay of the history would otherwise create their
+	// tables twice), and the branch's own rows are marked the same way, so that both histories hold the
+	// same migrations and either replays to the same schema.
 	var others []Migration
 	for _, m := range plan.Apply {
 		if m.Version != rec.Version {
@@ -217,8 +220,12 @@ func (s *Service) mergeRecorded(ctx context.Context, b *Branch, parent *registry
 		}
 	}
 	if len(others) > 0 {
-		if _, err := sd.Record(ctx, parent.Ref, others); err != nil {
+		covered := withCovered(others, rec.Version)
+		if _, err := sd.Record(ctx, parent.Ref, covered); err != nil {
 			return "", fmt.Errorf("record the branch's other migrations in the parent's history: %w", err)
+		}
+		if _, err := sd.Record(ctx, b.Ref, covered); err != nil {
+			return "", fmt.Errorf("mark the branch's other migrations as covered by the merged diff: %w", err)
 		}
 	}
 	s.syncBase(ctx, b, parent, "merge")
@@ -227,7 +234,7 @@ func (s *Service) mergeRecorded(ctx context.Context, b *Branch, parent *registry
 		detail += " (not atomic: a statement cannot run inside a transaction)"
 	}
 	if len(others) > 0 {
-		detail += fmt.Sprintf("; recorded %d other migration(s) of the branch in the parent's history without running them: %s", len(others), versions(others))
+		detail += fmt.Sprintf("; recorded %d other migration(s) of the branch in the parent's history without running them (the diff holds their changes): %s", len(others), versions(others))
 	}
 	return detail, nil
 }

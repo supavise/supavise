@@ -68,7 +68,7 @@ func (s *Service) doPush(ctx context.Context, b *Branch, parent *registry.Projec
 	}
 	var parts []string
 	if len(apply) > 0 {
-		if _, err := s.db.Apply(ctx, b.Ref, apply, ApplyOptions{Atomic: true}); err != nil {
+		if _, err := s.applyHistory(ctx, b.Ref, apply, ApplyOptions{Atomic: true}); err != nil {
 			return "", fmt.Errorf("apply to the branch: %w", err)
 		}
 		parts = append(parts, fmt.Sprintf("applied %d migration(s) from %s: %s", len(apply), parent.Ref, versions(apply)))
