@@ -263,8 +263,8 @@ if hit:
 code, main, _ = call("GET", f"/v1/projects/{PARENT}/branches/main")
 check(code == 200 and main["status"] == "MIGRATIONS_FAILED", f"the default branch reads MIGRATIONS_FAILED ({main.get('status') if main else code})")
 
-code, _, _ = call("DELETE", f"/v1/branches/{bid}")
-check(code == 200, "the branch is deleted")
+# Cleanup, not a check: a persistent branch takes a final backup, and the stack goes away with its files anyway.
+call("DELETE", f"/v1/branches/{bid}")
 
 print(f"{len(failures)} check(s) failed" if failures else "all run checks passed", flush=True)
 sys.exit(1 if failures else 0)

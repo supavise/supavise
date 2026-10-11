@@ -141,8 +141,8 @@ func (r *Postgres) SetBranchRunSteps(ctx context.Context, id string, changes []B
 			var name string
 			err := tx.QueryRow(ctx, `
 				update supavise.branch_run_steps
-				   set status     = case when $3 = '' then status else $3 end,
-				       log        = log || $4,
+				   set status     = case when $3::text = '' then status else $3::text end,
+				       log        = log || $4::text,
 				       updated_at = now()
 				 where run_id = $1::text::uuid and name = $2 and ($5::text[] is null or status = any($5::text[]))
 				returning name`, id, c.Name, c.Status, c.Log, only).Scan(&name)
@@ -200,6 +200,6 @@ func (r *Postgres) GetDefaultBranchGit(ctx context.Context, ref string) (string,
 func (r *Postgres) SetDefaultBranchGit(ctx context.Context, ref, gitBranch string) error {
 	return affected(r.pool.Exec(ctx, `
 		insert into supavise.default_branch_git (ref, git_branch)
-		select ref, $2 from supavise.projects where ref = $1
+		select ref, $2::text from supavise.projects where ref = $1
 		on conflict (ref) do update set git_branch = excluded.git_branch, updated_at = now()`, ref, gitBranch))
 }
