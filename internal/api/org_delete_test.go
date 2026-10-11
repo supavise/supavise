@@ -150,7 +150,7 @@ func TestDeleteOrganizationStopsAtAProjectAndFinishesOnRetry(t *testing.T) {
 	rf.srv.mgr = fd
 
 	rf.status(201, "owner", "POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "feat"})
-	rf.waitBranch(t, "feat", "MIGRATIONS_PASSED")
+	rf.waitBranch(t, "feat", "FUNCTIONS_DEPLOYED")
 	var branchRef string
 	ps, _ := rf.reg.ListProjects(ctx)
 	for _, p := range ps {
