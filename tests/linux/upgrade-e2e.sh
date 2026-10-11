@@ -244,9 +244,12 @@ intact() { # REF: rows, the user (same id), REST, a healthy project
 # the role the SQL editor and migrations create tables as; rest_code reads a table through the proxy;
 # default_grants counts the default privileges of public for role postgres that still give the three roles
 # access to new tables, sequences and functions.
-dbq() { # REF SQL
-  papi POST "/v1/projects/$1/database/query" -H 'Content-Type: application/json' \
-    -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$2")"
+dbq() { # REF SQL: the answer's body on stdout; returns 1, with the answer in the log, unless the API says 201
+  local code
+  code=$(papi POST "/v1/projects/$1/database/query" -H 'Content-Type: application/json' -o "$WORK/dbq.body" -w '%{http_code}' \
+    -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$2")") || { log "database/query on $1: no answer"; return 1; }
+  cat "$WORK/dbq.body"
+  [[ $code == 201 ]] || { log "database/query on $1 answered $code: $(head -c 500 "$WORK/dbq.body")"; return 1; }
 }
 rest_code() { # REF KEY TABLE: the status of a read through the proxy; the body is left in $WORK/rest.body
   curl -s -o "$WORK/rest.body" -w '%{http_code}' -m 30 -H "Host: $1.api.$BASE" -H "apikey: $2" "http://127.0.0.1/rest/v1/$3?select=id" || true

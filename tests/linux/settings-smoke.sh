@@ -190,7 +190,12 @@ must 200 PATCH "$CFG/config/auth" '{"disable_signup":true}'
 # until it is granted. The project above was created by `supavise projects create` with no flag. A project
 # created with data_api_revoke_default_privileges: false keeps the grants new tables used to get.
 log "data api: a table created without a grant is refused with 42501, a grant opens it"
-dbq() { api POST "$1/database/query" -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$2")"; }
+dbq() { # CFG SQL: the answer's body on stdout; returns 1, with the answer in the log, unless the API says 201
+  local code
+  code=$(api POST "$1/database/query" -o "$WORK/dbq.body" -w '%{http_code}' -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$2")") || { log "database/query on $1: no answer"; return 1; }
+  cat "$WORK/dbq.body"
+  [[ $code == 201 ]] || { log "database/query on $1 answered $code: $(head -c 500 "$WORK/dbq.body")"; return 1; }
+}
 # rest_body HOST KEY TABLE: the body of a read of TABLE through the proxy, once PostgREST knows the table.
 rest_body() {
   local host=$1 key=$2 table=$3 b="" n
