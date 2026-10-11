@@ -148,6 +148,8 @@ If you want your app to keep the `anon` and `service_role` keys it holds, create
 curl -fsS -H "Authorization: Bearer $OLD_TOKEN" "$OLD_API/v1/projects/$OLD_REF/postgrest" | jq -r .jwt_secret > jwt-secret.txt
 ```
 
+A project that exists already takes the secret in the dashboard: **Project settings**, **JWT keys**, **Legacy JWT secret**, **Change legacy JWT secret**, **Create my own secret**. The node signs the `anon` and `service_role` keys again with it, so the hosted keys then work only if the project's ref is the hosted one.
+
 If the hosted project has revoked its legacy secret, there is nothing to copy. Create the project without the three key flags below: the node then generates new keys, and your app needs them.
 
 To keep the keys byte for byte, save the two legacy keys in files as well (**Project settings**, **API keys**, **Legacy API keys**, or the API):
