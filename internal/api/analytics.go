@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	plat "github.com/supavise/supavise/internal/api/gen/platform"
+	"github.com/supavise/supavise/internal/registry"
 	"github.com/supavise/supavise/internal/reqstats"
 )
 
@@ -58,7 +60,7 @@ func (s *Server) logsUnavailable(w http.ResponseWriter, r *http.Request) error {
 	}
 	var out plat.AnalyticsResponseOutput
 	var e plat.AnalyticsResponseOutput_Error
-	if err := e.FromAnalyticsResponseOutputError0(logsUnavailableMessage(p.Ref)); err != nil {
+	if err := e.FromAnalyticsResponseOutputError0(logsUnavailableMessage(p.Ref, s.logsHost(r.Context(), p))); err != nil {
 		return err
 	}
 	result := []interface{}{}
@@ -67,9 +69,37 @@ func (s *Server) logsUnavailable(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func logsUnavailableMessage(ref string) string {
+func logsUnavailableMessage(ref, host string) string {
 	return "Supavise does not collect logs for the dashboard, so there is nothing to query here. " +
-		"On the server, run `supavise logs " + ref + "` to read this project's service logs."
+		host + ", run `supavise logs " + ref + "` to read this project's service logs."
+}
+
+// logsHost says where `supavise logs` finds a project's journal: on the node that hosts the project,
+// because a node's journal holds the units that run there. With one server that is "the server"; on
+// a cluster the text names the project's node so that an operator does not run the command on the
+// leader and read "no log lines" for a project that lives on a follower.
+func (s *Server) logsHost(ctx context.Context, p *registry.Project) string {
+	nodes, err := s.reg.ListNodes(ctx)
+	if err != nil {
+		return "On the server that hosts this project"
+	}
+	active := 0
+	name := ""
+	for _, n := range nodes {
+		if n.State != registry.NodeLeft {
+			active++
+		}
+		if n.ID == p.NodeID {
+			name = n.Name
+		}
+	}
+	switch {
+	case active < 2:
+		return "On the server"
+	case name != "":
+		return "On the server that hosts this project (node " + name + ")"
+	}
+	return "On the server that hosts this project"
 }
 
 // intervals are the values of the "interval" parameter of usage.api-counts (both specs) with the

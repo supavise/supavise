@@ -9,6 +9,7 @@ import (
 
 	plat "github.com/supavise/supavise/internal/api/gen/platform"
 	v1 "github.com/supavise/supavise/internal/api/gen/v1"
+	"github.com/supavise/supavise/internal/registry"
 	"github.com/supavise/supavise/internal/reqstats"
 )
 
@@ -198,5 +199,45 @@ func TestUsageEndpointsWithoutACounter(t *testing.T) {
 		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.Error == nil || out.Result == nil || len(*out.Result) != 0 {
 			t.Errorf("%s: %d %s, want an empty result and an error", name, rec.Code, rec.Body)
 		}
+	}
+}
+
+// The log message says where `supavise logs` reads the journal. With one server that is "the
+// server"; once a second node exists it names the node that hosts the project, so an operator who
+// is on the leader does not conclude that a follower's project writes no logs.
+func TestLogsMessageNamesTheProjectsNodeOnACluster(t *testing.T) {
+	f := newFixture(t)
+	errorOf := func(path string) string {
+		t.Helper()
+		rec := f.do("GET", path, nil)
+		var out plat.AnalyticsResponseOutput
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Error == nil {
+			t.Fatalf("%s: %d %s", path, rec.Code, rec.Body)
+		}
+		msg, err := out.Error.AsAnalyticsResponseOutputError0()
+		if err != nil {
+			t.Fatalf("%s: error is not a string: %s", path, rec.Body)
+		}
+		return msg
+	}
+	const logs = "/platform/projects/" + testRef + "/analytics/endpoints/logs.all"
+	if m := errorOf(logs); !strings.Contains(m, "On the server, run `supavise logs "+testRef+"`") || strings.Contains(m, "node ") {
+		t.Errorf("one server: %q, want %q and no node", m, "On the server, run `supavise logs "+testRef+"`")
+	}
+
+	n2 := f.addNode(t, "east", "eu-west-1", "east.example.com", registry.NodeActive)
+	cl, err := f.reg.GetCluster(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.reg.SetProjectNode(t.Context(), testRef, n2, cl.Epoch); err != nil {
+		t.Fatal(err)
+	}
+	if m := errorOf(logs); !strings.Contains(m, "On the server that hosts this project (node east), run `supavise logs "+testRef+"`") {
+		t.Errorf("two servers: %q, want the project's node named", m)
+	}
+	rec := f.do("GET", "/platform/projects/"+testRef+"/analytics/endpoints/auth.metrics", nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "On the server that hosts this project (node east), run `supavise logs "+testRef+" --service auth`") {
+		t.Errorf("auth.metrics on a cluster: %d %s, want the node named", rec.Code, rec.Body)
 	}
 }
