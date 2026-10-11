@@ -983,8 +983,8 @@ func TestOAuthLogsHaveNoSecrets(t *testing.T) {
 
 // ---- route table, switch and CORS ------------------------------------------------------------
 
-// O6: the routes that take no credential are the device-login poll and the four OAuth endpoints a
-// client calls before it has a token.
+// O6: the routes that take no credential are the device-login poll, the four OAuth endpoints a
+// client calls before it has a token, and the dashboard's flag document.
 func TestOnlyExpectedRoutesAreAuthNone(t *testing.T) {
 	want := map[string]bool{
 		"GET /platform/cli/login/{session_id}": true,
@@ -992,6 +992,8 @@ func TestOnlyExpectedRoutesAreAuthNone(t *testing.T) {
 		"GET /v1/oauth/authorize":              true,
 		"POST /v1/oauth/token":                 true,
 		"POST /v1/oauth/revoke":                true,
+		// Studio's flag client reads this before and without a session (configcat.go).
+		"GET " + configCatPath: true,
 	}
 	f := newFixture(t)
 	impl := f.srv.implemented()
