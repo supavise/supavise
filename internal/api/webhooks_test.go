@@ -87,19 +87,17 @@ func TestEnableWebhooksErrors(t *testing.T) {
 }
 
 // The embedded script stays safe to run twice and keeps the artifact's pg_net grants: a
-// re-vendored copy of upstream's file would fail these.
+// re-vendored copy of upstream's file would fail these. (The schema and the migrations table are
+// created inside checks, which the next test holds in place.)
 func TestWebhooksScriptIsRerunnable(t *testing.T) {
 	sql := webhooksSQL
 	for _, c := range []struct{ name, re string }{
-		{"schema", `(?i)create schema supabase_functions`},
-		{"migrations table", `(?i)create table supabase_functions\.migrations`},
 		{"hooks table", `(?i)create table supabase_functions\.hooks`},
 		{"request id index", `(?i)create index supabase_functions_hooks`},
 		{"function", `(?i)create function supabase_functions\.http_request`},
-		{"migration row", `(?i)insert into supabase_functions\.migrations \(version\) values \('[^']+'\);`},
 	} {
 		if regexp.MustCompile(c.re).MatchString(sql) {
-			t.Errorf("%s: the script creates it without IF NOT EXISTS, OR REPLACE or ON CONFLICT", c.name)
+			t.Errorf("%s: the script creates it without IF NOT EXISTS, OR REPLACE or a check for an existing object", c.name)
 		}
 	}
 	// The artifact's migrations own these (postgres artifact, migration 20250220051611_pg_net_perms_fix).
@@ -116,5 +114,81 @@ func TestWebhooksScriptIsRerunnable(t *testing.T) {
 	}
 	if !strings.Contains(sql, "Apache-2.0") || !strings.Contains(sql, "8617532ae1a41571d5d557cd24c6f5f2565d9230") {
 		t.Error("the script lost its provenance header")
+	}
+}
+
+// The script runs as a superuser on a database whose project member (the postgres role) can create
+// a schema, a table with a trigger, a column default or a role before Enable is called, and, once
+// the first run has granted privileges on the schema's tables, can add a trigger to them. These
+// checks hold the rule that nothing the script runs executes code the project wrote:
+//   - it refuses a supabase_functions schema that supabase_admin does not own, before it changes it;
+//   - it inserts rows only into the migrations table that the same run has just created;
+//   - it never reassigns or drops what a role owns (upstream's cleanup of supabase_pg_net_admin
+//     would hand the superuser a SECURITY DEFINER function the project made).
+//
+// The behavior (a trigger on supabase_functions.migrations that stays silent, a refused schema) is
+// checked against a real Postgres in tests/linux/roles-smoke.sh.
+func TestWebhooksScriptRunsNoCodeAProjectWrote(t *testing.T) {
+	sql := webhooksSQL
+	body := sql[strings.Index(sql, "BEGIN;"):] // the header's prose is not SQL
+	at := func(re string) int {
+		t.Helper()
+		loc := regexp.MustCompile(re).FindStringIndex(body)
+		if loc == nil {
+			t.Fatalf("the script has no %s", re)
+		}
+		return loc[0]
+	}
+
+	// 1. The schema check comes before anything touches the schema, and the CREATE inside it is plain.
+	owner := at(`schema_owner <> 'supabase_admin'`)
+	raise := at(`RAISE EXCEPTION 'The schema supabase_functions already exists`)
+	create := at(`CREATE SCHEMA supabase_functions AUTHORIZATION supabase_admin;`)
+	if create > owner {
+		t.Error("the owner check comes before the schema is created: a schema made in between would be taken over")
+	}
+	for _, re := range []string{`GRANT\s+USAGE\s+ON\s+SCHEMA\s+supabase_functions`, `ALTER\s+DEFAULT\s+PRIVILEGES\s+IN\s+SCHEMA\s+supabase_functions`, `CREATE\s+TABLE`, `GRANT\s+ALL\s+PRIVILEGES`} {
+		if first := at(re); first < raise {
+			t.Errorf("%s runs before the check of the schema's owner", re)
+		}
+	}
+
+	// 2. Every INSERT into a table of the schema is either the migrations rows inside the branch that
+	// creates the table, or the body of http_request(), which runs as supabase_functions_admin for a
+	// trigger the project created.
+	inserts := regexp.MustCompile(`(?i)\binsert\s+into\s+([a-z_.]+)`).FindAllStringSubmatchIndex(body, -1)
+	if len(inserts) != 2 {
+		t.Fatalf("the script has %d INSERT statements, want 2 (the migrations rows and the hook record in http_request)", len(inserts))
+	}
+	for _, m := range inserts {
+		target, pos := body[m[2]:m[3]], m[0]
+		switch target {
+		case "supabase_functions.migrations":
+			guard := strings.LastIndex(body[:pos], "IF to_regclass('supabase_functions.migrations') IS NULL THEN")
+			created := strings.LastIndex(body[:pos], "CREATE TABLE supabase_functions.migrations")
+			if guard < 0 || created < guard || strings.Contains(body[created:pos], "END IF") {
+				t.Error("the migrations rows are not inserted inside the branch that creates the table")
+			}
+			if tail := body[pos:]; !strings.HasPrefix(tail[strings.Index(tail, ";")+1:], "\n    END IF;") {
+				t.Error("the migrations insert is followed by more statements before END IF")
+			}
+		case "supabase_functions.hooks":
+			fn, end := strings.Index(body, "CREATE OR REPLACE FUNCTION supabase_functions.http_request()"), strings.Index(body, "$function$;")
+			if pos < fn || pos > end {
+				t.Error("an INSERT into supabase_functions.hooks outside of http_request()")
+			}
+		default:
+			t.Errorf("INSERT INTO %s", target)
+		}
+	}
+
+	// 3. No statement that rewrites what other roles own, deletes, or runs a project's code on purpose.
+	for _, re := range []string{
+		`(?i)\breassign\s+owned\b`, `(?i)\bdrop\s+owned\b`, `(?i)\bdrop\s+(role|user|schema|table|function|trigger)\b`,
+		`(?i)\b(update|delete)\s+(from\s+)?supabase_functions`, `(?i)\btruncate\b`, `(?i)\bcopy\b`, `(?i)\bperform\b`, `(?i)\bexecute\b\s+(format|'|\$)`,
+	} {
+		if m := regexp.MustCompile(re).FindString(body); m != "" {
+			t.Errorf("the script has %q", m)
+		}
 	}
 }
