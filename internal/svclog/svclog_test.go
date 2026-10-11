@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -141,11 +142,31 @@ func (f *fakeJournal) Start(ctx context.Context, args []string) (io.ReadCloser, 
 			return fakeProc{Reader: pr, err: err}, nil
 		}
 	}
+	all := false
+	for _, a := range args {
+		all = all || a == "--all"
+	}
 	var b bytes.Buffer
 	for _, e := range f.history[unit] {
-		_ = json.NewEncoder(&b).Encode(e)
+		_ = json.NewEncoder(&b).Encode(asJournalctl(e, all))
 	}
 	return fakeProc{Reader: &b, err: err}, nil
+}
+
+// asJournalctl is what `journalctl -o json` prints for entry e: without --all, a field of 4096
+// bytes or more is null (systemd's JSON_THRESHOLD in logs-show.c, the same in v255 and v257).
+func asJournalctl(e map[string]any, all bool) map[string]any {
+	if all {
+		return e
+	}
+	out := map[string]any{}
+	for k, v := range e {
+		if s, ok := v.(string); ok && len(s) >= 4096 {
+			v = nil
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func entry1(ts time.Time, cursor string, msg any) map[string]any {
@@ -201,8 +222,8 @@ func TestRunMergesByTimeAndKeepsTheProjectsLines(t *testing.T) {
 	for _, c := range j.calls {
 		a := strings.Join(c, " ")
 		shared := !strings.Contains(c[1], "@")
-		if !strings.Contains(a, "-o json") || !strings.Contains(a, "-n 5") || !strings.Contains(a, "--no-pager") {
-			t.Errorf("call %q lacks -o json, -n 5 or --no-pager", a)
+		if !strings.Contains(a, "-o json") || !strings.Contains(a, "-n 5") || !strings.Contains(a, "--no-pager") || !strings.Contains(a, "--all") {
+			t.Errorf("call %q lacks -o json, -n 5, --no-pager or --all", a)
 		}
 		if strings.Contains(a, "--grep "+ref) != shared {
 			t.Errorf("call %q: --grep present = %v, want %v", a, strings.Contains(a, "--grep"), shared)
@@ -243,7 +264,7 @@ func TestRunSaysWhenThereAreNoLines(t *testing.T) {
 	if err := Run(context.Background(), Options{Ref: ref, Service: "auth", Lines: 10, Since: "5m", Out: &out, Err: &errb, Journal: newFakeJournal(), Now: func() time.Time { return base }}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"no log lines for " + ref + " since 5m", "supavise projects list", "run the command with sudo"} {
+	for _, want := range []string{"no log lines for " + ref + " since 5m", "supavise projects list", "run the command on the server that hosts the project", "run the command with sudo"} {
 		if !strings.Contains(errb.String(), want) {
 			t.Errorf("stderr %q lacks %q", errb.String(), want)
 		}
@@ -329,6 +350,29 @@ func TestRunFollowsAndPrintsALineOnce(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(follow, " "), "-n 0") {
 		t.Errorf("follow call = %v, want -n 0 so that it starts at the end", follow)
+	}
+	if !slices.Contains(follow, "--all") {
+		t.Errorf("follow call = %v, want --all so that a long line is not cut to null", follow)
+	}
+}
+
+// journalctl -o json prints a field of 4096 bytes or more as null unless it gets --all. A long
+// statement in the Postgres log, or a long JSON line of a shared service, has to come out whole: as
+// an empty message it would show nothing, and for a shared unit it would not match the ref.
+func TestRunShowsLinesOfMoreThan4096Bytes(t *testing.T) {
+	j := newFakeJournal()
+	long := strings.Repeat("x", 5000)
+	j.history["supavise-postgres@"+ref+".service"] = []map[string]any{entry1(base, "p1", "STATEMENT:  select '"+long+"'")}
+	j.history["supavise-storage.service"] = []map[string]any{entry1(base.Add(time.Second), "s1", `{"tenant":"`+ref+`","body":"`+long+`"}`)}
+	var out bytes.Buffer
+	err := Run(context.Background(), Options{Ref: ref, Lines: 10, Out: &out, Err: io.Discard, Journal: j, Now: func() time.Time { return base }, Root: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"postgres  STATEMENT:  select '" + long + "'", "storage   {\"tenant\":\"" + ref + "\",\"body\":\"" + long + "\"}"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks the long line %.60q...", want)
+		}
 	}
 }
 
