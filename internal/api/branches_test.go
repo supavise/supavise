@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/supavise/supavise/internal/branching"
+	"github.com/supavise/supavise/internal/branching/schemadiff"
 	"github.com/supavise/supavise/internal/lifecycle"
 	"github.com/supavise/supavise/internal/registry"
 )
@@ -29,10 +30,12 @@ type fakeBranchDB struct {
 	migs map[string][]branching.Migration
 	// applyErr makes Apply to that project fail.
 	applyErr map[string]error
+	// snaps are the schemas the fake database reads (branches_content_test.go).
+	snaps map[string]*schemadiff.Snapshot
 }
 
 func newFakeBranchDB() *fakeBranchDB {
-	return &fakeBranchDB{migs: map[string][]branching.Migration{}, applyErr: map[string]error{}}
+	return &fakeBranchDB{migs: map[string][]branching.Migration{}, applyErr: map[string]error{}, snaps: map[string]*schemadiff.Snapshot{}}
 }
 
 func (d *fakeBranchDB) Migrations(_ context.Context, ref string) ([]branching.Migration, error) {
@@ -173,9 +176,10 @@ func TestBranches(t *testing.T) {
 		t.Fatalf("merge of the default branch: %d %s", rec.Code, rec.Body)
 	}
 
+	// Nothing differs: the body is empty, which Studio shows as "No changes detected".
 	rec = f.do("GET", "/v1/branches/"+id+"/diff", nil)
-	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/plain") || !strings.Contains(rec.Body.String(), "nothing to merge") {
-		t.Fatalf("diff: %d %q %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/plain") || rec.Body.Len() != 0 {
+		t.Fatalf("diff: %d %q %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
 	}
 
 	// Soft delete and restore, then delete for real.
