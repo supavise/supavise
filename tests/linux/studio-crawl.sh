@@ -93,7 +93,9 @@ install_binary
 setup_node
 
 # ---- the node ----------------------------------------------------------------------------------------------------------
-# idle auto-pause is set only for a build that knows the setting; an unknown key would be read as a typo by a later build
+# idle auto-pause is set only for a build that knows the setting; an unknown key would be read as a typo by a later build.
+# With it on, every branch the crawl makes is persistent (exempt from idle pause) except the idle fixture itself and the two
+# that are paused by design: seeding and the probes leave a branch alone for minutes. See awake() in crawl/node.mjs.
 IDLE_PAUSE=0
 if grep -qa 'idle_pause_after' /usr/local/bin/supavise; then IDLE_PAUSE=1; fi
 cat >>"$SUPAVISE_CONF" <<CONF

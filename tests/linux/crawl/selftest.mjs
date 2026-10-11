@@ -13,7 +13,7 @@ import {
   Allowlist, DOM_ORACLES, domFindings, expandRoutes, failures, fillRoute, globRegExp, guardVerdict, hostKind, isReadOnlySQL,
   judgeResponse, noiseMatch, opRegExp, pagesOf, readJSON, routeParams, safeToClick, stateVisits, summaryMarkdown,
 } from './lib.mjs'
-import { Node, redact, totp, waitFor } from './node.mjs'
+import { awake, createBranch, Node, redact, Stop, totp, waitBranch, waitFor } from './node.mjs'
 import { REF, startStandin } from './standin.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -364,4 +364,85 @@ test('changes.sh tells which parts a push touched, and runs on main whatever it 
   assert.deepEqual(run({ GITHUB_REF: 'refs/heads/main', EVENT_BEFORE: git('rev-parse', 'HEAD') }), { studio: 'false', api: 'false', always: 'true', run: 'true' })
   assert.equal(run({ GITHUB_EVENT_NAME: 'schedule', GITHUB_REF: 'refs/heads/main' }).run, 'true')
   assert.equal(run({ GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/ws/x', EVENT_BEFORE: '' }).always, 'true')
+})
+
+// A node that answers like the real one for the calls a branch's create makes: the run state under the parent's route and the
+// status of the branch's project under /v1/branches/{id} and /platform/projects/{ref} (never MIGRATIONS_PASSED there).
+async function fakeBranchNode(runStates, cfgExtra = {}) {
+  const seen = { paths: [], created: null }
+  const states = [...runStates]
+  const server = http.createServer((req, res) => {
+    const chunks = []
+    req.on('data', (c) => chunks.push(c))
+    req.on('end', () => {
+      seen.paths.push(`${req.method} ${req.url}`)
+      const send = (code, body) => {
+        res.writeHead(code, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(body))
+      }
+      if (req.method === 'POST' && req.url === '/auth/v1/token?grant_type=password') return send(200, { access_token: 'jwt' })
+      if (req.method === 'POST' && req.url === '/v1/projects/parentref/branches') {
+        seen.created = JSON.parse(Buffer.concat(chunks).toString() || '{}')
+        return send(201, { id: 'branch-id', project_ref: 'branchref' })
+      }
+      if (req.method === 'GET' && req.url === '/v1/projects/parentref/branches/feat%2Fone') return send(200, { status: states.length > 1 ? states.shift() : states[0] })
+      if (req.method === 'GET' && req.url === '/v1/branches/branch-id') return send(200, { status: 'ACTIVE_HEALTHY' })
+      if (req.method === 'GET' && req.url === '/platform/projects/branchref') return send(200, { status: seen.paths.filter((p) => p.startsWith('GET /platform/projects/')).length > 1 ? 'ACTIVE_HEALTHY' : 'COMING_UP' })
+      send(404, { message: `unexpected ${req.method} ${req.url}` })
+    })
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const node = new Node({ domain: 'x.test', proxy: { host: '127.0.0.1', port: server.address().port }, owner: { email: 'o@x.test', password: 'p' }, owner_pat: 'sbp_testtoken', ...cfgExtra })
+  return { node, seen, close: () => server.close() }
+}
+
+test('waitBranch reads the create run under the parent and then the status of the branch project', async () => {
+  const f = await fakeBranchNode(['CREATING_PROJECT', 'RUNNING_MIGRATIONS', 'MIGRATIONS_PASSED'])
+  try {
+    await waitBranch(f.node, { id: 'branch-id', ref: 'branchref', name: 'feat/one', parent: 'parentref' }, { every: 5 })
+    assert.ok(f.seen.paths.includes('GET /v1/projects/parentref/branches/feat%2Fone'))
+    assert.ok(!f.seen.paths.includes('GET /v1/branches/branch-id'), 'the run state is not the status of GET /v1/branches/{id}')
+    assert.ok(f.seen.paths.filter((p) => p === 'GET /platform/projects/branchref').length >= 2, 'it waits for ACTIVE_HEALTHY')
+  } finally {
+    f.close()
+  }
+})
+
+test('waitBranch stops at once on a failed run', async () => {
+  const f = await fakeBranchNode(['RUNNING_MIGRATIONS', 'MIGRATIONS_FAILED'])
+  const t0 = Date.now()
+  try {
+    await assert.rejects(waitBranch(f.node, { id: 'branch-id', ref: 'branchref', name: 'feat/one', parent: 'parentref' }, { every: 5, runTimeout: 30_000 }), (e) => e instanceof Stop && /MIGRATIONS_FAILED/.test(e.message))
+    assert.ok(Date.now() - t0 < 5000, 'a failed run is not polled until the timeout')
+  } finally {
+    f.close()
+  }
+})
+
+test('waitFor retries an error of the poll and stops on a Stop', async () => {
+  let n = 0
+  assert.equal(await waitFor('x', async () => { if (++n < 3) throw new Error('502'); return 'up' }, { timeout: 5000, every: 5 }), 'up')
+  await assert.rejects(waitFor('x', async () => { throw new Stop('no') }, { timeout: 5000, every: 5 }), /^Error: no$|no/)
+})
+
+test('branches are persistent (exempt from idle pause) only on a node that idle-pauses, and a fixture can opt out', async () => {
+  assert.deepEqual(awake({}), {})
+  assert.deepEqual(awake({ idle_pause: false }), {})
+  assert.deepEqual(awake({ idle_pause: true }), { persistent: true })
+  const f = await fakeBranchNode(['MIGRATIONS_PASSED'], { idle_pause: true })
+  try {
+    await createBranch(f.node, 'parentref', 'feat/one', {}, { every: 5 })
+    assert.deepEqual(f.seen.created, { branch_name: 'feat/one', persistent: true })
+    await createBranch(f.node, 'parentref', 'feat/one', { persistent: false }, { every: 5 })
+    assert.deepEqual(f.seen.created, { branch_name: 'feat/one', persistent: false })
+  } finally {
+    f.close()
+  }
+  const g = await fakeBranchNode(['MIGRATIONS_PASSED'])
+  try {
+    await createBranch(g.node, 'parentref', 'feat/one', {}, { every: 5 })
+    assert.deepEqual(g.seen.created, { branch_name: 'feat/one' })
+  } finally {
+    g.close()
+  }
 })
