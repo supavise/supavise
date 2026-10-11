@@ -62,7 +62,7 @@ alter default privileges for role postgres in schema public revoke execute on fu
 alter default privileges for role postgres in schema public revoke execute on functions from public;
 ```
 
-A branch, a restore as new project and a copy made from a backup follow the project they came from.
+A branch or a restore as a new project follows the project it came from.
 
 **Existing projects.** Hosted applies the same change to its existing projects on 2026-10-30. When you upgrade a node, Supavise does it once to every project that has no recorded choice, after the upgrade ends (a project that is paused gets it when it resumes). Tables that exist keep their grants and keep answering. Supavise records the change in the registry, not in your database, so if you roll it back with the SQL below, no restart or later upgrade revokes it again. The change runs on the project's primary; replicas receive it by replication.
 
