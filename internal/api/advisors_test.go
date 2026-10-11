@@ -542,3 +542,25 @@ func TestAdvisorRulesStayWithTheirProject(t *testing.T) {
 		t.Errorf("rules of another project: %v", out.Exceptions)
 	}
 }
+
+func TestMayChangeSchema(t *testing.T) {
+	for sql, want := range map[string]bool{
+		"alter table public.notes enable row level security": true,
+		"CREATE POLICY p ON notes FOR SELECT USING (true)":   true,
+		`{"query":"drop index notes_idx"}`:                   true,
+		"grant select on notes to anon":                      true,
+		"revoke all on notes from anon":                      true,
+		"truncate notes":                                     true,
+		"comment on table notes is 'x'":                      true,
+		"select * from notes":                                false,
+		"insert into notes (id) values (1)":                  false,
+		"update notes set body = 'x'":                        false,
+		"select 1":                                           false,
+		"select created_at from notes":                       false, // a word that only starts like a keyword
+		"select altered from notes":                          false,
+	} {
+		if got := mayChangeSchema([]byte(sql)); got != want {
+			t.Errorf("mayChangeSchema(%q) = %v", sql, got)
+		}
+	}
+}

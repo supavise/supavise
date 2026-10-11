@@ -2,6 +2,7 @@ package advisors
 
 import (
 	_ "embed"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,6 +43,20 @@ func Vendored() Source {
 		}
 	}
 	return s
+}
+
+// CheckStudioTag returns an error when the SQL was not generated at the commit that studio.tag of
+// internal/versions/versions.yaml names (<date>-sha-<short commit>).
+func (s Source) CheckStudioTag(tag string) error {
+	_, short, ok := strings.Cut(tag, "-sha-")
+	if !ok || len(short) < 7 {
+		return fmt.Errorf("studio.tag %q does not end in -sha-<commit>", tag)
+	}
+	if len(s.Commit) != 40 || !strings.HasPrefix(s.Commit, short) {
+		return fmt.Errorf("lints.sql was generated at commit %q but studio.tag is %q (commit %s...): run `go run ./internal/advisors/gen` again, as internal/advisors/README.md says",
+			s.Commit, tag, short)
+	}
+	return nil
 }
 
 // StatementTimeout is how long the lint query may run in the database.
