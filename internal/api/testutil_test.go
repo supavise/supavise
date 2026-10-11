@@ -49,6 +49,9 @@ type fakeManager struct {
 	pending   bool
 	passwords []string
 	pwErr     error
+	// jwtSecrets records "ref:secret" for every SetJWTSecret; jwtErr is what it returns.
+	jwtSecrets []string
+	jwtErr     error
 	// hook, when set, runs inside Pause, Resume and Delete before they act.
 	hook func(op string, ctx context.Context)
 	// restores receives one record per finished restore; gate, when set, holds Run until it is
