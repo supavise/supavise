@@ -51,6 +51,18 @@ const KeylessPlaceholder = "unused"
 // Enabled reports whether Studio's AI features have a provider: a key file, a gateway URL or both.
 func (a StudioAI) Enabled() bool { return a.BaseURL != "" || a.APIKeyFile != "" }
 
+// GatewayWithoutModel reports a base_url other than OpenAI's with no model. Studio then sends its
+// own OpenAI model names to the gateway, which most gateways do not serve: every Assistant message
+// fails. A gateway that maps those names (a LiteLLM alias, an Azure deployment of that name) is a
+// legitimate setup, so this is a reason to warn and not to refuse.
+func (a StudioAI) GatewayWithoutModel() bool {
+	if a.BaseURL == "" || a.Model != "" {
+		return false
+	}
+	u, err := url.Parse(a.BaseURL)
+	return err == nil && !strings.EqualFold(u.Hostname(), "api.openai.com")
+}
+
 // ResolvedAPI is the API Studio uses: the setting, else chat for a gateway and responses (what an
 // empty answer means to Studio) for OpenAI itself.
 func (a StudioAI) ResolvedAPI() string {
@@ -74,7 +86,7 @@ func (a StudioAI) ResolvedCompletionModel() string {
 const aiKeyMaxLen = 4096
 
 var (
-	aiModelRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
+	aiModelRE = regexp.MustCompile(`^[A-Za-z0-9@][A-Za-z0-9._:/@+-]{0,199}$`)
 	aiEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
 
