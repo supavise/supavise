@@ -9,6 +9,10 @@ type AuthSettings struct {
 	EmailEnabled bool
 	// MailerOTPExp is mailer_otp_exp, in seconds.
 	MailerOTPExp int64
+	// PasswordHIBPEnabled is password_hibp_enabled: leaked password protection.
+	PasswordHIBPEnabled bool
+	// MFA methods that can both enroll and verify factors.
+	TOTPEnabled, PhoneEnabled, WebAuthnEnabled bool
 	// DBMaxPoolSize and DBMaxPoolSizeUnit ("connections" or "percent") are db_max_pool_size and
 	// db_max_pool_size_unit.
 	DBMaxPoolSize     int64
@@ -23,25 +27,30 @@ const OTPExpiryLimit = 3600
 // schema, for the ones Supavise can: the Auth settings. The names, levels, categories and links
 // are those of hosted's Management API specs. auth_db_connections_absolute is word for word what
 // the recorded responses of the Supabase CLI's end-to-end suite (v2.120.0) hold for the same
-// finding; auth_otp_long_expiry's texts come from hosted's published advisor output and no
-// recording of it exists.
+// finding; the texts of the other three come from hosted's published advisor output and no
+// recording of them exists.
 //
-// A new hosted project answers auth_db_connections_absolute alone (db_max_pool_size 10 connections;
-// Supavise starts at 5) and not auth_otp_long_expiry, because its mailer_otp_exp is 3600. Supavise
-// starts at GoTrue's own 86400, so a new Supavise project also answers auth_otp_long_expiry until its
-// OTP expiry is an hour or less. The lint reports the effective setting, as hosted's does.
+// auth_leaked_password_protection and auth_insufficient_mfa_options are computed because Studio's
+// lint catalog (apps/studio/components/interfaces/Linter/Linter.utils.tsx at the commit the specs
+// pin, 94b8b06 in supabase/supabase) has a display entry for each, which means hosted's API
+// returns them, and guides for hosted projects widely report "Leaked Password Protection
+// Disabled". The CLI suite's recording of a hosted project (v2.120.0) shows neither while
+// password_hibp_enabled is false and no MFA method is on, so hosted may gate them on something
+// the recording does not show (an entitlement of the organization, for example). That rule is
+// unknown. Supavise reports them whenever the setting is off, because its organizations hold
+// every entitlement.
+//
+// A new hosted project answers auth_db_connections_absolute (db_max_pool_size 10 connections;
+// Supavise starts at 5) and not auth_otp_long_expiry, because its mailer_otp_exp is 3600. A new
+// Supavise project starts at the same 3600 (projectconfig.NewProjectAuth, saved when the project
+// is created), and a project created before that keeps the expiry it runs on, GoTrue's own 86400,
+// and answers auth_otp_long_expiry until it is an hour or less. The lint reports the effective
+// setting, as hosted's does.
 //
 // Not computed, and why:
-//   - auth_leaked_password_protection and auth_insufficient_mfa_options: hosted projects have been
-//     reported to show them, but the CLI suite's recording of a hosted project whose organization
-//     is entitled to leaked password protection and every MFA method has an empty security answer
-//     while password_hibp_enabled is false and no MFA method is on. The rule that makes hosted
-//     answer them is not known, and a guess adds findings a default hosted project does not show
-//     (a check that fails on warnings would fail every new project). They come back when a
-//     recording shows what triggers them.
 //   - ssl_not_enforced, log_connections_not_enabled, network_restrictions_not_set, pitr_not_enabled,
 //     password_requirements_min_length, auth_password_policy_missing, no_backup_admin and
-//     leaked_service_key: the specs list them in one block with the two above, and metadata.type has
+//     leaked_service_key: the specs list them in one block with the Auth lints, and metadata.type has
 //     a "compliance" kind. Published advisor output of ordinary hosted projects does not list
 //     them, so they look like hosted's compliance checks. Supavise has no add-on to key them on,
 //     and firing them on every project would add findings hosted does not show.
@@ -52,6 +61,32 @@ const OTPExpiryLimit = 3600
 //   - vulnerable_postgres_version: needs a feed of security releases per Postgres version.
 func ConfigLints(a AuthSettings) []Lint {
 	var out []Lint
+	if !a.PasswordHIBPEnabled {
+		out = append(out, build(fields{
+			Name:        "auth_leaked_password_protection",
+			Title:       "Leaked Password Protection Disabled",
+			Level:       LevelWarn,
+			Categories:  []string{CategorySecurity},
+			Description: "Leaked password protection is currently disabled.",
+			Detail:      "Supabase Auth prevents the use of compromised passwords by checking against HaveIBeenPwned.org. Enable this feature to enhance security.",
+			CacheKey:    "auth_leaked_password_protection",
+			Remediation: DocsURL + "/guides/auth/password-security#password-strength-and-leaked-password-protection",
+			Metadata:    authMetadata(),
+		}))
+	}
+	if a.mfaMethods() < 2 {
+		out = append(out, build(fields{
+			Name:        "auth_insufficient_mfa_options",
+			Title:       "Insufficient MFA Options",
+			Level:       LevelWarn,
+			Categories:  []string{CategorySecurity},
+			Description: "This project has too few multi-factor authentication (MFA) options enabled.",
+			Detail:      "Your project has too few MFA options enabled, which may weaken account security. Enable more MFA methods to enhance security.",
+			CacheKey:    "auth_insufficient_mfa_options",
+			Remediation: DocsURL + "/guides/auth/auth-mfa",
+			Metadata:    authMetadata(),
+		}))
+	}
 	if a.EmailEnabled && a.MailerOTPExp > OTPExpiryLimit {
 		out = append(out, build(fields{
 			Name:        "auth_otp_long_expiry",
@@ -83,10 +118,23 @@ func ConfigLints(a AuthSettings) []Lint {
 
 func authMetadata() map[string]any { return map[string]any{"type": "auth", "entity": "Auth"} }
 
+// mfaMethods counts the MFA methods users can enroll and verify.
+func (a AuthSettings) mfaMethods() int {
+	n := 0
+	for _, on := range []bool{a.TOTPEnabled, a.PhoneEnabled, a.WebAuthnEnabled} {
+		if on {
+			n++
+		}
+	}
+	return n
+}
+
 // configNames are the lints ConfigLints can return.
 var configNames = map[string]bool{
-	"auth_otp_long_expiry":         true,
-	"auth_db_connections_absolute": true,
+	"auth_leaked_password_protection": true,
+	"auth_insufficient_mfa_options":   true,
+	"auth_otp_long_expiry":            true,
+	"auth_db_connections_absolute":    true,
 }
 
 // IsConfigLint reports whether name is a lint ConfigLints computes.

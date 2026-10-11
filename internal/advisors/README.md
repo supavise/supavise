@@ -46,32 +46,43 @@ read it with `current_setting` to know what the Data API exposes. The API runs t
 rows of the last statement.
 
 **The configuration lints** (`config.go`) are the findings hosted computes from project settings,
-for the ones Supavise can: `auth_otp_long_expiry` and `auth_db_connections_absolute`. The names,
-levels, categories and links are those of hosted's Management API specs and responses.
-`auth_db_connections_absolute` is word for word what the Supabase CLI's recorded responses hold
-(v2.120.0); `auth_otp_long_expiry`'s texts come from published advisor output, and the trigger of
-both is Supavise's reading of the setting they name:
+for the ones Supavise can: `auth_leaked_password_protection`, `auth_insufficient_mfa_options`,
+`auth_otp_long_expiry` and `auth_db_connections_absolute`. The names, levels, categories and links
+are those of hosted's Management API specs and responses. `auth_db_connections_absolute` is word
+for word what the Supabase CLI's recorded responses hold (v2.120.0); the texts of the other three
+come from published advisor output, and the trigger of each is Supavise's reading of the setting it
+names:
 
 | Lint | Level, category | Reported when |
 |---|---|---|
+| `auth_leaked_password_protection` | WARN, security | `password_hibp_enabled` is off |
+| `auth_insufficient_mfa_options` | WARN, security | fewer than two of TOTP, phone and WebAuthn can both enroll and verify |
 | `auth_otp_long_expiry` | WARN, security | the email provider is on and `mailer_otp_exp` is over 3600 seconds |
 | `auth_db_connections_absolute` | INFO, performance | `db_max_pool_size_unit` is not `percent`; the detail names `db_max_pool_size` |
 
-The lints read the effective setting. A new hosted project has `mailer_otp_exp` 3600 and
-`db_max_pool_size` 10, and the CLI's recording of one answers `auth_db_connections_absolute` and
-nothing else. Supavise starts at GoTrue's own 86400 and 5, so a new Supavise project also answers
-`auth_otp_long_expiry` until its OTP expiry is an hour or less, and its connection detail says 5.
-Moving the default belongs to the Auth settings (`internal/projectconfig`, and the unit's
-environment so that GoTrue gets it); it would shorten the OTP of existing projects at their next
-restart, so it is a separate decision.
+Why the first two are computed: Studio's lint catalog
+(`apps/studio/components/interfaces/Linter/Linter.utils.tsx` at the commit the specs pin, `94b8b06`
+in `supabase/supabase`) has a display entry for each, which means hosted's API returns them, and
+guides for hosted projects widely report "Leaked Password Protection Disabled". The CLI suite's
+recording of a hosted project (v2.120.0) shows neither while `password_hibp_enabled` is off and no
+MFA method is on, so hosted may gate them on something the recording does not show; that rule is
+unknown. Supavise reports them whenever the setting is off, because its organizations hold every
+entitlement. A check that fails on warnings fails a new Supavise project for them until the two
+settings change.
 
-Not computed, with the reason in `ConfigLints`: `auth_leaked_password_protection` and
-`auth_insufficient_mfa_options` (the CLI's recording of a hosted project that is entitled to both
-features answers neither while `password_hibp_enabled` is off and no MFA method is on, and the
-rule behind them is unknown), the compliance checks (`ssl_not_enforced`, `log_connections_not_enabled`,
-`network_restrictions_not_set`, `pitr_not_enabled`, `password_requirements_min_length`,
-`auth_password_policy_missing`, `no_backup_admin`, `leaked_service_key`), `auth_otp_short_length`,
-`auth_allow_anonymous_sign_ins` and `vulnerable_postgres_version`.
+The lints read the effective setting. A new hosted project has `mailer_otp_exp` 3600 and
+`db_max_pool_size` 10, and the CLI's recording of one answers `auth_db_connections_absolute` among
+the Auth lints and not `auth_otp_long_expiry`. A new Supavise project starts at the same 3600 (the
+lifecycle engine saves it when it creates the project, `projectconfig.NewProjectAuth`) and at
+`db_max_pool_size` 5, so its connection detail says 5. A project created before that keeps the
+OTP expiry it runs on, GoTrue's own 86400, and still answers `auth_otp_long_expiry` until its
+expiry is an hour or less.
+
+Not computed, with the reason in `ConfigLints`: the compliance checks (`ssl_not_enforced`,
+`log_connections_not_enabled`, `network_restrictions_not_set`, `pitr_not_enabled`,
+`password_requirements_min_length`, `auth_password_policy_missing`, `no_backup_admin`,
+`leaked_service_key`), `auth_otp_short_length`, `auth_allow_anonymous_sign_ins` and
+`vulnerable_postgres_version`.
 
 **The health checks** (`health.go`) are asked for by name through `POST /v2/projects/{ref}/advisors/run`.
 They need the project's logs and metrics, which Supavise does not keep, so each answers

@@ -168,7 +168,7 @@ func TestFilterSplitsByCategory(t *testing.T) {
 
 // A project with the Auth defaults of a new Supavise project.
 func defaults() AuthSettings {
-	return AuthSettings{EmailEnabled: true, MailerOTPExp: 86400, DBMaxPoolSize: 5, DBMaxPoolSizeUnit: "connections"}
+	return AuthSettings{EmailEnabled: true, MailerOTPExp: 86400, TOTPEnabled: true, DBMaxPoolSize: 5, DBMaxPoolSizeUnit: "connections"}
 }
 
 func configNamesOf(a AuthSettings) []string {
@@ -181,7 +181,7 @@ func configNamesOf(a AuthSettings) []string {
 
 func TestConfigLintsOfTheDefaults(t *testing.T) {
 	got := configNamesOf(defaults())
-	want := []string{"auth_otp_long_expiry", "auth_db_connections_absolute"}
+	want := []string{"auth_leaked_password_protection", "auth_insufficient_mfa_options", "auth_otp_long_expiry", "auth_db_connections_absolute"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("lints of the defaults: %v, want %v", got, want)
 	}
@@ -192,8 +192,10 @@ func TestConfigLintsOfTheDefaults(t *testing.T) {
 	for name, w := range map[string]struct {
 		level, category, remediation string
 	}{
-		"auth_otp_long_expiry":         {LevelWarn, CategorySecurity, "https://supabase.com/docs/guides/platform/going-into-prod#security"},
-		"auth_db_connections_absolute": {LevelInfo, CategoryPerformance, "https://supabase.com/docs/guides/deployment/going-into-prod"},
+		"auth_leaked_password_protection": {LevelWarn, CategorySecurity, "https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection"},
+		"auth_insufficient_mfa_options":   {LevelWarn, CategorySecurity, "https://supabase.com/docs/guides/auth/auth-mfa"},
+		"auth_otp_long_expiry":            {LevelWarn, CategorySecurity, "https://supabase.com/docs/guides/platform/going-into-prod#security"},
+		"auth_db_connections_absolute":    {LevelInfo, CategoryPerformance, "https://supabase.com/docs/guides/deployment/going-into-prod"},
 	} {
 		l := byName[name]
 		var obj map[string]any
@@ -227,6 +229,11 @@ func TestConfigLintsFollowTheSettings(t *testing.T) {
 		gone   string
 		stays  []string
 	}{
+		{"leaked password protection on", func(a *AuthSettings) { a.PasswordHIBPEnabled = true }, "auth_leaked_password_protection", nil},
+		{"two MFA methods", func(a *AuthSettings) { a.PhoneEnabled = true }, "auth_insufficient_mfa_options", nil},
+		{"webauthn and totp", func(a *AuthSettings) { a.WebAuthnEnabled = true }, "auth_insufficient_mfa_options", nil},
+		{"one MFA method, not totp", func(a *AuthSettings) { a.TOTPEnabled, a.PhoneEnabled = false, true }, "", []string{"auth_insufficient_mfa_options"}},
+		{"no MFA", func(a *AuthSettings) { a.TOTPEnabled = false }, "", []string{"auth_insufficient_mfa_options"}},
 		{"otp expiry of an hour", func(a *AuthSettings) { a.MailerOTPExp = 3600 }, "auth_otp_long_expiry", nil},
 		{"otp expiry just over an hour", func(a *AuthSettings) { a.MailerOTPExp = 3601 }, "", []string{"auth_otp_long_expiry"}},
 		{"email provider off", func(a *AuthSettings) { a.EmailEnabled = false }, "auth_otp_long_expiry", nil},
@@ -246,7 +253,7 @@ func TestConfigLintsFollowTheSettings(t *testing.T) {
 		}
 	}
 	// Everything a hardened project can set: nothing is reported.
-	hardened := AuthSettings{EmailEnabled: true, MailerOTPExp: 600, DBMaxPoolSize: 10, DBMaxPoolSizeUnit: "percent"}
+	hardened := AuthSettings{EmailEnabled: true, MailerOTPExp: 600, PasswordHIBPEnabled: true, TOTPEnabled: true, WebAuthnEnabled: true, DBMaxPoolSize: 10, DBMaxPoolSizeUnit: "percent"}
 	if got := configNamesOf(hardened); len(got) != 0 {
 		t.Errorf("hardened project: %v", got)
 	}
@@ -255,18 +262,24 @@ func TestConfigLintsFollowTheSettings(t *testing.T) {
 	}
 }
 
-// Hosted's recorded answers for a new project (CLI e2e suite, v2.120.0) hold auth_db_connections_absolute
-// and nothing else of the Auth settings: mailer_otp_exp 3600 raises no auth_otp_long_expiry, and neither
-// the leaked password nor the MFA settings raise a lint of their own.
+// Hosted's recorded answer for a new project (CLI e2e suite, v2.120.0) holds auth_db_connections_absolute
+// word for word, and no auth_otp_long_expiry, because its mailer_otp_exp is 3600. The recording holds
+// neither auth_leaked_password_protection nor auth_insufficient_mfa_options although password_hibp_enabled
+// and every MFA method are off; hosted may gate them on something the recording does not show, and Supavise
+// reports them whenever the setting is off (Studio's lint catalog has an entry for each).
 func TestConfigLintsOfAHostedDefaultProject(t *testing.T) {
 	hosted := AuthSettings{EmailEnabled: true, MailerOTPExp: 3600, DBMaxPoolSize: 10, DBMaxPoolSizeUnit: "connections"}
-	got := ConfigLints(hosted)
-	if len(got) != 1 || got[0].Name != "auth_db_connections_absolute" {
-		t.Fatalf("lints of a hosted default project: %v", configNamesOf(hosted))
+	want := []string{"auth_leaked_password_protection", "auth_insufficient_mfa_options", "auth_db_connections_absolute"}
+	if got := configNamesOf(hosted); !slices.Equal(got, want) {
+		t.Fatalf("lints of a hosted default project: %v, want %v", got, want)
 	}
 	var obj map[string]any
-	if err := json.Unmarshal(got[0].Raw, &obj); err != nil {
-		t.Fatal(err)
+	for _, l := range ConfigLints(hosted) {
+		if l.Name == "auth_db_connections_absolute" {
+			if err := json.Unmarshal(l.Raw, &obj); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	// The recorded finding, word for word, with its 10 connections.
 	for k, w := range map[string]string{
@@ -282,8 +295,8 @@ func TestConfigLintsOfAHostedDefaultProject(t *testing.T) {
 			t.Errorf("%s = %v, want %q", k, obj[k], w)
 		}
 	}
-	if IsConfigLint("auth_leaked_password_protection") || IsConfigLint("auth_insufficient_mfa_options") {
-		t.Error("a lint without a known trigger is computed")
+	if !IsConfigLint("auth_leaked_password_protection") || !IsConfigLint("auth_insufficient_mfa_options") {
+		t.Error("the leaked password and MFA lints are not listed as computed")
 	}
 }
 

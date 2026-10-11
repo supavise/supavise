@@ -149,10 +149,14 @@ func (s *Server) authSettings(ctx context.Context, ref string) (advisors.AuthSet
 	exp, _ := e.Int("mailer_otp_exp")
 	pool, _ := e.Int("db_max_pool_size")
 	return advisors.AuthSettings{
-		EmailEnabled:      e.Bool("external_email_enabled"),
-		MailerOTPExp:      exp,
-		DBMaxPoolSize:     pool,
-		DBMaxPoolSizeUnit: e.Str("db_max_pool_size_unit"),
+		EmailEnabled:        e.Bool("external_email_enabled"),
+		MailerOTPExp:        exp,
+		PasswordHIBPEnabled: e.Bool("password_hibp_enabled"),
+		TOTPEnabled:         e.Bool("mfa_totp_enroll_enabled") && e.Bool("mfa_totp_verify_enabled"),
+		PhoneEnabled:        e.Bool("mfa_phone_enroll_enabled") && e.Bool("mfa_phone_verify_enabled"),
+		WebAuthnEnabled:     e.Bool("mfa_web_authn_enroll_enabled") && e.Bool("mfa_web_authn_verify_enabled"),
+		DBMaxPoolSize:       pool,
+		DBMaxPoolSizeUnit:   e.Str("db_max_pool_size_unit"),
 	}, true
 }
 
