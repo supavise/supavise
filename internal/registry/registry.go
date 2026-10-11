@@ -89,6 +89,12 @@ const (
 	BranchRunningMigration BranchState = "RUNNING_MIGRATIONS"
 	BranchMigrationsPassed BranchState = "MIGRATIONS_PASSED"
 	BranchMigrationsFailed BranchState = "MIGRATIONS_FAILED"
+	// BranchFunctionsDeployed is where a create, push, merge or reset ends when it succeeds, and
+	// BranchFunctionsFailed where it ends when its deploy step fails. MIGRATIONS_PASSED is the
+	// state in between (and the state of branches that finished before these existed): anything
+	// that accepts one of the two accepts the other.
+	BranchFunctionsDeployed BranchState = "FUNCTIONS_DEPLOYED"
+	BranchFunctionsFailed   BranchState = "FUNCTIONS_FAILED"
 )
 
 // BranchInfo is what makes a project a branch.

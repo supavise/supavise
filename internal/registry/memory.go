@@ -40,6 +40,11 @@ type Memory struct {
 
 	// advisorRules are the advisor rules (advisors_mem.go), by project ref.
 	advisorRules map[string][]AdvisorException
+
+	// branchRuns are the action runs of branches by id, in creation order (branch_runs_mem.go),
+	// and defaultGit the Git branch each default branch tracks, by project ref.
+	branchRuns []*BranchRun
+	defaultGit map[string]string
 }
 
 func NewMemory() *Memory {
@@ -339,6 +344,7 @@ func (m *Memory) DeleteProject(_ context.Context, ref string) error {
 	m.upgrades = kept
 	delete(m.hostnames, ref)
 	delete(m.advisorRules, ref)
+	delete(m.defaultGit, ref)
 	delete(m.vanity, ref)
 	delete(m.dataAPI, ref)
 	for h, r := range m.routes {
