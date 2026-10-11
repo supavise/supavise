@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,9 +27,13 @@ func (e branchEngine) DeleteWith(ctx context.Context, ref string, _ lifecycle.De
 type fakeBranchDB struct {
 	mu   sync.Mutex
 	migs map[string][]branching.Migration
+	// applyErr makes Apply to that project fail.
+	applyErr map[string]error
 }
 
-func newFakeBranchDB() *fakeBranchDB { return &fakeBranchDB{migs: map[string][]branching.Migration{}} }
+func newFakeBranchDB() *fakeBranchDB {
+	return &fakeBranchDB{migs: map[string][]branching.Migration{}, applyErr: map[string]error{}}
+}
 
 func (d *fakeBranchDB) Migrations(_ context.Context, ref string) ([]branching.Migration, error) {
 	d.mu.Lock()
@@ -39,6 +44,9 @@ func (d *fakeBranchDB) Migrations(_ context.Context, ref string) ([]branching.Mi
 func (d *fakeBranchDB) Apply(_ context.Context, ref string, ms []branching.Migration, _ branching.ApplyOptions) (branching.ApplyResult, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if err := d.applyErr[ref]; err != nil {
+		return branching.ApplyResult{}, err
+	}
 	d.migs[ref] = append(d.migs[ref], ms...)
 	return branching.ApplyResult{Applied: len(ms)}, nil
 }
@@ -87,7 +95,7 @@ func TestBranches(t *testing.T) {
 	if br["name"] != "feature/login" || br["parent_project_ref"] != testRef || br["is_default"] != false || br["with_data"] != false || br["git_branch"] != "feat/login" {
 		t.Fatalf("branch = %v", br)
 	}
-	got := f.waitBranch(t, "feature%2Flogin", "MIGRATIONS_PASSED")
+	got := f.waitBranch(t, "feature%2Flogin", "FUNCTIONS_DEPLOYED")
 	if got["preview_project_status"] != "ACTIVE_HEALTHY" {
 		t.Fatalf("branch = %v", got)
 	}
@@ -148,7 +156,7 @@ func TestBranches(t *testing.T) {
 		if run := jsonField(t, rec, "workflow_run_id"); run == "" || !branching.IsUUID(run.(string)) {
 			t.Fatalf("%s run id = %v", op, run)
 		}
-		f.waitBranch(t, "feature%2Flogin", "MIGRATIONS_PASSED")
+		f.waitBranch(t, "feature%2Flogin", "FUNCTIONS_DEPLOYED")
 	}
 	if m := f.bdb.migs[testRef]; len(m) != 2 || m[1].Version != "20260110000000" {
 		t.Fatalf("merge did not reach the parent: %v", m)
@@ -157,7 +165,7 @@ func TestBranches(t *testing.T) {
 	if rec := f.do("POST", "/v1/branches/"+id+"/merge", nil); rec.Code != 201 {
 		t.Fatalf("merge without a body: %d %s", rec.Code, rec.Body)
 	}
-	f.waitBranch(t, "feature%2Flogin", "MIGRATIONS_PASSED")
+	f.waitBranch(t, "feature%2Flogin", "FUNCTIONS_DEPLOYED")
 	if rec := f.do("POST", "/v1/branches/"+ref+"x/merge", nil); rec.Code != 404 {
 		t.Fatalf("merge unknown: %d", rec.Code)
 	}
@@ -176,7 +184,7 @@ func TestBranches(t *testing.T) {
 		t.Fatalf("soft delete: %d %s", rec.Code, rec.Body)
 	}
 	validateAgainstSpec(t, "DELETE /v1/branches/{branch_id_or_ref}", rec.Body.Bytes())
-	if b := f.waitBranch(t, "feature%2Flogin", "MIGRATIONS_PASSED"); b["deletion_scheduled_at"] == nil {
+	if b := f.waitBranch(t, "feature%2Flogin", "FUNCTIONS_DEPLOYED"); b["deletion_scheduled_at"] == nil {
 		t.Fatalf("not scheduled: %v", b)
 	}
 	rec = f.do("POST", "/v1/branches/"+id+"/restore", nil)
@@ -194,7 +202,7 @@ func TestBranches(t *testing.T) {
 	// Errors: duplicate names, a branch of a branch, a project that does not exist,
 	// disabling branching.
 	f.do("POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "dup"})
-	f.waitBranch(t, "dup", "MIGRATIONS_PASSED")
+	f.waitBranch(t, "dup", "FUNCTIONS_DEPLOYED")
 	if rec := f.do("POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "dup"}); rec.Code != 409 {
 		t.Fatalf("duplicate: %d %s", rec.Code, rec.Body)
 	}
@@ -226,9 +234,12 @@ func TestBranchRequestsThatCannotBeHonoredAreRefused(t *testing.T) {
 		return f.do("POST", "/v1/projects/"+testRef+"/branches", body)
 	}
 	for name, body := range map[string]map[string]any{
-		"secrets":         {"secrets": map[string]string{"A": "b"}},
-		"release channel": {"release_channel": "preview"},
-		"postgres engine": {"postgres_engine": "15"},
+		"release channel":          {"release_channel": "preview"},
+		"postgres engine":          {"postgres_engine": "15"},
+		"a reserved secret":        {"secrets": map[string]string{"SUPABASE_URL": "x"}},
+		"a bad secret name":        {"secrets": map[string]string{"1 bad": "x"}},
+		"too many secrets":         {"secrets": manySecrets(maxBranchSecrets + 1)},
+		"an unknown instance size": {"desired_instance_size": "gigantic"},
 	} {
 		if rec := create(body); rec.Code != 400 {
 			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
@@ -237,18 +248,28 @@ func TestBranchRequestsThatCannotBeHonoredAreRefused(t *testing.T) {
 	if rec := f.do("GET", "/v1/projects/"+testRef+"/branches", nil); len(decodeBody(t, rec).([]any)) != 1 {
 		t.Fatalf("a refused create left a branch: %s", rec.Body)
 	}
-	// Empty secrets, the node's own engine and the ga channel are fine.
-	if rec := create(map[string]any{"secrets": map[string]string{}, "release_channel": "ga", "postgres_engine": "17"}); rec.Code != 201 {
+	// Secrets, the node's own engine, the ga channel and a region are accepted (the region of the
+	// branch is its parent's, and the answer says so).
+	rec := create(map[string]any{"secrets": map[string]string{"STRIPE_KEY": "sk_test"}, "release_channel": "ga", "postgres_engine": "17", "region": "us-east-1"})
+	if rec.Code != 201 {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body)
 	}
-	br := f.waitBranch(t, "x", "MIGRATIONS_PASSED")
+	if got := jsonField(t, rec, "supavise_region"); got == nil || got == "" {
+		t.Fatalf("the answer does not say where the branch runs: %s", rec.Body)
+	}
+	br := f.waitBranch(t, "x", "FUNCTIONS_DEPLOYED")
 	id := br["id"].(string)
-	if rec := f.do("PATCH", "/v1/branches/"+id, map[string]any{"status": "CREATING_PROJECT"}); rec.Code != 400 {
-		t.Errorf("setting the status: %d %s", rec.Code, rec.Body)
-	}
 	if rec := f.do("PATCH", "/v1/branches/"+id, map[string]any{"status": "MIGRATIONS_PASSED", "reset_on_push": true, "persistent": true}); rec.Code != 200 {
-		t.Errorf("an unchanged status and the deprecated reset_on_push are accepted: %d %s", rec.Code, rec.Body)
+		t.Errorf("a status and the deprecated reset_on_push are accepted: %d %s", rec.Code, rec.Body)
 	}
+}
+
+func manySecrets(n int) map[string]string {
+	m := map[string]string{}
+	for i := range n {
+		m["S"+strings.Repeat("A", i%7)+itoa(int64(i))] = "v"
+	}
+	return m
 }
 
 // with_data on a node that cannot clone and has no backup is something the user can fix: 400.
@@ -415,7 +436,7 @@ func TestBranchRoutesFollowTheParentsRoles(t *testing.T) {
 		deadline := time.Now().Add(5 * time.Second)
 		for {
 			p, err := rf.reg.GetProject(context.Background(), ref)
-			if err == nil && p.Status == registry.StatusActiveHealthy && p.Branch != nil && p.Branch.State == registry.BranchMigrationsPassed {
+			if err == nil && p.Status == registry.StatusActiveHealthy && p.Branch != nil && p.Branch.State == registry.BranchFunctionsDeployed {
 				return ref, id
 			}
 			if time.Now().After(deadline) {
@@ -481,3 +502,200 @@ func TestBranchRoutesFollowTheParentsRoles(t *testing.T) {
 	rf.status(404, "owner", "GET", "/v1/branches/zzzzzzzzzzzzzzzzzzzz", nil)
 	rf.status(200, "scoped", "PATCH", "/v1/branches/"+id, map[string]any{"persistent": true})
 }
+
+func TestBranchCreateV2(t *testing.T) {
+	f := newFixture(t)
+	body := func(attrs map[string]any) map[string]any {
+		return map[string]any{"data": map[string]any{"type": "branch", "attributes": attrs}}
+	}
+	rec := f.do("POST", "/v2/projects/"+testRef+"/branches", body(map[string]any{
+		"name": "v2-branch", "git_branch": "feat/v2", "persistent": true, "desired_instance_size": "micro", "region": "eu-west-1",
+		"notify_url": "https://example.com/hook",
+	}))
+	if rec.Code != 201 {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	validateAgainstSpec(t, "POST /v2/projects/{ref}/branches", rec.Body.Bytes())
+	if rec.Header().Get("X-Supavise-Stub") != "" {
+		t.Fatal("served by the spec stub")
+	}
+	attrs := jsonField(t, rec, "data.attributes").(map[string]any)
+	if jsonField(t, rec, "data.type") != "branch" || attrs["name"] != "v2-branch" || attrs["parent_project_ref"] != testRef || attrs["is_default"] != false ||
+		attrs["persistent"] != true || attrs["git_branch"] != "feat/v2" || attrs["notify_url"] != "https://example.com/hook" || attrs["with_data"] != false {
+		t.Fatalf("branch = %s", rec.Body)
+	}
+	// It is a real branch: v1 reads it, and its run is listed under it.
+	got := f.waitBranch(t, "v2-branch", "FUNCTIONS_DEPLOYED")
+	if got["project_ref"] != attrs["project_ref"] || got["id"] != jsonField(t, rec, "data.id") || got["persistent"] != true {
+		t.Fatalf("v1 branch = %v", got)
+	}
+	runs := f.do("GET", "/v1/projects/"+attrs["project_ref"].(string)+"/actions", nil)
+	if n := len(decodeBody(t, runs).([]any)); n != 1 {
+		t.Fatalf("runs = %s", runs.Body)
+	}
+	// What this node cannot honor is refused with the reason; so is a body of another type.
+	for name, b := range map[string]map[string]any{
+		"a disk size":  body(map[string]any{"name": "d", "desired_disk_size_gb": 50}),
+		"a wrong type": {"data": map[string]any{"type": "project", "attributes": map[string]any{"name": "d"}}},
+		"no name":      body(map[string]any{"git_branch": "x"}),
+		"a bad name":   body(map[string]any{"name": "no good"}),
+	} {
+		if rec := f.do("POST", "/v2/projects/"+testRef+"/branches", b); rec.Code != 400 {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if rec := f.do("POST", "/v2/projects/"+testRef+"/branches", body(map[string]any{"name": "v2-branch"})); rec.Code != 409 {
+		t.Errorf("a name in use: %d %s", rec.Code, rec.Body)
+	}
+	if rec := f.do("POST", "/v2/projects/zzzzzzzzzzzzzzzzzzzz/branches", body(map[string]any{"name": "x"})); rec.Code != 404 {
+		t.Errorf("unknown project: %d", rec.Code)
+	}
+	if rec := f.do("GET", "/v1/projects/"+testRef+"/branches", nil); len(decodeBody(t, rec).([]any)) != 2 {
+		t.Fatalf("branches = %s", rec.Body)
+	}
+}
+
+func TestBranchDefaultBranchRoutes(t *testing.T) {
+	f := newFixture(t)
+	create := func() *httptest.ResponseRecorder {
+		return f.do("POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "main", "is_default": true, "git_branch": "production"})
+	}
+	// Studio's Production branch save: the default branch comes back, again and again, and nothing is created.
+	for range 2 {
+		rec := create()
+		if rec.Code != 201 {
+			t.Fatalf("create is_default: %d %s", rec.Code, rec.Body)
+		}
+		validateAgainstSpec(t, "POST /v1/projects/{ref}/branches", rec.Body.Bytes())
+		if jsonField(t, rec, "is_default") != true || jsonField(t, rec, "project_ref") != testRef || jsonField(t, rec, "git_branch") != "production" {
+			t.Fatalf("default branch = %s", rec.Body)
+		}
+	}
+	if rec := f.do("GET", "/v1/projects/"+testRef+"/branches", nil); len(decodeBody(t, rec).([]any)) != 1 {
+		t.Fatalf("is_default created a branch: %s", rec.Body)
+	}
+	// PATCH on the default branch stores the git branch; the name Studio sends with it does not rename.
+	rec := f.do("PATCH", "/v1/branches/"+testRef, map[string]any{"git_branch": "develop", "branch_name": "develop"})
+	if rec.Code != 200 || jsonField(t, rec, "git_branch") != "develop" || jsonField(t, rec, "name") != "main" || jsonField(t, rec, "is_default") != true {
+		t.Fatalf("patch: %d %s", rec.Code, rec.Body)
+	}
+	if rec := f.do("GET", "/v1/projects/"+testRef+"/branches/main", nil); jsonField(t, rec, "git_branch") != "develop" {
+		t.Fatalf("get by name: %s", rec.Body)
+	}
+	if rec := f.do("PATCH", "/v1/branches/"+testRef, map[string]any{"git_branch": ""}); rec.Code != 200 || jsonField(t, rec, "git_branch") != nil {
+		t.Fatalf("clearing the git branch: %d %s", rec.Code, rec.Body)
+	}
+	// A rename of its own and the other things a default branch cannot do are refused.
+	for name, b := range map[string]map[string]any{
+		"rename":         {"branch_name": "trunk"},
+		"not persistent": {"persistent": false},
+		"notify":         {"notify_url": "https://example.com/hook"},
+		"review":         {"request_review": true},
+	} {
+		if rec := f.do("PATCH", "/v1/branches/"+testRef, b); rec.Code != 400 {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestBranchStatusRequestReviewAndFailureFields(t *testing.T) {
+	f := newFixture(t)
+	f.bdb.migs[testRef] = []branching.Migration{{Version: "20260101000000", Name: "init", Statements: []string{"create table t (id int)"}}}
+	rec := f.do("POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "feat"})
+	ref, id := jsonField(t, rec, "project_ref").(string), jsonField(t, rec, "id").(string)
+	got := f.waitBranch(t, "feat", "FUNCTIONS_DEPLOYED")
+	// A ready branch says when it goes away and where it runs.
+	if got["supavise_expires_at"] == nil || got["supavise_region"] == nil || !strings.Contains(got["supavise_detail"].(string), "1 migration(s) replayed") {
+		t.Fatalf("branch = %v", got)
+	}
+	validateAgainstSpec(t, "GET /v1/projects/{ref}/branches/{name}", mustJSON(got))
+	// A persistent branch has no expiry to show.
+	if rec := f.do("PATCH", "/v1/branches/"+id, map[string]any{"persistent": true}); jsonField(t, rec, "supavise_expires_at") != nil {
+		t.Fatalf("a persistent branch shows an expiry: %s", rec.Body)
+	}
+	f.do("PATCH", "/v1/branches/"+id, map[string]any{"persistent": false})
+
+	// request_review true, then false (Studio's "Close merge request").
+	if rec := f.do("PATCH", "/v1/branches/"+id, map[string]any{"request_review": true}); rec.Code != 200 || jsonField(t, rec, "review_requested_at") == nil {
+		t.Fatalf("request review: %d %s", rec.Code, rec.Body)
+	}
+	if rec := f.do("PATCH", "/v1/branches/"+id, map[string]any{"request_review": false}); rec.Code != 200 || jsonField(t, rec, "review_requested_at") != nil {
+		t.Fatalf("close the merge request: %d %s", rec.Code, rec.Body)
+	}
+	// A successful merge clears a request for review without being told to.
+	f.do("PATCH", "/v1/branches/"+id, map[string]any{"request_review": true})
+	f.bdb.migs[ref] = append(f.bdb.migs[ref], branching.Migration{Version: "20260110000000", Name: "feature", Statements: []string{"create table f (id int)"}})
+	if rec := f.do("POST", "/v1/branches/"+id+"/merge", nil); rec.Code != 201 {
+		t.Fatalf("merge: %d %s", rec.Code, rec.Body)
+	}
+	if b := f.waitBranch(t, "feat", "FUNCTIONS_DEPLOYED"); b["review_requested_at"] != nil {
+		t.Fatalf("the merge left the request for review: %v", b)
+	}
+
+	// A failing merge: the 201 is followed by a failed run, and the reason is on the branch.
+	f.bdb.migs[ref] = append(f.bdb.migs[ref], branching.Migration{Version: "20260111000000", Name: "more", Statements: []string{"create table g (id int)"}})
+	f.bdb.applyErr[testRef] = errBoom
+	mrec := f.do("POST", "/v1/branches/"+id+"/merge", nil)
+	if mrec.Code != 201 {
+		t.Fatalf("merge: %d %s", mrec.Code, mrec.Body)
+	}
+	runID := jsonField(t, mrec, "workflow_run_id").(string)
+	b := f.waitBranch(t, "feat", "MIGRATIONS_FAILED")
+	if !strings.Contains(b["supavise_detail"].(string), "boom") {
+		t.Fatalf("the reason is not on the branch: %v", b)
+	}
+	run := decodeBody(t, f.do("GET", "/v1/projects/"+testRef+"/actions/"+runID, nil))
+	if got := stepStatuses(t, run); !strings.Contains(got, "migrate=DEAD") || !strings.Contains(got, "seed=PAUSED") || !strings.Contains(got, "deploy=PAUSED") {
+		t.Fatalf("steps = %s", got)
+	}
+	logs := f.do("GET", "/v1/projects/"+testRef+"/actions/"+runID+"/logs", nil).Body.String()
+	if !strings.Contains(logs, "FAILED") || !strings.Contains(logs, "boom") {
+		t.Fatalf("log = %q", logs)
+	}
+	// The default branch reads as failed too until the next merge works.
+	if rec := f.do("GET", "/v1/projects/"+testRef+"/branches/main", nil); jsonField(t, rec, "status") != "MIGRATIONS_FAILED" || !strings.Contains(jsonField(t, rec, "supavise_detail").(string), "boom") {
+		t.Fatalf("default branch = %s", rec.Body)
+	}
+
+	// The status can be set to any of the six values the spec lists, and nothing else.
+	for _, st := range []string{"CREATING_PROJECT", "RUNNING_MIGRATIONS", "MIGRATIONS_PASSED", "MIGRATIONS_FAILED", "FUNCTIONS_DEPLOYED", "FUNCTIONS_FAILED"} {
+		if rec := f.do("PATCH", "/v1/branches/"+id, map[string]any{"status": st}); rec.Code != 200 || jsonField(t, rec, "status") != st {
+			t.Fatalf("status %s: %d %s", st, rec.Code, rec.Body)
+		}
+	}
+	if rec := f.do("PATCH", "/v1/branches/"+id, map[string]any{"status": "WOBBLY"}); rec.Code != 400 {
+		t.Fatalf("an unknown status: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestBranchDeleteTellsTheFunctionsHook(t *testing.T) {
+	f := newFixture(t)
+	rec := f.do("POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "gone"})
+	ref, id := jsonField(t, rec, "project_ref").(string), jsonField(t, rec, "id").(string)
+	f.waitBranch(t, "gone", "FUNCTIONS_DEPLOYED")
+	hook := &recordingHook{}
+	f.srv.fnHook = hook
+	if rec := f.do("DELETE", "/v1/branches/"+id, nil); rec.Code != 200 {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	if hook.count() != 1 || hook.calls[0] != ref {
+		t.Fatalf("hook calls = %v, want [%s]", hook.calls, ref)
+	}
+	// Disabling branching removes every branch the same way.
+	for _, n := range []string{"a", "b"} {
+		f.do("POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": n})
+		f.waitBranch(t, n, "FUNCTIONS_DEPLOYED")
+	}
+	refs, _ := f.srv.branches.Children(context.Background(), testRef)
+	if len(refs) != 2 {
+		t.Fatalf("children = %v", refs)
+	}
+	if rec := f.do("DELETE", "/v1/projects/"+testRef+"/branches", nil); rec.Code != 200 {
+		t.Fatalf("disable: %d %s", rec.Code, rec.Body)
+	}
+	if hook.count() != 3 {
+		t.Fatalf("hook calls after disabling branching = %v", hook.calls)
+	}
+}
+
+var errBoom = errors.New("boom: relation g already exists")
