@@ -20,11 +20,14 @@ import (
 
 // oauthScopeOverrides are the operations the specs leave unannotated that the Supabase MCP server
 // calls. The storage tools read and write the project's storage config, and no operation anywhere is
-// annotated storage:write, so without these the advertised scope could never be used. An override
-// for an operation the spec has since annotated is a mistake (TestOAuthScopeOverrides).
+// annotated storage:write, so without these the advertised scope could never be used. The health
+// advisor of get_advisors runs the v2 advisors operation, which the v2 spec leaves unannotated while
+// it annotates the v1 advisors database:read. An override for an operation the spec has since
+// annotated is a mistake (TestOAuthScopeOverrides).
 var oauthScopeOverrides = map[string]string{
 	"GET /v1/projects/{ref}/config/storage":   oauth.ScopeStorageRead,
 	"PATCH /v1/projects/{ref}/config/storage": oauth.ScopeStorageWrite,
+	"POST /v2/projects/{ref}/advisors/run":    oauth.ScopeDatabaseRead,
 }
 
 var (
