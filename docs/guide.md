@@ -192,10 +192,15 @@ supabase db dump --db-url "$OLD_DB_URL" -f data.sql --use-copy --data-only -x "s
 <!-- migrate-smoke: restore -->
 ```bash
 psql --single-transaction --variable ON_ERROR_STOP=1 \
+  --command 'alter default privileges in schema public revoke all on tables from anon, authenticated, service_role' \
+  --command 'alter default privileges in schema public revoke all on functions from anon, authenticated, service_role' \
+  --command 'alter default privileges in schema public revoke all on sequences from anon, authenticated, service_role' \
   --file roles.sql --file schema.sql \
   --command 'SET session_replication_role = replica' \
   --file data.sql --dbname "$NEW_DB_URL"
 ```
+
+The first three commands keep your access rules. A new table, function or sequence in `public` gets `ALL` for `anon`, `authenticated` and `service_role` from the project's default privileges, and the dump only adds grants: it never takes one away. Without the commands, a table that you locked down on hosted (`revoke all ... from anon`) is open again through the Data API. The commands run in the restore's transaction, so a failed restore leaves the default privileges as they were. The dump lists the grants of each object and sets the default privileges of your `postgres` role again at its end, so the project ends up with the grants it had on hosted. Step 8 compares them.
 
 The restore runs in one transaction, so a failure leaves the project as it was. Fix the cause and run the restore again. If psql stops, look for the message:
 
@@ -222,26 +227,47 @@ Then handle the rest by hand:
 - **Triggers and policies you added to `auth` or `storage`.** The dump leaves them out. Supabase's guide recreates them from `supabase db diff --linked --schema auth,storage`, run against the hosted project.
 - **Vault secrets and the pgsodium root key.** They don't move. The dumps leave the `vault` and `pgsodium` schemas out, each cluster on the node has its own root key, and the node refuses `PUT /v1/projects/<ref>/pgsodium`, the call that Supabase's guide uses to copy the key. Create the secrets again with `vault.create_secret`.
 
-**5. Copy the files in Storage**
+**5. Copy the settings**
+
+Read the Auth, PostgREST, Storage and Realtime settings from hosted and send them to the node with a personal access token for each side. Do this before you copy the files: the Storage settings hold the largest upload the project accepts (`fileSizeLimit`), which is 50 MiB on a new project. Remove the secrets first: hosted reports them as hashes, which the node would take as new values. Set the secrets again in the dashboard (OAuth client secrets, the SMTP password, hook secrets, the captcha secret and SMS provider keys).
+
+<!-- migrate-smoke: settings -->
+```bash
+secrets='^(external_.*_secret|hook_.*_secrets|nimbus_oauth_client_secret|security_captcha_secret|sms_messagebird_access_key|sms_textlocal_api_key|sms_twilio_auth_token|sms_twilio_verify_auth_token|sms_vonage_api_secret|smtp_pass|jwt_secret)$'
+for path in config/auth postgrest config/storage config/realtime; do
+  curl -fsS -H "Authorization: Bearer $OLD_TOKEN" "$OLD_API/v1/projects/$OLD_REF/$path" |
+    jq --arg re "$secrets" 'with_entries(select(.key | test($re) | not))' |
+    curl -fsS -X PATCH -H "Authorization: Bearer $NEW_TOKEN" -H 'Content-Type: application/json' --data @- "$NEW_API/v1/projects/$NEW_REF/$path" > /dev/null
+done
+```
+
+The node ignores a setting it doesn't know. If it answers 400, the message names a setting it refuses (for example a hook URL that isn't HTTPS): fix or remove that setting and send again.
+
+**6. Copy the files in Storage**
 
 The restore brought the buckets and the list of objects. Copy the files. This loop reads that list from the new database, downloads each file from the hosted project and uploads it to the node, with its content type and cache control. Set the URLs and the `service_role` keys of both projects first (a hosted URL looks like `https://<hosted ref>.supabase.co`, the node's like `https://<ref>.api.<domain>`):
 
 <!-- migrate-smoke: storage -->
 ```bash
 enc() { jq -rn --arg p "$1" '$p | split("/") | map(@uri) | join("/")'; }
+rm -f storage-failed.txt
 psql "$NEW_DB_URL" --no-align --tuples-only --field-separator $'\t' --command "select bucket_id, name, coalesce(metadata->>'mimetype', 'application/octet-stream'), coalesce(metadata->>'cacheControl', 'max-age=3600') from storage.objects where metadata is not null order by 1, 2" |
 while IFS=$'\t' read -r bucket name mime cache; do
   path="$bucket/$(enc "$name")"
-  curl -fsS "$OLD_URL/storage/v1/object/authenticated/$path" -H "apikey: $OLD_KEY" -H "Authorization: Bearer $OLD_KEY" |
+  if curl -fsS "$OLD_URL/storage/v1/object/authenticated/$path" -H "apikey: $OLD_KEY" -H "Authorization: Bearer $OLD_KEY" |
     curl -fsS -o /dev/null -X POST "$NEW_URL/storage/v1/object/$path" -H "apikey: $NEW_KEY" -H "Authorization: Bearer $NEW_KEY" \
-      -H "x-upsert: true" -H "Content-Type: $mime" -H "Cache-Control: $cache" --data-binary @-
-  echo "copied $bucket/$name"
+      -H "x-upsert: true" -H "Content-Type: $mime" -H "Cache-Control: $cache" --data-binary @-; then
+    echo "copied $bucket/$name"
+  else
+    echo "$bucket/$name" >> storage-failed.txt
+  fi
 done
+if [ -s storage-failed.txt ]; then echo "Not copied:"; cat storage-failed.txt; false; fi
 ```
 
-An object name with a tab or a line break breaks the loop. For a large bucket, the script in Supabase's guide, which works against both URLs, copies in batches.
+The loop goes on after an object fails and lists the failures at the end. If an upload answers 413, the object is larger than the project's `fileSizeLimit`: check that step 5 copied the Storage settings, raise the limit if the hosted value is lower than the object, and run the loop again (it copies every object once more). An object name with a tab or a line break breaks the loop, and curl holds one object in memory while it uploads. For a large bucket, the script in Supabase's guide, which works against both URLs, copies in batches.
 
-**6. Deploy the Edge Functions and set the secrets**
+**7. Deploy the Edge Functions and set the secrets**
 
 Download each function from the hosted project (after `supabase login` with a hosted token) and deploy it to the node with the profile and token from [Use the Supabase CLI](#use-the-supabase-cli):
 
@@ -257,25 +283,29 @@ The download doesn't include import maps or `deno.json`, so add them back. Set `
 supabase --profile ./supavise-profile.yaml secrets set --env-file ./prod.env --project-ref <ref>
 ```
 
-**7. Copy the settings**
-
-Read the Auth, PostgREST, Storage and Realtime settings from hosted and send them to the node with a personal access token for each side. Remove the secrets first: hosted reports them as hashes, which the node would take as new values. Set the secrets again in the dashboard (OAuth client secrets, the SMTP password, hook secrets, the captcha secret and SMS provider keys).
-
-<!-- migrate-smoke: settings -->
-```bash
-secrets='^(external_.*_secret|hook_.*_secrets|nimbus_oauth_client_secret|security_captcha_secret|sms_messagebird_access_key|sms_textlocal_api_key|sms_twilio_auth_token|sms_twilio_verify_auth_token|sms_vonage_api_secret|smtp_pass|jwt_secret)$'
-for path in config/auth postgrest config/storage config/realtime; do
-  curl -fsS -H "Authorization: Bearer $OLD_TOKEN" "$OLD_API/v1/projects/$OLD_REF/$path" |
-    jq --arg re "$secrets" 'with_entries(select(.key | test($re) | not))' |
-    curl -fsS -X PATCH -H "Authorization: Bearer $NEW_TOKEN" -H 'Content-Type: application/json' --data @- "$NEW_API/v1/projects/$NEW_REF/$path" > /dev/null
-done
-```
-
-The node ignores a setting it doesn't know. If it answers 400, the message names a setting it refuses (for example a hook URL that isn't HTTPS): fix or remove that setting and send again.
-
 **8. Check, then switch your app**
 
-Compare row counts, sign in as a user and read a table with RLS as your app does (`ANON_KEY` is the anon key your app holds):
+Compare the grants of `anon`, `authenticated`, `service_role` and `PUBLIC` (shown as `-`) on the tables, views, sequences and functions of `public`. The command prints nothing when both projects agree. A line that starts with `<` is a grant that only the first project has, and one that starts with `>` a grant that only the second has: fix the difference with `grant` or `revoke`.
+
+<!-- migrate-smoke: grants -->
+```bash
+grants="select format('%s %s %s %s', kind, name, grantee, privilege) from (
+  select 'table' as kind, c.oid::regclass::text as name, a.grantee::regrole::text as grantee, a.privilege_type as privilege
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace, aclexplode(c.relacl) a
+  where n.nspname = 'public' and c.relkind in ('r', 'p', 'v', 'm', 'f', 'S')
+    and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'e')
+  union all
+  select 'function', p.oid::regprocedure::text, a.grantee::regrole::text, a.privilege_type
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace, aclexplode(p.proacl) a
+  where n.nspname = 'public'
+    and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
+) g where grantee in ('anon', 'authenticated', 'service_role', '-') order by 1"
+psql "$OLD_DB_URL" --no-align --tuples-only --command "$grants" > grants-old.txt
+psql "$NEW_DB_URL" --no-align --tuples-only --command "$grants" > grants-new.txt
+diff grants-old.txt grants-new.txt
+```
+
+Then compare row counts, sign in as a user and read a table with RLS as your app does (`ANON_KEY` is the anon key your app holds):
 
 ```bash
 psql "$NEW_DB_URL" --command "select count(*) from auth.users"
@@ -289,11 +319,11 @@ What doesn't move, in short: the `sb_` keys, Vault secrets and the pgsodium key,
 
 ## Move a project off Supavise
 
-Hosted Supabase, or any Postgres 17, takes a Supavise project the same way: you dump through the node's pooler and restore into the new database. Follow [the steps above](#move-a-project-from-hosted-supabase) with the two sides swapped: `OLD_DB_URL` is the node's connection string (`postgres.<ref>` on `pooler.<domain>:5432`) and `NEW_DB_URL` the new project's. The dump commands, the restore, the pg_cron step and the Storage loop are the same.
+Hosted Supabase, or any Postgres 17, takes a Supavise project the same way: you dump through the node's pooler and restore into the new database. Follow [the steps above](#move-a-project-from-hosted-supabase) with the two sides swapped: `OLD_DB_URL` is the node's connection string (`postgres.<ref>` on `pooler.<domain>:5432`) and `NEW_DB_URL` the new project's. The dump commands, the restore, the pg_cron step, the grants comparison and the Storage loop are the same.
 
 - **Keys.** Hosted can't import keys. If you want users' access tokens to stay valid, set the node's JWT secret on the new hosted project (**Project settings**, **JWT keys**, **Change legacy JWT secret**, **Create my own secret**; read the node's secret with `supavise projects get <ref> --show-keys`). Hosted then signs new `anon` and `service_role` keys, and your app needs them.
 - **Edge Functions.** Download each function from the node with the profile (`supabase --profile ./supavise-profile.yaml functions download <slug> --project-ref <ref>`), then deploy it to the hosted project. The node never returns secret values: `supabase secrets list` shows digests, so set the values again from your own records.
-- **Settings.** Use the loop in step 7 the other way round. The node reports the same hashes for secrets, so the same filter applies.
+- **Settings.** Use the loop in step 5 the other way round. The node reports the same hashes for secrets, so the same filter applies.
 - **Vault and pgsodium.** The dumps leave them out. `GET /v1/projects/<ref>/pgsodium` returns the node project's root key if you need to decrypt data that you export yourself.
 - **Auth and Storage versions.** If the restore stops on an `auth` or `storage` table or column that the new project lacks, the node runs a newer version than the target. Fix it as in step 3.
 
