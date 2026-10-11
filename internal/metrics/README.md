@@ -60,13 +60,13 @@ A read replica has no samples: a request for its metrics answers its lag and an 
 | `disk_space_exhaustion` and the `project_disk_high` alert (against a quota in force) | 80% of the quota | 90% |
 | `cpu_exhaustion` (mean busy over the last 5 samples) | 80% | 90% |
 | `memory_and_swap_exhaustion` (mean of memory used over the limit, last 5 samples) | 85% | 95%, or a process of the project killed for lack of memory in the last 15 minutes |
-| `memory_low` alert (node) | `MemAvailable` under `[health] memory_low_percent` of the node's memory (default 10%), or some task waited for memory for 25% of the last minute (PSI `some avg60`) | under half of that, or all tasks waited for 10% of it (PSI `full avg60`) |
+| `memory_low` alert (node) | `MemAvailable` under `[health] memory_low_percent` of the node's memory (default 10%), or some task waited for memory for 25% of the last minute (PSI `some avg60`) while under 3 times that percentage is available | under half of that percentage, or all tasks waited for 10% of the minute (PSI `full avg60`) while under 2 times it is available |
 
 `is_readonly_mode_enabled` is always false, `need_pitr`, `disk_io_exhaustion` and the `auth_*` fields are null. Supavise has no read-only mode: a project past its quota fails its writes with `No space left on device`, for that project alone.
 
 An alert starts at its line and ends only when the value is well back across it: the disk alerts end 5 points below the line that raised them (75% and 85%), the memory alert at 1.5 times the line (15% available) and at half the PSI value. A warning and the critical state of the same matter have keys of their own, so the critical one is told even when the warning was sent minutes ago. A condition that is not reported for 10 minutes (the project was paused, its node stopped reporting) ends. The checker's debounce (`[alerts] unhealthy_after_seconds`) applies as to every condition.
 
-The node can run out of memory while every project is under its own limit, because `[compute] overcommit` lets the limits add up to more than the memory. `memory_low` is the check that sees it, from `/proc/meminfo` and `/proc/pressure/memory`.
+The stall times of `/proc/pressure/memory` are the whole node's and include a project that reclaims within its own memory limit, so they count only together with little available memory. The node can run out of memory while every project is under its own limit, because `[compute] overcommit` lets the limits add up to more than the memory. `memory_low` is the check that sees it, from `/proc/meminfo` and `/proc/pressure/memory`.
 
 ## Tests
 

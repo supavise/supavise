@@ -48,6 +48,10 @@ const (
 	psiSomeWarn  = 25.0
 	psiFullCrit  = 10.0
 	psiClearFrac = 0.5
+	// Pressure is judged only while the available memory is under this many times the low line (3
+	// times 10% is 30%) for the warning, and this many for the critical alert.
+	psiHeadroomWarn = 3
+	psiHeadroomCrit = 2
 )
 
 // Warnings are the resource warnings of one project that this node can tell.
@@ -198,9 +202,14 @@ func (s *Service) memoryConditions(now time.Time) []Condition {
 		some, full = n.Pressure.SomeAvg60, n.Pressure.FullAvg60
 	}
 
+	// Pressure counts only with little headroom to go with it: the stall time of /proc/pressure/memory
+	// is the whole node's, and it includes the tasks of a project that reclaims within its own memory
+	// limit, which is that project's matter (its resource warning) and not the node's.
 	const wk, ck = KindMemoryLow + "/", KindMemoryLow + "/critical"
-	warn := latch(s.raised[wk], avail, low, low*1.5, false) || latch(s.raised[wk], some, psiSomeWarn, psiSomeWarn*psiClearFrac, true)
-	crit := latch(s.raised[ck], avail, low/2, low, false) || latch(s.raised[ck], full, psiFullCrit, psiFullCrit*psiClearFrac, true)
+	warn := latch(s.raised[wk], avail, low, low*1.5, false) ||
+		(avail < low*psiHeadroomWarn && latch(s.raised[wk], some, psiSomeWarn, psiSomeWarn*psiClearFrac, true))
+	crit := latch(s.raised[ck], avail, low/2, low, false) ||
+		(avail < low*psiHeadroomCrit && latch(s.raised[ck], full, psiFullCrit, psiFullCrit*psiClearFrac, true))
 	warn = warn || crit
 	s.raised[wk], s.raised[ck] = warn, crit
 

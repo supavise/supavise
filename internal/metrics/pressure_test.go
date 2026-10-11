@@ -57,11 +57,29 @@ func TestPressureNodeMemoryHasHysteresis(t *testing.T) {
 		{1_300_000, "", ""},                                                          // 16.25%: over 1.5 times the line
 		{2_000_000, psi(30, 0), "memory_low/:warning"},                               // plenty of memory, tasks wait for it
 		{2_000_000, psi(14, 0), "memory_low/:warning"},                               // inside the band
-		{2_000_000, psi(30, 12), "memory_low/:warning memory_low/critical:critical"}, // every task waits
+		{1_400_000, psi(30, 12), "memory_low/:warning memory_low/critical:critical"}, // 17.5% available and every task waits
 	} {
 		if got := step(c.availKB, c.pressure); got != c.want {
 			t.Fatalf("available %d kB, pressure %q: conditions = %q, want %q", c.availKB, c.pressure, got, c.want)
 		}
+	}
+}
+
+// The stall time is the whole node's and includes a project that reclaims within its own limit. With
+// plenty of memory available that is the project's matter, not the node's.
+func TestPressureIgnoresStallsWhileMemoryIsPlentiful(t *testing.T) {
+	r := newRig(t, nil)
+	r.lister.ps = nil
+	writeProc(t, r.proc, "meminfo", meminfo(4_800_000)) // 60% available
+	writeProc(t, r.proc, "pressure/memory", psi(80, 40))
+	r.tick(t0.Add(2 * time.Second))
+	if got := keysOf(r.svc.Pressure()); got != "" {
+		t.Fatalf("conditions with 60%% available: %s", got)
+	}
+	writeProc(t, r.proc, "meminfo", meminfo(1_400_000)) // 17.5%: critical needs under 20%, the warning under 30%
+	r.tick(t0.Add(62 * time.Second))
+	if got := keysOf(r.svc.Pressure()); got != "memory_low/:warning memory_low/critical:critical" {
+		t.Fatalf("conditions with 17.5%% available and stalls: %s", got)
 	}
 }
 
