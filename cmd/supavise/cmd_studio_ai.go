@@ -342,7 +342,7 @@ var refreshStudioAI = func(cmd *cobra.Command) error {
 		fmt.Fprintf(errw, "warning: Studio was not updated (%v); run `supavise fleet start` to apply the settings\n", err)
 		return nil
 	}
-	fmt.Fprintln(out, "Studio uses the new settings. On a cluster, run the same command on the other server too: the settings belong to the server, and a server that leads after a failover needs them.")
+	fmt.Fprintln(out, "Studio runs with the new settings if this server runs Studio (a server that follows another does not, and a node without a Studio build has none to restart). On a cluster, run the same command on the other server too: the settings belong to the server, and the one that leads after a failover needs them.")
 	return nil
 }
 
