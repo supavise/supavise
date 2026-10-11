@@ -232,3 +232,27 @@ func TestStoreSweepRemovesDeletedProjectsOnly(t *testing.T) {
 		t.Fatalf("a store with no directory: %d, %v", n, err)
 	}
 }
+
+// Two samples of one minute (the daemon started again within it) are one: the second wins, except
+// for a value it could not measure, which the first keeps.
+func TestStoreMergesTwoSamplesOfOneMinute(t *testing.T) {
+	s := newTestStore(t, t0.Add(time.Hour))
+	first := sampleAt(t0, 40)
+	first.Set(Backends, 5)
+	second := NewSample(t0)
+	second.Set(Backends, 9)
+	second.Set(MemUsed, 123)
+	for _, smp := range []Sample{first, second} {
+		if err := s.Append("abc", smp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	us, _ := s.Range("abc", t0, t0.Add(time.Minute))
+	if len(us) != 1 {
+		t.Fatalf("%d units", len(us))
+	}
+	u := us[0]
+	if u.Mean[CPUBusy] != 40 || u.Mean[Backends] != 9 || u.Mean[MemUsed] != 123 {
+		t.Fatalf("cpu %v backends %v mem %v, want 40 9 123", u.Mean[CPUBusy], u.Mean[Backends], u.Mean[MemUsed])
+	}
+}

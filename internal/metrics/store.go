@@ -174,8 +174,21 @@ func (s *Store) Append(ref string, smp Sample) error {
 
 	m := minuteOf(smp.At)
 	rec := make([]byte, rawRecSize)
+	off := int64(rawRegionOff + slotOf(m, RawSlots)*rawRecSize)
+	// A second sample of the same minute (the daemon started again within it) keeps the values the
+	// first one measured and this one could not, the rates above all.
+	old := make([]byte, rawRecSize)
+	if n, err := f.ReadAt(old, off); err == nil || (err == io.EOF && n == len(old)) {
+		if om, ov := getRaw(old); om == m {
+			for i := range smp.V {
+				if math.IsNaN(smp.V[i]) && !math.IsNaN(ov[i]) {
+					smp.V[i] = ov[i]
+				}
+			}
+		}
+	}
 	putRaw(rec, m, &smp.V)
-	if _, err := f.WriteAt(rec, int64(rawRegionOff+slotOf(m, RawSlots)*rawRecSize)); err != nil {
+	if _, err := f.WriteAt(rec, off); err != nil {
 		return err
 	}
 
