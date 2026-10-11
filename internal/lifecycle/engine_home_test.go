@@ -3,8 +3,12 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/supavise/supavise/internal/fleet"
 	"github.com/supavise/supavise/internal/projectconfig"
@@ -254,6 +258,107 @@ func TestRoutedEngineJudgesCapacityAgainstTheHome(t *testing.T) {
 	remote.err = errors.New("connection refused")
 	if _, err := c.e.Resize(ctx, ref, "small"); err == nil || !strings.Contains(err.Error(), "node "+c.home2.NodeID) || errors.As(err, &ce) {
 		t.Fatalf("a resize with an unreachable home: %v", err)
+	}
+}
+
+// A branch starts on its parent's server, so that server's room judges it, and the leader's does not:
+// the leader may be full and the branch still fits where it runs, or the other way round. The resources
+// are asked for the parent, the only project of the branch's family a peer knows yet.
+func TestBranchCreateIsJudgedAgainstTheParentsServer(t *testing.T) {
+	ctx := context.Background()
+	c := newClusterHarness(t, "n1")
+	c.cfg.Compute.Overcommit = 1
+	c.e = NewEngine(c.cfg, c.reg, c.sec, fakeArts{}, routedPlane{c.plane}, Options{Fleet: fleet.Fleet{c.tenant}, Backup: c.backup, NodeID: "n1"})
+	leader := &NodeResources{MemoryBytes: 64 * gib, CPUs: 16}
+	c.e.SetNode(func() NodeResources { return *leader })
+	remote := &remoteNodes{res: NodeResources{MemoryBytes: 3 * gib, CPUs: 4}}
+	c.e.SetRemoteNodes(remote)
+	n := 0
+	branch := func(name, parent, class string) (*registry.Project, error) {
+		n++
+		return c.e.Create(ctx, CreateRequest{Name: name, Class: class, Branch: &registry.BranchInfo{
+			ID: fmt.Sprintf("7c0c9c4e-0000-4000-8000-%012d", n), ParentRef: parent, Name: name,
+		}})
+	}
+	count := func() int {
+		t.Helper()
+		ps, err := c.reg.ListProjects(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(ps)
+	}
+
+	// The parent's server has 3 GB and its parent holds 1: a branch of 4 GB is refused although the
+	// leader has 64.
+	var ce *CapacityError
+	before := count()
+	if _, err := branch("big", c.home2.Ref, "medium"); !errors.As(err, &ce) {
+		t.Fatalf("a branch too large for its parent's server: %v", err)
+	}
+	if got := remote.asked; len(got) != 1 || got[0] != c.home2.NodeID+" "+c.home2.Ref {
+		t.Fatalf("resources asked of %v, want the parent's server and ref", got)
+	}
+	if got := count(); got != before { // the refused create left no row
+		t.Fatalf("%d projects after a refused branch, had %d", got, before)
+	}
+	if _, err := branch("fits", c.home2.Ref, "nano"); err != nil {
+		t.Fatalf("a branch that fits its parent's server: %v", err)
+	}
+
+	// The leader is full and the parent is on the leader: refused there, on the leader's numbers.
+	*leader = NodeResources{MemoryBytes: 256 * 1024 * 1024, CPUs: 2}
+	remote.asked = nil
+	if _, err := branch("lead", c.home1.Ref, "small"); !errors.As(err, &ce) {
+		t.Fatalf("a branch too large for the leader: %v", err)
+	}
+	if len(remote.asked) != 0 {
+		t.Fatalf("a peer was asked about a project homed here: %v", remote.asked)
+	}
+	// ... while a branch of the parent on the second server does not depend on the leader's room.
+	if _, err := branch("away", c.home2.Ref, "nano"); err != nil {
+		t.Fatalf("a branch whose server has room, with the leader full: %v", err)
+	}
+}
+
+// Waiting for the wake gate of a branch to let go of the database port is for the project's own server.
+// On another, the canonical port is the mesh forwarder to the home, which always listens, so a resume or a
+// final backup routed from the leader must not wait for it.
+func TestAwaitDatabasePortSkipsAProjectHomedElsewhere(t *testing.T) {
+	c := newClusterHarness(t, "n1")
+	listen := func(p *registry.Project) net.Listener {
+		t.Helper()
+		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(c.cfg.PortsFor(p.Ref, p.Seq).Postgres)))
+		if err != nil {
+			t.Skipf("the project's database port is taken on this machine: %v", err)
+		}
+		t.Cleanup(func() { _ = l.Close() })
+		go func() {
+			for {
+				cn, err := l.Accept()
+				if err != nil {
+					return
+				}
+				_ = cn.Close()
+			}
+		}()
+		return l
+	}
+	timed := func(p *registry.Project, patience time.Duration) time.Duration {
+		ctx, cancel := context.WithTimeout(context.Background(), patience)
+		defer cancel()
+		start := time.Now()
+		c.e.awaitDatabasePort(ctx, p)
+		return time.Since(start)
+	}
+
+	listen(c.home2)
+	if d := timed(c.home2, time.Second); d > 200*time.Millisecond {
+		t.Fatalf("waited %v for a listener on the port of a project homed on another server", d)
+	}
+	listen(c.home1)
+	if d := timed(c.home1, 400*time.Millisecond); d < 300*time.Millisecond {
+		t.Fatalf("returned after %v although something listens on the port of a project homed here", d)
 	}
 }
 

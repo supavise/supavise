@@ -136,7 +136,8 @@ new function stays callable through `rpc`, on hosted too. Objects that exist kee
   `KeepRecord` delete removes it. Before `Resume` starts Postgres it waits at most three seconds for nothing to
   listen on the project's database port (`awaitDatabasePort`): a branch asleep for idleness has the branching
   service's wake gate there, which closes the moment the status leaves `INACTIVE`. The final backup of a paused
-  project waits the same way.
+  project waits the same way. A project homed on another server is not waited for: its canonical port is the
+  mesh forwarder to the home, which listens whatever the status.
 - `Delete`/`DeleteWith`: final base backup through `BaseBackuper` (skipped for `INIT_FAILED` projects and
   with `SkipFinalBackup`; a paused project's database is started just for it), then tenants, route,
   units, data, the project's Storage objects (`<state>/system/storage/objects/stub/<ref>`) and the
@@ -475,7 +476,10 @@ node promises more memory than it has.
 - A create that names its size (`CreateRequest.Class`; a create without one gets Micro unchecked), a
   resize and a resume are refused with `*CapacityError` (400 through the API) when the node cannot
   honor them. Branch creates and restores as a new project always name their size, so they are judged
-  like `--size`. Going down never needs room.
+  like `--size`. A branch is judged against the node it will run on, its parent's (`capacityHome`; a recreated
+  row keeps its own), so with `SetRemoteNodes` a branch of a project homed on a follower is judged on the
+  follower's memory and not the leader's; the resources are asked for the parent, the only project of the
+  family a peer knows before the branch's row exists. Going down never needs room.
 - Projects that count: every one but the system project, a paused one (`INACTIVE`; it holds no room, so
   `Resume` judges its cap and cores like an upsize; the restart recovery of a daemon is not judged), a
   failed one and a removed one.
@@ -677,7 +681,7 @@ through two more seams that `internal/app` sets beside it:
   (`OpenOptions.ReadOnly`) has no timers to start: `supavise backups create` writes the registry,
   which its copy does not take, so its `StartTimer` stops the timer (one left from when the node led)
   and the leader takes the nightly backup of the projects homed on it (`placement.ScheduledBackups`).
-- `SetRemoteNodes` (`NodeResourcer`): a resume, a resize and `Offers` are judged against the memory and
+- `SetRemoteNodes` (`NodeResourcer`): a resume, a resize, the create of a branch and `Offers` are judged against the memory and
   cores of the home, read on that node, with the registry's projects and replicas for it and the leader's
   `[compute] overcommit`. Without it a project homed elsewhere is not judged.
 

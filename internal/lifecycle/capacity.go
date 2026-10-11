@@ -371,8 +371,10 @@ func (e *Engine) lockCapacity(ctx context.Context) (func(), error) {
 // the node, and returns the release of the lock that keeps another create or resize from taking
 // the room before the new row counts. Without a node (SetNode) or an explicit size it checks nothing:
 // a plain create takes the default size and is never refused. Branches and restores as a new
-// project always name their size (the branch's, the original's), so the node judges them.
-func (e *Engine) holdCapacity(ctx context.Context, req CreateRequest, size Class) (release func(), err error) {
+// project always name their size (the branch's, the original's), so the node judges them. The node
+// judged is the one home is homed on (a branch lives where its parent does, so that is not always
+// this one), as holdResume judges a project coming back.
+func (e *Engine) holdCapacity(ctx context.Context, req CreateRequest, size Class, home *registry.Project) (release func(), err error) {
 	noop := func() {}
 	if req.Class == "" || e.capacity.node == nil {
 		return noop, nil
@@ -383,7 +385,7 @@ func (e *Engine) holdCapacity(ctx context.Context, req CreateRequest, size Class
 	}
 	var once sync.Once
 	release = func() { once.Do(unlock) }
-	cp, known, err := e.Capacity(ctx, "")
+	cp, known, err := e.capacityOf(ctx, home, "")
 	if err == nil && known {
 		err = cp.Fits(size)
 	}
@@ -392,6 +394,23 @@ func (e *Engine) holdCapacity(ctx context.Context, req CreateRequest, size Class
 		return noop, err
 	}
 	return release, nil
+}
+
+// capacityHome is the project whose server judges a create: a branch's parent, because the row of a
+// branch does not exist yet and another server answers only for a project homed on it, a recreated
+// row, which keeps its server, and otherwise p itself (a plain project starts on this server).
+func (e *Engine) capacityHome(ctx context.Context, req CreateRequest, p *registry.Project) *registry.Project {
+	switch {
+	case req.Recreate:
+		if cur, err := e.reg.GetProject(ctx, p.Ref); err == nil {
+			return cur
+		}
+	case p.Branch != nil:
+		if parent, err := e.reg.GetProject(ctx, p.Branch.ParentRef); err == nil {
+			return parent
+		}
+	}
+	return p
 }
 
 // holdResume judges a paused project coming back against the node it is homed on, as an upsize is
