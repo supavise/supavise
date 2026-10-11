@@ -446,3 +446,47 @@ test('branches are persistent (exempt from idle pause) only on a node that idle-
     g.close()
   }
 })
+
+// fetch-studio.sh with a gh that knows two branches' runs: it takes the run of the current branch that pins this checkout's
+// Studio file before the older build on main, skips a run whose commit pins another file, and says how to build one.
+test('fetch-studio.sh picks the build that this checkout pins, from the branch before main', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fetch-studio-'))
+  const pin = (ps) => readFileSync(join(HERE, '../../../internal/versions/versions.yaml'), 'utf8').replace(/^(\s+patchset:).*$/m, `$1 ${ps}`)
+  const want = (() => {
+    const y = pin(readFileSync(join(HERE, '../../../studio/PATCHSET'), 'utf8').trim())
+    const tag = /^studio:\n(?:[ \t]+.*\n|\n)*?[ \t]+tag:[ \t]*(\S+)/m.exec(y)[1]
+    const ps = /^studio:\n(?:[ \t]+.*\n|\n)*?[ \t]+patchset:[ \t]*(\S+)/m.exec(y)[1]
+    return `supavise-studio-${tag}-p${ps}-linux-amd64.tar.zst`
+  })()
+  const current = readFileSync(join(HERE, '../../../internal/versions/versions.yaml'), 'utf8')
+  const older = pin(9999)
+  mkdirSync(join(dir, 'bin'))
+  writeFileSync(join(dir, 'current.yaml'), current)
+  writeFileSync(join(dir, 'older.yaml'), older)
+  writeFileSync(join(dir, 'bin/gh'), `#!/usr/bin/env bash
+# run list --branch B: main has 11 (older pin) and 10 (older pin); ws/x has 20 (this checkout's pin) unless NOBRANCH is set
+case "$1 $2" in
+  "run list")
+    for a in "$@"; do [[ \${prev:-} == --branch ]] && br=$a; prev=$a; done
+    if [[ \${br:-} == main ]]; then printf '11 sha-old\\n10 sha-old\\n'; elif [[ \${br:-} == ws/x && -z \${NOBRANCH:-} ]]; then printf '20 sha-cur\\n'; fi ;;
+  "api -H") case "$*" in *sha-cur*) cat "$DIR/current.yaml" ;; *) cat "$DIR/older.yaml" ;; esac ;;
+  "run download") for a in "$@"; do [[ \${prev:-} == --dir ]] && d=$a; prev=$a; done; mkdir -p "$d"; : >"$d/$WANT" ;;
+esac
+`, { mode: 0o755 })
+  const run = (extra) => {
+    try {
+      const out = execFileSync('bash', [join(HERE, 'fetch-studio.sh'), join(dir, 'dest')], {
+        env: { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH}`, DIR: dir, WANT: want, GITHUB_REPOSITORY: 'o/r', GITHUB_SHA: 'abc', GITHUB_REF_NAME: 'ws/x', ...extra }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      return { ok: true, out }
+    } catch (e) {
+      return { ok: false, err: String(e.stderr) }
+    }
+  }
+  const got = run({})
+  assert.ok(got.ok, got.err)
+  assert.ok(got.out.trim().endsWith(want))
+  const none = run({ NOBRANCH: '1' })
+  assert.ok(!none.ok)
+  assert.match(none.err, /gh workflow run studio\.yml --ref ws\/x/)
+})

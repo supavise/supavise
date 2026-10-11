@@ -7,7 +7,8 @@ name: studio-crawl
 # (tests/linux/crawl/allowlist.json), so the dashboard cannot gain a dead end, or lose a fix, unnoticed.
 #
 # It does not build Studio: the crawl takes the amd64 build of studio.yml (tests/linux/crawl/fetch-studio.sh), the newest
-# green one from main or, when the push changed Studio, the one studio.yml builds for this commit. The path filter of
+# green one of this branch or of main that pins the same Studio file, or, when the push changed Studio, the one studio.yml
+# builds for this commit. The path filter of
 # studio.yml is Studio's alone, which is why a change of the API server alone never started a browser run: this
 # workflow starts on pushes that touch the server, the proxy, the fleet, branching, domains or GitHub (the paths below)
 # and runs on every push to main, so that the release gate (deploy/release-gate.sh) always finds a run on the tagged
