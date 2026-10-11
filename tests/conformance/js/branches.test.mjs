@@ -44,7 +44,10 @@ describe('branches', () => {
       const g = await mgmt('GET', `/v1/projects/${p.ref}/branches/${name}`)
       assert.equal(g.status, 200, JSON.stringify(g.body))
       assert.notEqual(g.body.status, 'MIGRATIONS_FAILED', JSON.stringify(g.body))
-      return g.body.status === 'MIGRATIONS_PASSED' ? g.body : null
+      assert.notEqual(g.body.status, 'FUNCTIONS_FAILED', JSON.stringify(g.body))
+      // A create ends at FUNCTIONS_DEPLOYED, as on hosted. MIGRATIONS_PASSED is only the step before it (the functions
+      // deploy), and a delete sent then would meet a branch that is still busy.
+      return g.body.status === 'FUNCTIONS_DEPLOYED' ? g.body : null
     }, { timeout: 200_000, interval: 3000 })
     const detail = await waitFor('the branch project to be ACTIVE_HEALTHY', async () => {
       const g = await mgmt('GET', `/v1/branches/${branch.id}`)
