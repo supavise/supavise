@@ -17,9 +17,11 @@ const (
 	upStorage = "storage"
 	// upStorageAdmin is Storage's admin API (the port with the tenant and S3 credential routes).
 	upStorageAdmin = "storage-admin"
+	// upPostgREST is the project's own PostgREST (rest_graphql.go).
+	upPostgREST = "postgrest"
 )
 
-// upstream returns the loopback base URL of a service of p (GoTrue is per project;
+// upstream returns the loopback base URL of a service of p (GoTrue and PostgREST are per project;
 // Storage is the shared fleet instance).
 func (s *Server) upstream(p *registry.Project, svc string) string {
 	if s.upstreamOverride != nil {
@@ -34,6 +36,8 @@ func (s *Server) upstream(p *registry.Project, svc string) string {
 		return "http://127.0.0.1:" + itoa(int64(s.cfg.Ports.Storage))
 	case upStorageAdmin:
 		return "http://127.0.0.1:" + itoa(int64(s.cfg.Ports.StorageAdmin))
+	case upPostgREST:
+		return "http://127.0.0.1:" + itoa(int64(s.cfg.PortsFor(p.Ref, p.Seq).PostgREST))
 	}
 	return ""
 }
