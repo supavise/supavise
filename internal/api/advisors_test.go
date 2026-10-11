@@ -178,6 +178,10 @@ func TestAdvisorsShareOneRunAndStartAgainAfterAChange(t *testing.T) {
 		{"database/query", "POST", "/v1/projects/" + testRef + "/database/query", map[string]any{"query": "alter table notes enable row level security"}},
 		{"migration", "POST", "/v1/projects/" + testRef + "/database/migrations", map[string]any{"query": "create table t(id int)", "name": "t"}},
 		{"pg-meta query", "POST", "/platform/pg-meta/" + testRef + "/query", map[string]any{"query": "ALTER TABLE public.notes ENABLE ROW LEVEL SECURITY"}},
+		// A line break before the keyword is \n inside the JSON body, which leaves no word boundary.
+		{"pg-meta query after a line break", "POST", "/platform/pg-meta/" + testRef + "/query", map[string]any{"query": "select 1;\ncreate table t2(id int)"}},
+		{"pg-meta query after a comment", "POST", "/platform/pg-meta/" + testRef + "/query", map[string]any{"query": "-- fix\nalter table public.notes enable row level security;"}},
+		{"pg-meta query after a tab", "POST", "/platform/pg-meta/" + testRef + "/query", map[string]any{"query": "begin;\n\talter table t enable row level security;\ncommit;"}},
 	} {
 		before := f.lintRuns()
 		if rec := f.do(c.method, c.path, c.body); rec.Code >= 300 {
@@ -540,6 +544,29 @@ func TestAdvisorRulesStayWithTheirProject(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
 	if len(out.Exceptions) != 0 {
 		t.Errorf("rules of another project: %v", out.Exceptions)
+	}
+}
+
+func TestMayChangeSchemaBody(t *testing.T) {
+	enc := func(sql string) []byte { b, _ := json.Marshal(map[string]any{"query": sql}); return b }
+	for name, c := range map[string]struct {
+		body []byte
+		want bool
+	}{
+		"newline before create":   {enc("select 1;\ncreate table t(a int)"), true},
+		"comment, then alter":     {enc("-- add table\ncreate table t(a int)"), true},
+		"tab before alter":        {enc("begin;\n\talter table t enable row level security;"), true},
+		"escaped line separator":  {enc("select '\u2028';\ndrop table t"), true},
+		"plain read":              {enc("select 1;\nselect 2"), false},
+		"word that starts alike":  {enc("select\ncreated_at from t"), false},
+		"not JSON, escaped break": {[]byte(`{"query":"select 1;\ncreate table t(a int)"`), true},
+		"not JSON, a read":        {[]byte(`select 1;\nselect 2`), false},
+		"another key":             {[]byte(`{"sql":"drop table t"}`), true},
+		"empty":                   {nil, false},
+	} {
+		if got := mayChangeSchemaBody(c.body); got != c.want {
+			t.Errorf("%s: mayChangeSchemaBody(%s) = %v", name, c.body, got)
+		}
 	}
 }
 
