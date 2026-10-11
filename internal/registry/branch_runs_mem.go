@@ -19,6 +19,15 @@ func cloneRun(r *BranchRun) BranchRun {
 	return c
 }
 
+// cloneRunNoLogs is cloneRun without the step logs, as the list reads return them.
+func cloneRunNoLogs(r *BranchRun) BranchRun {
+	c := cloneRun(r)
+	for i := range c.Steps {
+		c.Steps[i].Log = ""
+	}
+	return c
+}
+
 func (m *Memory) findRun(id string) *BranchRun {
 	for _, r := range m.branchRuns {
 		if r.ID == id {
@@ -63,7 +72,7 @@ func (m *Memory) ListBranchRuns(_ context.Context, ownerRef string, offset, limi
 	var mine []BranchRun
 	for i := len(m.branchRuns) - 1; i >= 0; i-- { // newest first
 		if m.branchRuns[i].OwnerRef == ownerRef {
-			mine = append(mine, cloneRun(m.branchRuns[i]))
+			mine = append(mine, cloneRunNoLogs(m.branchRuns[i]))
 		}
 	}
 	total := len(mine)
@@ -139,7 +148,7 @@ func (m *Memory) RunningBranchRuns(_ context.Context) ([]BranchRun, error) {
 	var out []BranchRun
 	for _, r := range m.branchRuns {
 		if r.Status == RunRunning {
-			out = append(out, cloneRun(r))
+			out = append(out, cloneRunNoLogs(r))
 		}
 	}
 	return out, nil

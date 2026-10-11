@@ -18,8 +18,9 @@ func scanBranchRun(row pgx.Row) (BranchRun, error) {
 	return r, mapErr(err)
 }
 
-// loadSteps fills the steps of the runs, in BranchRunSteps order.
-func (r *Postgres) loadSteps(ctx context.Context, runs []BranchRun) error {
+// loadSteps fills the steps of the runs, in BranchRunSteps order. The logs are read only when
+// withLogs is set: a list never needs them, and they can be large.
+func (r *Postgres) loadSteps(ctx context.Context, runs []BranchRun, withLogs bool) error {
 	if len(runs) == 0 {
 		return nil
 	}
@@ -30,8 +31,12 @@ func (r *Postgres) loadSteps(ctx context.Context, runs []BranchRun) error {
 		at[runs[i].ID] = i
 		runs[i].Steps = nil
 	}
+	logCol := "''::text"
+	if withLogs {
+		logCol = "log"
+	}
 	rows, err := r.pool.Query(ctx, `
-		select run_id::text, name, status, created_at, updated_at, log
+		select run_id::text, name, status, created_at, updated_at, `+logCol+`
 		  from supavise.branch_run_steps where run_id = any($1::text[]::uuid[])`, ids)
 	if err != nil {
 		return mapErr(err)
@@ -83,7 +88,7 @@ func (r *Postgres) GetBranchRun(ctx context.Context, id string) (*BranchRun, err
 		return nil, err
 	}
 	rs := []BranchRun{run}
-	if err := r.loadSteps(ctx, rs); err != nil {
+	if err := r.loadSteps(ctx, rs, true); err != nil {
 		return nil, err
 	}
 	return &rs[0], nil
@@ -106,7 +111,7 @@ func (r *Postgres) queryRuns(ctx context.Context, query string, args ...any) ([]
 	if err := rows.Err(); err != nil {
 		return nil, mapErr(err)
 	}
-	return out, r.loadSteps(ctx, out)
+	return out, r.loadSteps(ctx, out, false)
 }
 
 func (r *Postgres) ListBranchRuns(ctx context.Context, ownerRef string, offset, limit int) ([]BranchRun, int, error) {
