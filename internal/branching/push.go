@@ -66,6 +66,9 @@ func (s *Service) doPush(ctx context.Context, b *Branch, parent *registry.Projec
 	if err != nil {
 		return "", err
 	}
+	// A parent migration that another migration of the parent covers runs in full when that one is not
+	// pushed (cut by the version) and the branch does not have it.
+	apply = settleCovers(apply, branchMigs)
 	var parts []string
 	if len(apply) > 0 {
 		if _, err := s.applyHistory(ctx, b.Ref, apply, ApplyOptions{Atomic: true}); err != nil {
@@ -73,7 +76,9 @@ func (s *Service) doPush(ctx context.Context, b *Branch, parent *registry.Projec
 		}
 		parts = append(parts, fmt.Sprintf("applied %d migration(s) from %s: %s", len(apply), parent.Ref, versions(apply)))
 	}
-	// A push that stops at a version leaves the rest of the parent's schema alone.
+	// A push that stops at a version leaves the rest of the parent's schema alone, but the objects its
+	// migrations made are the branch's and the parent's alike now: the base moves to where the two sides
+	// agree, so that the diff of the branch does not list them as the branch's own changes.
 	if in.MigrationVersion == "" {
 		note, err := s.pushSchema(ctx, b, parent, in)
 		if err != nil {
@@ -81,6 +86,10 @@ func (s *Service) doPush(ctx context.Context, b *Branch, parent *registry.Projec
 		}
 		if note != "" {
 			parts = append(parts, note)
+		}
+	} else if len(apply) > 0 {
+		if _, ok, err := s.getBase(ctx, b.Ref); err == nil && ok {
+			s.syncBase(ctx, b, parent, "push")
 		}
 	}
 	s.phase(ctx, StepDeploy)

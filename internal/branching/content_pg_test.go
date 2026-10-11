@@ -635,3 +635,165 @@ func TestPushRecordsCoveredMigrationsWithoutRunningThem(t *testing.T) {
 	}
 	h.histories(parentRef, old.Ref)
 }
+
+// scalar returns the first column of the first row of a query on ref, as text.
+func (h *pgHarness) scalar(ref, sql string) string {
+	h.t.Helper()
+	h.mu.Lock()
+	name := h.dbs[ref]
+	h.mu.Unlock()
+	ctx := context.Background()
+	c, err := pgx.Connect(ctx, h.dsn(name))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer c.Close(ctx)
+	var out string
+	if err := c.QueryRow(ctx, "select ("+sql+")::text").Scan(&out); err != nil {
+		h.t.Fatalf("%s: %v", sql, err)
+	}
+	return out
+}
+
+// A schema diff holds the DDL of a branch's migrations and not their data. The dashboard merge records
+// the migrations as covered by the diff, and must still run the rest: a lookup table's rows, a bucket.
+func TestDashboardMergeRunsWhatTheDiffDoesNotHold(t *testing.T) {
+	h := newPGHarness(t)
+	ctx := context.Background()
+	h.apply(parentRef, mig("20260101000000", "init", "create table public.base_t (id int primary key)"))
+	b := h.create("feat", nil)
+	h.apply(b.Ref, mig("20260102000000", "lookup",
+		"create table public.lookup (id int primary key, name text)",
+		"insert into public.lookup values (1, 'one'), (2, 'two')",
+		"insert into storage.buckets (id, name) values ('avatars', 'avatars')"))
+	diff, err := h.svc.Diff(ctx, b.Ref)
+	if err != nil || strings.Contains(diff, "insert") || strings.Contains(diff, "avatars") {
+		t.Fatalf("diff = %q, %v", diff, err)
+	}
+	rec := Migration{Version: "20260103000000", Name: "branch_merge_a", Statements: []string{diff}}
+	if _, err := h.svc.schemaDB().Record(ctx, b.Ref, []Migration{rec}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.merge(b.Ref, ActionInput{})
+	h.mustState(got, registry.BranchFunctionsDeployed)
+	if n := h.scalar(parentRef, "select count(*) from public.lookup"); n != "2" {
+		t.Fatalf("the parent has %s rows of the lookup table, want 2 (%s)", n, got.Detail)
+	}
+	if n := h.scalar(parentRef, "select count(*) from storage.buckets where id = 'avatars'"); n != "1" {
+		t.Fatalf("the parent has %s avatars bucket(s), want 1", n)
+	}
+	if !strings.Contains(got.Detail, "ran 2 statement(s)") {
+		t.Fatalf("detail does not say what ran after the diff: %q", got.Detail)
+	}
+	h.histories(parentRef, b.Ref)
+
+	// What the parent's history replays to: the diff first, then the covered migration's data.
+	fresh := h.create("replayed", nil)
+	h.mustState(fresh, registry.BranchFunctionsDeployed)
+	if n := h.scalar(fresh.Ref, "select count(*) from public.lookup"); n != "2" {
+		t.Fatalf("a branch made from the merged parent has %s rows, want 2", n)
+	}
+	if n := h.scalar(fresh.Ref, "select count(*) from storage.buckets where id = 'avatars'"); n != "1" {
+		t.Fatalf("a branch made from the merged parent has %s avatars bucket(s), want 1", n)
+	}
+	// And so does a reset of the merged branch.
+	if _, err := h.svc.Reset(ctx, b.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	h.mustState(h.wait(b.Ref), registry.BranchFunctionsDeployed)
+	if n := h.scalar(b.Ref, "select count(*) from public.lookup"); n != "2" {
+		t.Fatalf("the reset branch has %s rows, want 2", n)
+	}
+}
+
+// A recording the branch moved past does not decide a merge, and does not block one.
+func TestStaleRecordedDiffDoesNotBlockAHistoryMerge(t *testing.T) {
+	h := newPGHarness(t)
+	ctx := context.Background()
+	h.apply(parentRef, mig("20260101000000", "init", "create table public.base_t (id int primary key)"))
+	b := h.create("feat", nil)
+	h.apply(b.Ref, mig("20260102000000", "one", "create table public.one (id int primary key)"))
+	h.exec(b.Ref, "create table public.sql_editor (id int)")
+	diff, _ := h.svc.Diff(ctx, b.Ref)
+	if _, err := h.svc.schemaDB().Record(ctx, b.Ref, []Migration{{Version: "20260103000000", Name: "branch_merge_a", Statements: []string{diff}}}); err != nil {
+		t.Fatal(err)
+	}
+	// The user does not finish the merge in Studio; an agent adds a migration and merges.
+	h.apply(b.Ref, mig("20260104000000", "two", "create table public.two (id int primary key)"))
+	got := h.merge(b.Ref, ActionInput{Force: true})
+	h.mustState(got, registry.BranchFunctionsDeployed)
+	if !h.has(parentRef, "one") || !h.has(parentRef, "two") || h.has(parentRef, "sql_editor") {
+		t.Fatalf("the parent has one=%v two=%v sql_editor=%v (%s)", h.has(parentRef, "one"), h.has(parentRef, "two"), h.has(parentRef, "sql_editor"), got.Detail)
+	}
+	for _, m := range h.migrations(parentRef) {
+		if m.Name == "branch_merge_a" {
+			t.Fatal("the stale recording reached the parent's history")
+		}
+	}
+	// The change made outside migrations is still the branch's, and a new recording merges it.
+	diff, _ = h.svc.Diff(ctx, b.Ref)
+	if !strings.Contains(diff, "sql_editor") || strings.Contains(diff, `"public"."one"`) {
+		t.Fatalf("diff after the merge:\n%s", diff)
+	}
+	if _, err := h.svc.schemaDB().Record(ctx, b.Ref, []Migration{{Version: "20260105000000", Name: "branch_merge_b", Statements: []string{diff}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.mustState(h.merge(b.Ref, ActionInput{}), registry.BranchFunctionsDeployed)
+	if !h.has(parentRef, "sql_editor") {
+		t.Fatal("the new recording did not merge the change made outside migrations")
+	}
+	h.histories(parentRef, b.Ref)
+}
+
+// A baseline that does not run on the branch must not be left in the parent's history, where every later
+// branch would replay it.
+func TestBaselineThatCannotRunLeavesTheParentsHistoryEmpty(t *testing.T) {
+	h := newPGHarness(t)
+	h.exec(parentRef, userSchema)
+	contaminate := true
+	h.eng.onCreate = func(req lifecycle.CreateRequest) {
+		if req.Ref == parentRef {
+			return
+		}
+		h.makeDB(req.Ref)
+		if contaminate {
+			h.exec(req.Ref, "create table public.todos (id int)") // the baseline's CREATE TABLE fails
+		}
+	}
+	b := h.create("feat", nil)
+	h.mustState(b, registry.BranchMigrationsFailed)
+	if pm := h.migrations(parentRef); len(pm) != 0 {
+		t.Fatalf("the parent's history after a baseline that failed: %+v (%s)", pm, b.Detail)
+	}
+	contaminate = false
+	b2 := h.create("feat2", nil)
+	h.mustState(b2, registry.BranchFunctionsDeployed)
+	if pm := h.migrations(parentRef); len(pm) != 1 || pm[0].Name != baselineName {
+		t.Fatalf("parent history = %+v", pm)
+	}
+	h.same(parentRef, b2.Ref)
+}
+
+// The event triggers and the publication of a new project are not a schema of the user's: no baseline.
+func TestStockEventTriggersAndPublicationsAreNotAUserSchema(t *testing.T) {
+	h := newPGHarness(t)
+	h.exec(parentRef, `
+		create function extensions.noop() returns event_trigger language plpgsql as $$ begin end $$;
+		create event trigger pgrst_ddl_watch on ddl_command_end execute function extensions.noop();
+		create event trigger issue_pg_net_access on ddl_command_end execute function extensions.noop();
+		create publication supabase_realtime;`)
+	if un := h.snapshot(parentRef).Unmodeled; len(un) != 0 {
+		t.Fatalf("stock objects are listed as unmodeled: %v", un)
+	}
+	b := h.create("feat", nil)
+	h.mustState(b, registry.BranchFunctionsDeployed)
+	if pm := h.migrations(parentRef); len(pm) != 0 {
+		t.Fatalf("a baseline was recorded for a project with nothing of its own: %+v", pm)
+	}
+	// An event trigger of the user's own is named, as before.
+	h.exec(parentRef, `create event trigger audit_ddl on ddl_command_end execute function extensions.noop()`)
+	if un := h.snapshot(parentRef).Unmodeled; len(un) != 1 || un[0] != "event trigger audit_ddl" {
+		t.Fatalf("unmodeled = %v", un)
+	}
+}

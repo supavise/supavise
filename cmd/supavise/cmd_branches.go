@@ -343,10 +343,11 @@ CLI and MCP server.`,
 	merge := action("merge", "Apply the branch's new migrations to its parent", func(ctx context.Context, s *branching.Service, ref string, in branching.ActionInput) (string, error) {
 		return s.Merge(ctx, ref, in)
 	})
-	merge.Flags().BoolVar(&force, "force", false, "merge despite divergence (versions that differ in content are skipped)")
+	merge.Flags().BoolVar(&force, "force", false, "merge despite divergence (versions that differ in content are skipped; changes that cannot be expressed as SQL are left out)")
 	reset := action("reset", "Recreate the branch's database from its own recorded migrations (tables, rows and changes made outside migrations are lost)", func(ctx context.Context, s *branching.Service, ref string, in branching.ActionInput) (string, error) {
 		return s.Reset(ctx, ref, in)
 	})
+	reset.Flags().BoolVar(&force, "force", false, "reset from the parent's migrations when the branch's own cannot be read")
 	push := action("push", "Bring the parent's new migrations, schema changes and Edge Functions into the branch (rebase)", func(ctx context.Context, s *branching.Service, ref string, in branching.ActionInput) (string, error) {
 		return s.Push(ctx, ref, in)
 	})

@@ -27,9 +27,11 @@ const pushMigrationPrefix = "branch_push_"
 // for the schema diff it shows: the branch's changes in one script.
 const mergeMigrationPrefix = "branch_merge_"
 
-// hasUserSchema reports whether a snapshot holds anything a user made. The extensions, the grants
-// and the default privileges of a new project are not that: a parent with only those has no schema
-// to give a branch.
+// hasUserSchema reports whether a snapshot holds anything a user made that a baseline can carry. The
+// extensions, the grants and the default privileges of a new project are not that: a parent with only
+// those has no schema to give a branch. The objects the engine does not model (Snapshot.Unmodeled) do
+// not count either: they cannot be written into a baseline, and the stock ones of a new project (the
+// event triggers of PostgREST and pg_graphql, the Realtime publication) are not listed at all.
 func hasUserSchema(s *schemadiff.Snapshot) bool {
 	for i := range s.Objects {
 		switch s.Objects[i].Kind {
@@ -41,41 +43,48 @@ func hasUserSchema(s *schemadiff.Snapshot) bool {
 			return true
 		}
 	}
-	return len(s.Unmodeled) > 0
+	return false
 }
 
 // baselineFor gives a new branch the schema of a parent whose migration history is empty (everything
 // was built in the SQL editor, the Table Editor or execute_sql). It takes a schema-only dump of the
-// parent, records it as the first migration of the parent's history, without running it there (so
-// that a merge has a common ancestor, as hosted's first branch initializes the history), and returns
-// it for the branch to run. Order matters for the Data API default privileges: the branch applied
-// the parent's choice when it was created; the baseline's own ALTER DEFAULT PRIVILEGES statements run
-// after it and win.
+// parent and applies it to the branch, and only when that worked records it as the first migration of
+// the parent's history, without running it there (so that a merge has a common ancestor, as hosted's
+// first branch initializes the history). The apply lock of the parent is held from the look at the
+// history to the record, so that a second branch made at the same time waits and then replays the
+// history the first one recorded. A baseline that fails to run on the branch leaves the parent's history
+// empty. Order matters for the Data API default privileges: the branch applied the parent's choice when
+// it was created; the baseline's own ALTER DEFAULT PRIVILEGES statements run after it and win.
 //
 // It dumps only an empty history. If another branch recorded one while this was being made, that
 // history is what the branch replays. Custom roles are not captured: grants, default privileges and
 // policies that name a role the branch lacks are left out, and the run log says so.
-func (s *Service) baselineFor(ctx context.Context, j *createJob) ([]Migration, error) {
+//
+// applied reports that the returned migration is already applied to the branch.
+func (s *Service) baselineFor(ctx context.Context, j *createJob) (hist []Migration, applied bool, err error) {
 	sd := s.schemaDB()
 	if sd == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	snap, err := sd.Snapshot(ctx, j.parent.Ref, schemadiff.ReadOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("read the parent's schema for the baseline: %w", err)
+		return nil, false, fmt.Errorf("read the parent's schema for the baseline: %w", err)
 	}
 	if !hasUserSchema(snap) {
+		for _, u := range snap.Unmodeled {
+			s.logRun(ctx, "not captured in the baseline: %s (create it by hand)", u)
+		}
 		s.logRun(ctx, "the parent has no migration history and no schema of its own: the branch starts empty")
-		return nil, nil
+		return nil, false, nil
 	}
 	roles, err := sd.Roles(ctx, j.ref)
 	if err != nil {
-		return nil, fmt.Errorf("read the roles of the branch: %w", err)
+		return nil, false, fmt.Errorf("read the roles of the branch: %w", err)
 	}
 	// A policy or trigger on a table of a managed schema needs that table on the branch.
 	have, err := s.managedTables(ctx, sd, j.ref, snap)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	plan := schemadiff.Diff(nil, snap, schemadiff.Options{
 		RoleExists:  func(n string) bool { return roles[n] },
@@ -84,13 +93,13 @@ func (s *Service) baselineFor(ctx context.Context, j *createJob) ([]Migration, e
 	if len(plan.Statements) == 0 {
 		// Never record an empty baseline as the parent's history.
 		if len(plan.Unsupported) > 0 {
-			return nil, fmt.Errorf("the parent's schema could not be turned into a baseline: %s", strings.Join(plan.Unsupported, "; "))
+			return nil, false, fmt.Errorf("the parent's schema could not be turned into a baseline: %s", strings.Join(plan.Unsupported, "; "))
 		}
 		for _, n := range plan.Notes {
 			s.logRun(ctx, "%s", n)
 		}
 		s.logRun(ctx, "nothing of the parent's schema can be carried to the branch: it starts empty")
-		return nil, nil
+		return nil, false, nil
 	}
 	for _, u := range plan.Unsupported {
 		s.logRun(ctx, "not captured in the baseline: %s", u)
@@ -99,20 +108,25 @@ func (s *Service) baselineFor(ctx context.Context, j *createJob) ([]Migration, e
 		s.logRun(ctx, "%s", n)
 	}
 	m := Migration{Version: s.now().UTC().Format("20060102150405"), Name: baselineName, Statements: plan.Statements}
-	recorded, err := sd.InitHistory(ctx, j.parent.Ref, m)
+	recorded, err := sd.InitHistory(ctx, j.parent.Ref, m, func(ctx context.Context) error {
+		s.setState(ctx, j.ref, registry.BranchRunningMigration, "applying the parent's schema as a baseline", nil)
+		_, err := s.applyHistory(ctx, j.ref, []Migration{m}, ApplyOptions{})
+		return err
+	})
 	if err != nil {
-		return nil, fmt.Errorf("record the baseline in the parent's migration history: %w", err)
+		return nil, false, fmt.Errorf("apply the parent's schema to the branch as a baseline (nothing was recorded in the parent's migration history): %w", err)
 	}
 	if !recorded {
 		// Another branch got there first; its history is now the parent's.
 		s.logRun(ctx, "the parent's migration history got a baseline while this one was made; replaying that")
-		return s.db.Migrations(ctx, j.parent.Ref)
+		hist, err = s.db.Migrations(ctx, j.parent.Ref)
+		return hist, false, err
 	}
 	s.logRun(ctx, "the parent had no migration history: recorded its schema as migration %s %s (%d statement(s), nothing was run on the parent)", m.Version, m.Name, len(m.Statements))
 	s.event(ctx, j.parent.Ref, "branch.baseline_recorded", map[string]any{
 		"branch": j.ref, "version": m.Version, "name": m.Name, "statements": len(m.Statements), "objects": len(snap.Objects), "unsupported": plan.Unsupported,
 	})
-	return []Migration{m}, nil
+	return []Migration{m}, true, nil
 }
 
 // ---- the schema base --------------------------------------------------------------------
