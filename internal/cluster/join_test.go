@@ -27,14 +27,29 @@ import (
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// freeWindow finds size consecutive loopback ports nothing listens on, the lowest between lo and hi.
+// handedOut holds every port freeWindow has returned in this test process. The sites of one test pick
+// their ports before any of them listens, so a probe alone can give two sites the same port; a joiner
+// then cannot forward the port its leader serves on ("address already in use").
+var handedOut = struct {
+	sync.Mutex
+	ports map[int]bool
+}{ports: map[int]bool{}}
+
+// freeWindow finds size consecutive loopback ports nothing listens on and no earlier call returned,
+// the lowest between lo and hi.
 func freeWindow(t testing.TB, lo, hi, size int) int {
 	t.Helper()
+	handedOut.Lock()
+	defer handedOut.Unlock()
 	for range 200 {
 		base := lo + rand.IntN(hi-lo)
 		var lns []net.Listener
 		ok := true
 		for p := base; p < base+size; p++ {
+			if handedOut.ports[p] {
+				ok = false
+				break
+			}
 			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
 			if err != nil {
 				ok = false
@@ -46,6 +61,9 @@ func freeWindow(t testing.TB, lo, hi, size int) int {
 			ln.Close()
 		}
 		if ok {
+			for p := base; p < base+size; p++ {
+				handedOut.ports[p] = true
+			}
 			return base
 		}
 	}
