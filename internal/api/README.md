@@ -55,7 +55,7 @@ A node has no log store (design section 2: logs go to journald; `supavise logs <
 
 ## Database Webhooks
 
-Studio lists, creates and drops webhooks as triggers through pg-meta and decides that they are enabled by the presence of the `supabase_functions` schema; only "Enable" is a Management API call. `webhooks.go` runs `webhooks.sql` (upstream's `docker/volumes/db/webhooks.sql`, Apache-2.0, three documented changes) through pg-meta as `supabase_admin`, the way the login-role calls run admin SQL. The Owner, Administrator and Developer roles may call it (`ActSQLAdminWrite` on `triggers`); a paused or starting project answers 409 or 503 as for any SQL. It can run again. The `net._http_response` row of a fired webhook is checked in `tests/linux/roles-smoke.sh`.
+Studio lists, creates and drops webhooks as triggers through pg-meta and decides that they are enabled by the presence of the `supabase_functions` schema; only "Enable" is a Management API call. `webhooks.go` runs `webhooks.sql` (upstream's `docker/volumes/db/webhooks.sql`, Apache-2.0, six documented changes, three of which keep a project member's triggers, defaults and roles from running as the superuser) through pg-meta as `supabase_admin`, the way the login-role calls run admin SQL. The Owner, Administrator and Developer roles may call it (`ActSQLAdminWrite` on `triggers`); a paused or starting project answers 409 or 503 as for any SQL. It can run again. `TestWebhooksScriptRunsNoCodeAProjectWrote` holds the rule that the script runs no code a project wrote. The `net._http_response` row of a fired webhook, a refused project-made schema and a trigger on the migrations table that stays silent are checked in `tests/linux/roles-smoke.sh`.
 
 ## Pooler config
 
