@@ -829,10 +829,10 @@ func specBound(p *float64) any {
 	return *p
 }
 
-// platformOnly are settings only Studio's twin lists; they are not stored.
+// platformOnly are settings only Studio's twin lists that are not stored (config_auth.go refuses a change of them).
 var platformOnly = map[string]bool{
-	"audit_log_disable_postgres": true, "index_worker_ensure_user_search_indexes_exist": true,
-	"mailer_subjects_custom_contents": true, "mailer_templates_custom_contents": true, "mfa_allow_low_aal": true,
+	"index_worker_ensure_user_search_indexes_exist": true,
+	"mailer_subjects_custom_contents":               true, "mailer_templates_custom_contents": true, "mfa_allow_low_aal": true,
 }
 
 // A rollback after a failed apply must bring the database back on the restored settings
