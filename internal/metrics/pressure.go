@@ -159,6 +159,48 @@ func latch(was bool, v, on, off float64, above bool) bool {
 	return v < on
 }
 
+// lastDisk is the newest sample within staleAfter that read the project's disk.
+func (st *projState) lastDisk(now time.Time) (Sample, bool) {
+	for i := len(st.recent) - 1; i >= 0; i-- {
+		smp := st.recent[i]
+		if now.Sub(smp.At) > staleAfter {
+			break
+		}
+		if _, ok := smp.Get(DiskQuota); ok {
+			return smp, true
+		}
+	}
+	return Sample{}, false
+}
+
+// Unjudged reports whether the service has not measured yet what the condition with this key is
+// about, and so cannot tell whether it is over: the node's memory, or a project's disk, in the first
+// minutes after the service was built. The alert checker leaves an open alert for such a key alone;
+// without that a daemon that restarts (or a host that reboots) while a project is at 85% of its
+// quota ends the alert, before the project's Postgres is up to be measured, and raises it again.
+// After staleAfter a key that is still not measured is over.
+func (s *Service) Unjudged(key string) bool {
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now.Sub(s.started) >= staleAfter {
+		return false
+	}
+	if strings.HasPrefix(key, KindMemoryLow+"/") {
+		return !s.node.OK || now.Sub(s.node.At) > maxSampleAge
+	}
+	ref, ok := raisedRef(key)
+	if !ok {
+		return false
+	}
+	st := s.proj[ref]
+	if st == nil {
+		return true
+	}
+	_, measured := st.lastDisk(now)
+	return !measured
+}
+
 func raisedRef(key string) (ref string, ok bool) {
 	rest, ok := strings.CutPrefix(key, KindProjectDiskHigh+"/")
 	if !ok {
@@ -213,12 +255,18 @@ func (s *Service) memoryConditions(now time.Time) []Condition {
 	warn = warn || crit
 	s.raised[wk], s.raised[ck] = warn, crit
 
+	// What the projects of this node may use: those it samples itself and that were sampled lately.
+	// A project of another server, or a paused one, does not take this node's memory.
 	var committed float64
 	for _, st := range s.proj {
-		if len(st.recent) == 0 {
+		if !st.own || len(st.recent) == 0 {
 			continue
 		}
-		if v, ok := st.recent[len(st.recent)-1].Get(MemLimit); ok {
+		last := st.recent[len(st.recent)-1]
+		if now.Sub(last.At) > staleAfter {
+			continue
+		}
+		if v, ok := last.Get(MemLimit); ok {
 			committed += v
 		}
 	}
@@ -241,8 +289,11 @@ func (s *Service) memoryConditions(now time.Time) []Condition {
 	return out
 }
 
-// diskConditions judges each project's disk against its quota. Only a quota in force counts: on a
-// volume without one the node's disk_low alert is the check. The caller holds s.mu.
+// diskConditions judges the disk of each project this node samples against its quota. Only a quota
+// in force counts: on a volume without one the node's disk_low alert is the check. A project of
+// another server is judged by that server, whose alert state and destinations are its own. The
+// newest reading counts, however many samples ago it was: a minute in which the disk could not be
+// read does not end an alert. The caller holds s.mu.
 func (s *Service) diskConditions(now time.Time) []Condition {
 	refs := make([]string, 0, len(s.proj))
 	for ref := range s.proj {
@@ -255,8 +306,7 @@ func (s *Service) diskConditions(now time.Time) []Condition {
 		wk, ck := KindProjectDiskHigh+"/"+ref, KindProjectDiskHigh+"/"+ref+"/critical"
 		var pct, used, size float64
 		have := false
-		if n := len(st.recent); n > 0 && now.Sub(st.recent[n-1].At) <= staleAfter {
-			last := st.recent[n-1]
+		if last, ok := st.lastDisk(now); ok && st.own {
 			q, _ := last.Get(DiskQuota)
 			u, ok1 := last.Get(DiskUsed)
 			z, ok2 := last.Get(DiskSize)
@@ -265,8 +315,8 @@ func (s *Service) diskConditions(now time.Time) []Condition {
 			}
 		}
 		if !have {
-			// Nothing to judge by: the project is paused, or has no quota. The alert, if one is open,
-			// ends (the checker resolves what is no longer a condition).
+			// Nothing to judge by: the project is paused, homed elsewhere, or has no quota. The
+			// alert, if one is open, ends (the checker resolves what is no longer a condition).
 			delete(s.raised, wk)
 			delete(s.raised, ck)
 			continue

@@ -103,6 +103,46 @@ func TestPressureEscalationIsToldAndEachLevelEndsOnItsOwn(t *testing.T) {
 	}
 }
 
+// A source that has not measured a key yet (the daemon just started, the project's Postgres is not
+// up) does not end the alert that is open for it, and does not send the recovery. When it has
+// measured and the condition is gone, the alert ends as usual.
+func TestPressureAlertSurvivesWhatIsNotMeasuredYet(t *testing.T) {
+	r, conds := pressureRig(t)
+	unjudged := map[string]bool{}
+	r.checker.Unjudged = func(key string) bool { return unjudged[key] }
+	d := Pressure{Key: KindProjectDiskHigh + "/" + refA, Kind: KindProjectDiskHigh, Severity: SeverityWarning, Ref: refA,
+		Title: "Disk of project alpha (" + refA + ") is over 80% full"}
+	*conds = []Pressure{d}
+	for i := 0; i < 4; i++ {
+		r.cycle()
+	}
+	if got := r.sent(); len(got) != 1 {
+		t.Fatalf("the alert: %+v", got)
+	}
+	*conds = nil
+	unjudged[d.Key] = true
+	for i := 0; i < 5; i++ {
+		r.cycle()
+	}
+	if got := r.sent(); len(got) != 1 {
+		t.Fatalf("an unmeasured condition ended the alert: %+v", got)
+	}
+	// Measured at last, and still wrong: no new alert, since the old one is still open.
+	*conds = []Pressure{d}
+	delete(unjudged, d.Key)
+	for i := 0; i < 5; i++ {
+		r.cycle()
+	}
+	if got := r.sent(); len(got) != 1 {
+		t.Fatalf("a second alert for one standing condition: %+v", got)
+	}
+	*conds = nil
+	r.cycle()
+	if got := r.sent(); len(got) != 2 || !got[1].Resolved {
+		t.Fatalf("the recovery: %+v", got)
+	}
+}
+
 // An upgrade or a maintenance window restarts projects, not the node's memory or a project's
 // quota: these are still raised.
 func TestPressureIsRaisedDuringAnUpgrade(t *testing.T) {
