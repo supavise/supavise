@@ -51,11 +51,16 @@ func (s *Service) scheduleDelete(ctx context.Context, b *Branch) (*Branch, error
 	if err != nil {
 		return nil, err
 	}
-	// An idle pause wakes on a request; this one must not.
+	// An idle pause wakes on a request; this one must not. The edge proxy reads the pause record when the
+	// project's row changes, and UpdateBranch below changes it, after the record is written: the proxy then
+	// answers "not active" instead of trying to wake the branch. The listener that wakes the branch on a
+	// database connection is told at once.
 	if st := registry.BranchLifecycleOf(s.reg); st != nil && p.Status == registry.StatusInactive {
 		if pz, err := st.GetPause(ctx, b.Ref); err == nil && pz.Reason != "" {
 			if err := st.SetPause(ctx, b.Ref, "", s.now().UTC()); err != nil {
 				s.log.Warn("could not make the pause of a branch scheduled for deletion the owner's", "ref", b.Ref, "err", err)
+			} else {
+				s.kickGates()
 			}
 		}
 	}

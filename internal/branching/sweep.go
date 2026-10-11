@@ -59,6 +59,8 @@ func (s *Service) Sweep(ctx context.Context, dryRun bool) (*SweepResult, error) 
 	}
 	res := &SweepResult{Failed: map[string]string{}}
 	now := s.now()
+	// The warnings are posted after the deletions: a notify_url that does not answer must not hold them up.
+	var notices []expiryNotice
 	for i := range all {
 		p := &all[i]
 		if p.Branch == nil {
@@ -80,7 +82,7 @@ func (s *Service) Sweep(ctx context.Context, dryRun bool) (*SweepResult, error) 
 		lapsed := (!b.Persistent && b.ExpiresAt != nil && !b.ExpiresAt.After(now)) ||
 			(b.DeletionScheduledAt != nil && !b.DeletionScheduledAt.After(now))
 		if !lapsed {
-			if !dryRun && s.warnExpiring(ctx, b, now) {
+			if !dryRun && s.warnExpiring(ctx, b, now, &notices) {
 				res.Warned = append(res.Warned, p.Ref)
 			}
 			continue
@@ -97,6 +99,7 @@ func (s *Service) Sweep(ctx context.Context, dryRun bool) (*SweepResult, error) 
 		s.log.Info("deleted a lapsed branch", "ref", p.Ref, "name", b.Name, "parent", b.ParentRef)
 		res.Expired = append(res.Expired, p.Ref)
 	}
+	s.sendExpiryNotices(ctx, notices)
 	return res, ctx.Err()
 }
 
