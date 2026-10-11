@@ -30,6 +30,7 @@ import (
 	"github.com/supavise/supavise/internal/oauth"
 	"github.com/supavise/supavise/internal/proxy"
 	"github.com/supavise/supavise/internal/registry"
+	"github.com/supavise/supavise/internal/reqstats"
 )
 
 // StopBudget is how long Serve, once told to stop, waits for lifecycle operations that
@@ -193,7 +194,11 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 			return health.CheckUpdate(ctx, cfg, o.Version, health.UpdateSource{}, now)
 		}
 	}
+	// The proxy counts the requests it serves to each project's API; the Management API reads the
+	// counts for the dashboard's request charts.
+	requests := reqstats.New()
 	apiDeps := api.Deps{
+		Requests: requests,
 		Health:   monitor,
 		Registry: node.Registry, Secrets: node.Secrets, Manager: node.Engine, Config: cfg, Branching: bsvc,
 		Store:         store,
@@ -229,6 +234,7 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	popts := proxy.Options{
 		Config: cfg, Registry: node.Registry, Keys: node.Engine,
 		FunctionsEnabled: cfg.Functions.Enabled,
+		Stats:            requests,
 		Logger:           log.With("component", "proxy"),
 	}
 	wire := newWire(cfg, log, node, o, &apiDeps, &popts)
