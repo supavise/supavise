@@ -22,7 +22,7 @@ A caller that must not wait for the delivery uses `Notifier.NotifyDetached(ctx, 
 | `project_unhealthy` | a project's Postgres, Auth or REST does not answer, or a shared service lacks its tenant | critical |
 | `certificate_expiring` | a certificate is under `[health] certificate_warn_days` from its end | warning; critical when expired |
 | `node_unhealthy` | the registry, the system cluster or a shared service is not healthy | warning; critical for the registry and system Postgres |
-| `memory_low` | the node's available memory (`MemAvailable`) is under `[health] memory_low_percent` of its memory (10), or tasks waited for memory for a quarter of the last minute (PSI) | warning; a second alert, `memory_low/critical`, under half of that or when all tasks waited for a tenth of the minute |
+| `memory_low` | the node's available memory (`MemAvailable`) is under `[health] memory_low_percent` of its memory (10), or tasks waited for memory for a quarter of the last minute (PSI) while under three times that percentage is available | warning; a second alert, `memory_low/critical`, under half of that or when all tasks waited for a tenth of the minute |
 | `project_disk_high` | a project has used 80% of its XFS disk quota; a second alert, `project_disk_high/<ref>/critical`, at 90% | warning; critical |
 | `update_available` | a release newer than the running version exists | info, once per version |
 
