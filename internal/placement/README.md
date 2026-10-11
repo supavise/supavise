@@ -119,10 +119,14 @@ node, the peer API for another.
   cluster without `standby.signal` (a promoted replica that is stopped does not answer), unless the
   setup it belongs to has not finished: removing a replica must never remove a home.
 - `Do` runs `restart` (renders from `InstanceAction.Class` when the leader names the size, because the
-  node's copy of the registry may not have it yet), `stop`, `start`, `promote` and `demote` (the failover
+  node's copy of the registry may not have it yet), `restart_api` (renders only the replica's PostgREST
+  again and restarts it when its unit changed, after a change of the project's keys;
+  `InstanceAction.KeysDigest` is `secrets.ProjectKeys.JWTDigest` of the keys to render, and a node whose
+  copy of the registry holds others waits up to `AgentOptions.KeysWait` for it, polling every `Poll`, then
+  answers `ErrKeysBehind`), `stop`, `start`, `promote` and `demote` (the failover
   orchestrator's steps 4 and 7 of a project switchover; `lifecycle.PromoteReplica` and
-  `DemoteToReplica`). An action during a setup is refused. `start`, `restart` and `stop` are refused
-  when the registry names this node the project's home, and `start` and `restart` also when the cluster
+  `DemoteToReplica`). An action during a setup is refused. `start`, `restart`, `restart_api` and `stop` are
+  refused when the registry names this node the project's home, and `start`, `restart` and `restart_api` also when the cluster
   here is a primary (no `standby.signal`) or follows as another replica: the replica's spec would be
   rendered over a writable cluster. A resume of an interrupted setup (`Ensure`) is refused on the home
   too, because it deletes the project's directory, and so is a `promote`, except one repeated after
@@ -152,7 +156,8 @@ the leader what the node observes every 10 seconds (`POST /peer/v1/report`) when
 leader, and logs once, not every tick, that a leader has no report endpoint (`ErrNoReportEndpoint`).
 
 `Fleet` is the `lifecycle.ReplicaFleet` of the leader's Engine: it restarts a project's replicas through
-`InstanceOps` when the project is resized.
+`InstanceOps` when the project is resized or its Postgres settings restart the primary (`Restart`), and
+restarts only their PostgREST when the project's JWT secret or keys change (`RestartAPI`).
 
 Four more pieces are the wiring's to attach:
 

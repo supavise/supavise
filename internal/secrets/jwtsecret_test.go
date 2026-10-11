@@ -126,3 +126,18 @@ func TestUseLegacyKey(t *testing.T) {
 		}
 	}
 }
+
+func TestJWTDigestNamesTheSecretAndNothingElse(t *testing.T) {
+	a := &ProjectKeys{JWTSecret: strings.Repeat("a", MinJWTSecretLen), DBPassword: "one"}
+	b := &ProjectKeys{JWTSecret: strings.Repeat("a", MinJWTSecretLen), DBPassword: "two", AnonKey: "x"}
+	c := &ProjectKeys{JWTSecret: strings.Repeat("b", MinJWTSecretLen)}
+	if a.JWTDigest() != b.JWTDigest() {
+		t.Fatal("the digest depends on a field other than the JWT secret")
+	}
+	if a.JWTDigest() == c.JWTDigest() {
+		t.Fatal("two secrets share a digest")
+	}
+	if d := a.JWTDigest(); len(d) != 16 || strings.Contains(d, a.JWTSecret) {
+		t.Fatalf("digest = %q", d)
+	}
+}

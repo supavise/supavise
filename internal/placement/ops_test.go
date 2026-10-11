@@ -230,6 +230,45 @@ func TestFleetRestartsAReplicaOnItsNodeOnTheNewSize(t *testing.T) {
 	}
 }
 
+func TestFleetRestartsAReplicasPostgRESTOnTheKeysItNames(t *testing.T) {
+	ctx := context.Background()
+	e := newOpsEnv(t)
+	f := &Fleet{Registry: registry.NewMemory(), Ops: e.ops, Epoch: func() int64 { return 5 }}
+	r := registry.Replica{Identifier: testReplicaID(), Ref: testRef, NodeID: "n2"}
+	if err := f.RestartAPI(ctx, r, "0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
+	// Over the peer API: the action, the epoch and the digest, and no class (the size is not changing).
+	if e.nodeAgent.all() != "restart_api "+testReplicaID() || e.nodeAgent.req.KeysDigest != "0123456789abcdef" || e.nodeAgent.req.Epoch != 5 || e.nodeAgent.req.Class != "" {
+		t.Fatalf("agent: %s %+v", e.nodeAgent.all(), e.nodeAgent.req)
+	}
+	// The node's answer is judged: an agent that fails, or a PostgREST that does not answer afterwards.
+	e.nodeAgent.err = errors.New("the copy of the registry does not hold the keys yet")
+	if err := f.RestartAPI(ctx, r, "x"); err == nil {
+		t.Fatal("a refusal was reported as done")
+	}
+	e.nodeAgent.err = nil
+	own := &recordingAgent{}
+	f.Ops = &Ops{Self: func() string { return "n2" }, Agent: own, RPC: e.rpc, Epoch: func() int64 { return 5 }}
+	if err := f.RestartAPI(ctx, r, "x"); err != nil || own.all() != "restart_api "+testReplicaID() {
+		t.Fatalf("on this node: %v, %s", err, own.all())
+	}
+	slow := &notReadyAgent{}
+	f.Ops = &Ops{Self: func() string { return "n2" }, Agent: slow, RPC: e.rpc, Epoch: func() int64 { return 5 }}
+	if err := f.RestartAPI(ctx, r, "x"); err == nil || !strings.Contains(err.Error(), "PostgREST is not ready") {
+		t.Fatalf("a PostgREST that does not answer: %v", err)
+	}
+}
+
+// notReadyAgent answers every action with a PostgREST that does not answer.
+type notReadyAgent struct{ recordingAgent }
+
+func (a *notReadyAgent) Do(ctx context.Context, id string, act peerapi.Action, req peerapi.InstanceAction) (peerapi.InstanceStatus, error) {
+	st, err := a.recordingAgent.Do(ctx, id, act, req)
+	st.PostgRESTReady = false
+	return st, err
+}
+
 type fixedObserver []peerapi.InstanceStatus
 
 func (o fixedObserver) ObserveAll(context.Context) []peerapi.InstanceStatus { return o }

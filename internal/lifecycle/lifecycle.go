@@ -62,7 +62,9 @@ type Manager interface {
 	Resume(ctx context.Context, ref string) error
 	// Delete takes a final base backup, removes tenants, units, data and the registry row.
 	Delete(ctx context.Context, ref string) error
-	// RotateKeys issues a new JWT secret and API keys and restarts the services that read them.
+	// RotateKeys issues a new JWT secret and API keys and restarts the services that read them,
+	// the PostgREST of the project's read replicas included. A replica that could not be updated
+	// is a *ReplicaKeysError returned together with the new keys, which are in force.
 	RotateKeys(ctx context.Context, ref string) (*secrets.ProjectKeys, error)
 	// Keys returns the decrypted credentials of ref (works for "system").
 	Keys(ctx context.Context, ref string) (*secrets.ProjectKeys, error)
