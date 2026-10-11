@@ -143,6 +143,8 @@ type Studio struct {
 	ArtifactURL     string `toml:"artifact_url"`
 	ArtifactSHA256  string `toml:"artifact_sha256"`
 	HCaptchaSiteKey string `toml:"hcaptcha_site_key"`
+	// AI is the model provider of the AI Assistant and the SQL editor's AI features ([studio.ai]).
+	AI StudioAI `toml:"ai"`
 }
 
 // Limits are systemd resource controls applied to every unit of a project.
@@ -225,6 +227,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Backup.WALRelay == "off" && c.Supervisor == SupervisorSystemd {
 		return errors.New("config: backup.wal_relay = \"off\" cannot work with supervisor = \"systemd\": the Postgres units hide /etc/supavise and the backups directory, so a direct `supavise wal push` can read neither the backend settings nor write the archive, and archiving would fail forever; use auto or on")
+	}
+	if err := c.Studio.AI.Validate(); err != nil {
+		return err
 	}
 	if err := c.Branching.validate(); err != nil {
 		return err

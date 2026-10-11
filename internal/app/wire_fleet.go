@@ -85,7 +85,8 @@ func wireFleet(ctx context.Context, w *Wire) error {
 		return nil
 	}
 	mgr, err := fleet.NewManager(fleet.Deps{Cfg: w.Cfg, Log: log, Registry: w.Node.Registry, Secrets: w.Node.Secrets,
-		Supervisor: w.Node.Supervisor, Artifacts: w.Node.Artifacts})
+		Supervisor: w.Node.Supervisor, Artifacts: w.Node.Artifacts,
+		StudioAI: liveStudioAI(w.Cfg, w.Options.ConfigPath, log)})
 	if err != nil {
 		return err
 	}
