@@ -500,6 +500,7 @@ func (s *Server) implemented() map[string]route {
 	s.routesProxies(add)
 	s.routesLogin(add)
 	s.routesHealth(add)
+	s.routesWebhooks(add)
 	// Read replicas and failover: one registration function per file, so that each part of the
 	// work adds its routes without editing this one.
 	s.routesReplicas(add)

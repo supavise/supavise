@@ -230,6 +230,9 @@ func matrixCases() []routeCase {
 		rc("YYYYYN", "POST", p+"/cli/login-role", map[string]any{"read_only": false}),
 		// dropping the project's login roles drops every member's, so it needs the right to change roles
 		rc("YYYNYN", "DELETE", p+"/cli/login-role", nil),
+		// Database Webhooks create a schema, a role and an extension: the right to change triggers
+		rc("YYYNYN", "POST", "/platform/database/"+testRef+"/hook-enable", nil),
+		rc("YYYNYN", "POST", p+"/database/webhooks/enable", nil),
 		rc("YYYNYN", "DELETE", p+"/functions/nope", nil),
 		rc("YYYNYN", "POST", p+"/branches", map[string]any{"branch_name": "x"}),
 		// a branch with data copies production data: Owner and Administrator only
