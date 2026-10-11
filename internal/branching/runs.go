@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/supavise/supavise/internal/procutil"
 	"github.com/supavise/supavise/internal/registry"
@@ -39,6 +40,9 @@ const (
 
 // maxStepLog bounds the log of one step: a loop that logs must not fill the registry.
 const maxStepLog = 256 << 10
+
+// DefaultRunLimit is how many runs BranchRuns returns when the caller names no limit.
+const DefaultRunLimit = 20
 
 // runRetention is how long a finished run is kept.
 const runRetention = 30 * 24 * time.Hour
@@ -255,7 +259,9 @@ func (r *Run) stepForLog() string {
 
 // logTo appends the lines of text to the step's log, each with the time and the step.
 func (r *Run) logTo(step, text string) {
-	text = strings.TrimRight(text, "\r\n")
+	// The registry stores text: invalid UTF-8 and NUL bytes (an error that quotes binary data) are
+	// refused by Postgres, and the chunk would be lost with the rest of the log.
+	text = strings.TrimRight(strings.ReplaceAll(strings.ToValidUTF8(text, "\uFFFD"), "\x00", ""), "\r\n")
 	if text == "" {
 		return
 	}
@@ -268,7 +274,12 @@ func (r *Run) logTo(step, text string) {
 	if used := r.logged[step]; used >= maxStepLog {
 		return
 	} else if used+len(out) > maxStepLog {
-		out = out[:max(0, maxStepLog-used)] + fmt.Sprintf("%s [%s] ... log truncated\n", stamp, step)
+		// Cut at a rune boundary: half a rune is invalid UTF-8.
+		cut := max(0, maxStepLog-used)
+		for cut > 0 && cut < len(out) && !utf8.RuneStart(out[cut]) {
+			cut--
+		}
+		out = out[:cut] + fmt.Sprintf("%s [%s] ... log truncated\n", stamp, step)
 		r.logged[step] = maxStepLog
 	} else {
 		r.logged[step] = used + len(out)
@@ -436,11 +447,15 @@ func (s *Service) ListRuns(ctx context.Context, ownerRef string, offset, limit i
 
 // BranchRuns returns the runs of a branch, newest first: the ones listed under the branch (its
 // create, push and reset) and the merges of it that are listed under its parent. limit bounds
-// how many it returns.
+// how many it returns; zero or less means DefaultRunLimit (the stores read a limit of zero as "no
+// rows").
 func (s *Service) BranchRuns(ctx context.Context, b *Branch, limit int) ([]registry.BranchRun, error) {
 	st, err := s.runsOrErr()
 	if err != nil {
 		return nil, err
+	}
+	if limit <= 0 {
+		limit = DefaultRunLimit
 	}
 	own, _, err := st.ListBranchRuns(ctx, b.Ref, 0, limit)
 	if err != nil {

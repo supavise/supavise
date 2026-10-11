@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/supavise/supavise/internal/registry"
 )
@@ -630,5 +631,57 @@ func TestStartRunIsDrivenByTheCaller(t *testing.T) {
 	}
 	if after, _ := h.svc.Resolve(ctx, b.Ref); after.State != registry.BranchFunctionsDeployed {
 		t.Fatalf("the service changed the branch's status: %s", after.State)
+	}
+}
+
+// The store takes text: a step log cut in the middle of a character, invalid bytes or a NUL would
+// make Postgres refuse the chunk, and the log would lose it and the truncation marker.
+func TestLogsStayValidUTF8(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	b := h.create("feat", nil)
+	rec, err := h.svc.Recorder(ctx, latestRun(t, h, b.Ref).ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Log("bad \xff\xfe bytes\x00here")
+	logs, _ := h.svc.RunLogs(ctx, b.Ref, rec.ID())
+	if !utf8.ValidString(logs) || strings.Contains(logs, "\x00") || !strings.Contains(logs, "bad \uFFFD byteshere") {
+		t.Fatalf("log = %q", logs)
+	}
+	// Each step starts its first line with a different length, so that the cap falls on each of the
+	// three bytes of a character in turn.
+	for i, step := range []string{StepPull, StepHealth, StepMigrate} {
+		rec.mu.Lock()
+		rec.logTo(step, strings.Repeat("a", i))
+		rec.logTo(step, strings.Repeat("\u65e5", maxStepLog/3))
+		rec.mu.Unlock()
+	}
+	for _, step := range []string{StepPull, StepHealth, StepMigrate} {
+		got, err := h.reg.GetBranchRun(ctx, rec.ID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, st := range got.Steps {
+			if st.Name != step {
+				continue
+			}
+			if !utf8.ValidString(st.Log) || !strings.Contains(st.Log, "log truncated") || len(st.Log) > maxStepLog+1024 {
+				t.Errorf("step %s: valid=%v truncated=%v bytes=%d", step, utf8.ValidString(st.Log), strings.Contains(st.Log, "log truncated"), len(st.Log))
+			}
+		}
+	}
+}
+
+// A limit of zero or less is "the default", not "no runs": the CLI passes --limit as given.
+func TestBranchRunsLimitZeroMeansTheDefault(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	b := h.create("feat", nil)
+	for _, limit := range []int{0, -1} {
+		got, err := h.svc.BranchRuns(ctx, b, limit)
+		if err != nil || len(got) != 1 || got[0].Op != "create" {
+			t.Fatalf("limit %d: %+v %v", limit, got, err)
+		}
 	}
 }
