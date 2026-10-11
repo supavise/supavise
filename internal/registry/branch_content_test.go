@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/supavise/supavise/internal/secrets"
 )
 
 func TestMemoryBranchContent(t *testing.T) { testBranchContent(t, NewMemory()) }
@@ -22,9 +25,7 @@ func TestPostgresBranchContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	if _, err := r.Pool().Exec(ctx, `truncate supavise.branch_schema_base, supavise.branch_function_base, supavise.projects, supavise.organizations cascade`); err != nil {
-		t.Fatal(err)
-	}
+	// Other tests share this database: this one makes its own organization and project and removes them.
 	testBranchContent(t, r)
 }
 
@@ -37,14 +38,16 @@ func testBranchContent(t *testing.T, reg Registry) {
 	if st == nil {
 		t.Fatal("registry has no BranchContentStore")
 	}
-	org, err := reg.CreateOrganization(ctx, "content", "Content")
+	slug := "content-" + strings.ToLower(secrets.RandomString(8, "abcdefghijklmnopqrstuvwxyz"))
+	org, err := reg.CreateOrganization(ctx, slug, "Content")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const ref = "contentaaaaaaaaaaaaa"
+	ref := strings.ToLower(secrets.RandomString(20, "abcdefghijklmnopqrstuvwxyz"))
 	if err := reg.CreateProject(ctx, &Project{Ref: ref, OrgID: org.ID, Name: "content", Class: "default", Status: StatusActiveHealthy}); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = reg.DeleteProject(context.Background(), ref) })
 	if _, err := st.GetBranchSchemaBase(ctx, ref); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a branch with no base: %v", err)
 	}

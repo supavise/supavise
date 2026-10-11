@@ -12,14 +12,23 @@ func (o *Object) Same(p *Object) bool {
 		return o == p
 	}
 	return o.Kind == p.Kind && o.Key == p.Key && o.Name == p.Name && o.Parent == p.Parent && o.Def == p.Def &&
-		reflect.DeepEqual(nilIfEmpty(o.Attr), nilIfEmpty(p.Attr)) && equalStrings(o.List, p.List)
+		reflect.DeepEqual(semantic(o.Attr), semantic(p.Attr)) && equalStrings(o.List, p.List)
 }
 
-func nilIfEmpty(m map[string]string) map[string]string {
-	if len(m) == 0 {
+// semantic returns the attributes that say what an object is. The position of a column is not one: it
+// is the attribute number, which a dropped column leaves a gap in, so two tables with the same columns
+// can number them differently.
+func semantic(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if k != "pos" {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
 		return nil
 	}
-	return m
+	return out
 }
 
 // Merge3 combines two descendants of base object by object: it returns ours with what theirs

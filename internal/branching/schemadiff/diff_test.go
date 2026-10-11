@@ -251,3 +251,16 @@ func TestPoliciesOnManagedTablesNeedTheTableOnTheTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestTheNumberOfAColumnIsNotWhatItIs(t *testing.T) {
+	a := snap(tbl("public", "t", "id", "x"))
+	b := snap(tbl("public", "t", "id", "x"))
+	for i := range b.Objects {
+		if b.Objects[i].Kind == KindColumn {
+			b.Objects[i].Attr = map[string]string{"type": "integer", "notnull": "false", "pos": "7"} // a gap left by dropped columns
+		}
+	}
+	if len(Changed(a, b)) != 0 {
+		t.Fatalf("columns that differ only in their number: %v", Changed(a, b))
+	}
+}

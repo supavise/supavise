@@ -114,7 +114,12 @@ const notInExtension = `not exists (select 1 from pg_depend dx where dx.classid 
 func notExt(class, alias string) string { return fmt.Sprintf(notInExtension, class, alias) }
 
 // Read reads the schema of the database q is connected to.
-func Read(ctx context.Context, q Queryer, o ReadOptions) (*Snapshot, error) {
+func Read(ctx context.Context, q Queryer, o ReadOptions) (snap *Snapshot, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			snap, err = nil, fmt.Errorf("schemadiff: reading the schema failed unexpectedly: %v", p)
+		}
+	}()
 	r := &reader{ctx: ctx, q: q, o: o, byKey: map[string]int{}, oidKey: map[ref]string{}, scopeNames: map[string]bool{}}
 	steps := []func() error{
 		r.readVersion, r.readSchemas, r.readExtensions, r.readTypes, r.readTables, r.readColumns,
@@ -364,6 +369,7 @@ func (r *reader) readTables() error {
 		if err := rows.Scan(&oid, &rtype, &schema, &name, &kind, &rls, &force, &persist, &ispart, &pkey, &bound, &opts, &comment, &parent); err != nil {
 			return err
 		}
+		sort.Strings(opts) // in the order they were set otherwise
 		if parent != 0 && !ispart {
 			r.unmodeled = append(r.unmodeled, "inherited table "+schema+"."+name)
 			return nil
@@ -636,6 +642,7 @@ func (r *reader) readViews() error {
 		if err := rows.Scan(&oid, &rtype, &schema, &name, &kind, &def, &opts, &comment); err != nil {
 			return err
 		}
+		sort.Strings(opts)
 		k, target := key(KindView, schema, name), "VIEW "
 		ok := KindView
 		if kind == "m" {
