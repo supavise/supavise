@@ -4,8 +4,10 @@
 //
 // Starts @supabase/mcp-server-supabase (stdio) with --api-url and calls, in order: get_cost and
 // confirm_cost, create_branch, list_branches, execute_sql on the branch, apply_migration on the
-// branch, merge_branch, rebase_branch, reset_branch and delete_branch. Exits non-zero on the
-// first check that fails. The token travels in the environment, never in argv.
+// branch, merge_branch, rebase_branch, reset_branch and delete_branch. The parent needs
+// public.items (tests/linux/oauth/oauth-walk.mjs makes it with a migration, so that the branch replays it). Exits
+// non-zero on the first check that fails. The token travels in the environment, never in argv. It runs in
+// tests/linux/oauth-smoke.sh (step L-06b of the walk), with an OAuth access token.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
@@ -53,21 +55,29 @@ function json(out) {
   try { return JSON.parse(m[0]); } catch { return null; }
 }
 
-async function branchStatus(name, want, timeoutMs = 180000) {
+// DONE are the statuses that end a create, merge, rebase or reset: a build without action runs ends at MIGRATIONS_PASSED, one
+// with them goes on to deploy the functions and ends at FUNCTIONS_DEPLOYED.
+const DONE = ["MIGRATIONS_PASSED", "FUNCTIONS_DEPLOYED"];
+
+async function branchStatus(name, timeoutMs = 240000) {
   const t0 = Date.now();
+  // An operation that runs as an action run (merge, rebase, reset) answers before it ends: give the status a moment to
+  // leave the previous terminal state, or the wait would read that state as the end of this operation.
+  await sleep(3000);
   for (;;) {
     const { out } = await tool("list_branches", { project_id: ref }, () => true);
-    const list = json(out)?.branches ?? [];
+    const parsed = json(out);
+    const list = Array.isArray(parsed) ? parsed : (parsed?.branches ?? []);
     const b = list.find((x) => x.name === name);
-    if (b && b.status === want) return b;
-    // A failed operation ends in MIGRATIONS_FAILED: that is a failure of the run, not a state to
-    // accept as "done" (unless the caller waits for it).
-    if (b && b.status === "MIGRATIONS_FAILED") {
+    if (b && DONE.includes(b.status)) return b;
+    // A failed operation ends in MIGRATIONS_FAILED or FUNCTIONS_FAILED: that is a failure of the run, not a state to
+    // accept as "done".
+    if (b && /FAILED$/.test(b.status)) {
       failed++;
-      console.log(`FAIL branch ${name} ended MIGRATIONS_FAILED while waiting for ${want}`);
+      console.log(`FAIL branch ${name} ended ${b.status}`);
       return b;
     }
-    if (Date.now() - t0 > timeoutMs) { failed++; console.log(`FAIL branch ${name} never reached ${want}`); return b; }
+    if (Date.now() - t0 > timeoutMs) { failed++; console.log(`FAIL branch ${name} never finished (status ${b?.status})`); return b; }
     await sleep(1500);
   }
 }
@@ -90,7 +100,7 @@ try {
 
   const name = `mcp-${Date.now().toString(36)}`;
   await tool("create_branch", { project_id: ref, name, confirm_cost_id: conf.confirmation_id });
-  const b = await branchStatus(name, "MIGRATIONS_PASSED");
+  const b = await branchStatus(name);
   if (!b) throw new Error("no branch");
   console.log(`branch ${name}: ref=${b.project_ref} status=${b.status}`);
 
@@ -101,19 +111,20 @@ try {
   await tool("list_tables", { project_id: ref, schemas: ["public"] }, (o) => !o.includes("mcp_branch_table"));
 
   await tool("merge_branch", { branch_id: b.id });
-  await branchStatus(name, "MIGRATIONS_PASSED");
+  await branchStatus(name);
   await tool("list_tables", { project_id: ref, schemas: ["public"] }, (o) => o.includes("mcp_branch_table"));
 
   await tool("rebase_branch", { branch_id: b.id });
-  await branchStatus(name, "MIGRATIONS_PASSED");
+  await branchStatus(name);
 
   await tool("execute_sql", { project_id: b.project_ref, query: "insert into public.items values (777777, 'scratch')" });
   await tool("reset_branch", { branch_id: b.id });
-  await branchStatus(name, "MIGRATIONS_PASSED");
+  await branchStatus(name);
   await tool("execute_sql", { project_id: b.project_ref, query: "select count(*) as n from public.items where id = 777777" }, (o) => /"n"\s*:\s*0|\\"n\\":0/.test(o));
 
   await tool("delete_branch", { branch_id: b.id });
-  const after = json((await tool("list_branches", { project_id: ref })).out)?.branches ?? [];
+  const afterOut = json((await tool("list_branches", { project_id: ref })).out);
+  const after = Array.isArray(afterOut) ? afterOut : (afterOut?.branches ?? []);
   if (after.some((x) => x.name === name)) { failed++; console.log("FAIL branch still listed after delete_branch"); }
 } catch (e) {
   failed++;
