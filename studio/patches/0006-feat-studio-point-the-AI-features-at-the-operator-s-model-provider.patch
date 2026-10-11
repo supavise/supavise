@@ -237,14 +237,14 @@ index 0000000..66a1d56
 +  it('uses the operator’s chat model for the Assistant and completion model for small calls', () => {
 +    const env = {
 +      SUPAVISE_AI_MODEL: 'openai/gpt-4o',
-+      SUPAVISE_AI_COMPLETION_MODEL: 'openai/gpt-4o-mini',
++      SUPAVISE_AI_COMPLETION_MODEL: '@cf/meta/llama-3.1-8b-instruct',
 +    }
 +    expect(resolveOpenAICall(assistant, 'gpt-6-luna', base, env).modelId).toBe('openai/gpt-4o')
 +    expect(resolveOpenAICall(DEFAULT_COMPLETION_MODEL, 'gpt-5.4-nano', base, env).modelId).toBe(
-+      'openai/gpt-4o-mini'
++      '@cf/meta/llama-3.1-8b-instruct'
 +    )
 +    expect(resolveOpenAICall(LOGS_REWRITE_MODEL, 'gpt-5.4-nano', base, env).modelId).toBe(
-+      'openai/gpt-4o-mini'
++      '@cf/meta/llama-3.1-8b-instruct'
 +    )
 +  })
 +
@@ -346,7 +346,7 @@ index 0000000..6803dec
 + * every function here answers as upstream does.
 + */
 +
-+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/
++const MODEL_NAME = /^[A-Za-z0-9@][A-Za-z0-9._:/@+-]{0,199}$/
 +const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 +
 +type Env = Record<string, string | undefined>

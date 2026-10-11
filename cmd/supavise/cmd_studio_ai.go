@@ -71,7 +71,8 @@ change; the others keep their value, so ` + "`set --model llama3.1`" + ` after a
                       /etc/supavise/` + studioAIKeyFile + ` (mode 0600). Use --api-key-stdin to pipe the key in.
   --no-api-key        send no key, for a gateway that needs none (a local Ollama)
   --model             the model of the Assistant's chat. Without one Studio uses OpenAI's names, which
-                      suits only OpenAI itself.
+                      suits only OpenAI itself: with another --base-url, name the model (set warns
+                      when you do not). A name may start with @ (Cloudflare Workers AI).
   --completion-model  the model of the small calls (titles, filters, inline completion); default --model
   --api               "chat" (chat completions, which every gateway offers; the default with a --base-url)
                       or "responses" (OpenAI's newer API)
@@ -231,6 +232,7 @@ func runStudioAISet(cmd *cobra.Command, f studioAIFlags) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Saved the provider in %s.\n", store.dropIn())
 	warnAIEnvironment(cmd.ErrOrStderr())
+	warnAIGatewayModel(cmd.ErrOrStderr(), ai)
 	if f.noRestart {
 		fmt.Fprintln(out, "Studio was not restarted (--no-restart): run `supavise fleet start` to apply the settings.")
 		return nil
@@ -306,6 +308,14 @@ func applyStudioAIFlags(cmd *cobra.Command, ai config.StudioAI, f studioAIFlags,
 		ai.APIKeyFile = ""
 	}
 	return ai
+}
+
+// warnAIGatewayModel says when the gateway has no model to answer to: Studio then sends its own
+// OpenAI model names, which most gateways do not serve.
+func warnAIGatewayModel(w io.Writer, ai config.StudioAI) {
+	if ai.GatewayWithoutModel() {
+		fmt.Fprintf(w, "warning: %s is not OpenAI and no model is set, so Studio asks it for Studio's own OpenAI model names, which most gateways do not serve: every Assistant message would fail. Name its model with `supavise studio ai set --model NAME`, unless the gateway maps those names.\n", ai.BaseURL)
+	}
 }
 
 // warnAIEnvironment says when a SUPAVISE_STUDIO_AI_* variable of this process overrides the files.
@@ -509,6 +519,7 @@ func checkStudioAI(ctx context.Context, w io.Writer, ai config.StudioAI, rt http
 	if ai.Model != "" {
 		fmt.Fprintf(w, "The model %q is not checked: ask the Assistant a question to see whether the provider serves it.\n", ai.Model)
 	}
+	warnAIGatewayModel(w, ai)
 	return nil
 }
 

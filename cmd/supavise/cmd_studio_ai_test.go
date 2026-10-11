@@ -125,6 +125,41 @@ func TestStudioAISetKeepsTheKeyOutOfConfigAndOnlyChangesWhatYouGive(t *testing.T
 	}
 }
 
+// A gateway with no model gets Studio's own OpenAI names, which most gateways do not serve: set and
+// check warn (a gateway that maps those names is legitimate, so neither refuses).
+func TestStudioAIWarnsAboutAGatewayWithoutAModel(t *testing.T) {
+	n := newAINode(t, "")
+	stubRefresh(t)
+	_, errOut, err := n.run(cliAIKey+"\n", "set", "--base-url", "https://openrouter.ai/api/v1", "--api-key-stdin")
+	if err != nil {
+		t.Fatalf("a gateway without a model is refused: %v", err)
+	}
+	if !strings.Contains(errOut, "no model is set") || !strings.Contains(errOut, "--model") || strings.Contains(errOut, cliAIKey) {
+		t.Fatalf("set did not warn: %q", errOut)
+	}
+	if _, errOut, err = n.run("", "set", "--model", "anthropic/claude-sonnet-4.5"); err != nil || strings.Contains(errOut, "no model is set") {
+		t.Fatalf("a gateway with a model got the warning: %q (%v)", errOut, err)
+	}
+	// OpenAI itself needs no model, with or without its URL.
+	if _, errOut, err = n.run(cliAIKey+"\n", "set", "--base-url", "https://api.openai.com/v1", "--model", "", "--api-key-stdin"); err != nil || strings.Contains(errOut, "no model is set") {
+		t.Fatalf("OpenAI got the warning: %q (%v)", errOut, err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"data":[]}`) }))
+	defer srv.Close()
+	var out bytes.Buffer
+	if err := checkStudioAI(context.Background(), &out, config.StudioAI{BaseURL: srv.URL + "/v1"}, http.DefaultTransport); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "no model is set") {
+		t.Fatalf("check did not warn: %q", out.String())
+	}
+	out.Reset()
+	if err := checkStudioAI(context.Background(), &out, config.StudioAI{BaseURL: srv.URL + "/v1", Model: "m"}, http.DefaultTransport); err != nil || strings.Contains(out.String(), "no model is set") {
+		t.Fatalf("check with a model: %q (%v)", out.String(), err)
+	}
+}
+
 func TestStudioAISetRefusesWhatCannotWork(t *testing.T) {
 	n := newAINode(t, "")
 	stubRefresh(t)

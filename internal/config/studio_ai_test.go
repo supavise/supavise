@@ -81,6 +81,8 @@ func TestStudioAIValidate(t *testing.T) {
 		{BaseURL: "http://127.0.0.1:11434/v1", Model: "llama3.1:8b", API: "chat"},
 		{BaseURL: "https://gw.example.com/v1/", Model: "accounts/fireworks/models/llama-v3p1-70b-instruct", ReasoningEffort: "high"},
 		{BaseURL: "https://ai-gateway.vercel.sh/v1", Model: "anthropic/claude-sonnet-4.5", CompletionModel: "openai/gpt-5-mini"},
+		// Cloudflare Workers AI names its models with a leading @.
+		{BaseURL: "https://api.cloudflare.com/client/v4/accounts/0123/ai/v1", Model: "@cf/meta/llama-3.1-8b-instruct"},
 	}
 	for _, a := range good {
 		if err := a.Validate(); err != nil {
@@ -111,6 +113,25 @@ func TestStudioAIValidate(t *testing.T) {
 	c.Studio.AI = StudioAI{BaseURL: "ftp://x"}
 	if err := c.Validate(); err == nil {
 		t.Fatal("Config.Validate must check [studio.ai]")
+	}
+}
+
+func TestStudioAIGatewayWithoutModel(t *testing.T) {
+	for _, tc := range []struct {
+		ai   StudioAI
+		want bool
+	}{
+		{StudioAI{}, false},
+		{StudioAI{APIKeyFile: "/k"}, false}, // OpenAI itself: Studio's own names are right
+		{StudioAI{BaseURL: "https://api.openai.com/v1"}, false},
+		{StudioAI{BaseURL: "https://API.OpenAI.com/v1"}, false},
+		{StudioAI{BaseURL: "https://openrouter.ai/api/v1"}, true},
+		{StudioAI{BaseURL: "http://127.0.0.1:11434/v1", CompletionModel: "small"}, true},
+		{StudioAI{BaseURL: "https://openrouter.ai/api/v1", Model: "anthropic/claude-sonnet-4.5"}, false},
+	} {
+		if got := tc.ai.GatewayWithoutModel(); got != tc.want {
+			t.Errorf("%+v: GatewayWithoutModel = %v, want %v", tc.ai, got, tc.want)
+		}
 	}
 }
 
