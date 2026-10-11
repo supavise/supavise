@@ -19,6 +19,10 @@
 #   supabase_functions schema and its role, a second call changes nothing, and a webhook that Studio
 #   creates (a trigger on supabase_functions.http_request through pg-meta) answers an insert with a
 #   request that a local HTTP server receives and a net._http_response row with its status;
+# - the dashboard's honesty about logs: a log query answers an error that names `supavise logs <ref>`
+#   (never a bare empty result), `supavise logs` prints the project's Postgres lines and only the
+#   project's lines of the shared services, and the project home's request chart counts the
+#   requests the proxy served (usage.api-counts);
 # - the MCP server (apply_migration, execute_sql) and, when SUPABASE_CLI is set, the Supabase CLI
 #   (secrets set) list as Read-only and are refused writes; an Owner's can;
 # - [mail] reaches supavise-gotrue@system: an invitation to a new address (GoTrue invite) and to an
@@ -364,6 +368,55 @@ grep -q '^/roles-hook .*"record".*"fires"' "$WORK/hooks.txt" || { cat "$WORK/hoo
 # Deleting the webhook is a DROP TRIGGER through pg-meta.
 code=$(papi "${JWT[dev]}" POST "/platform/pg-meta/$REF/query" '{"query":"drop trigger roles_hook on public.hook_t"}')
 [[ $code == 200 || $code == 201 ]] || fail "dropping the webhook trigger answered $code"
+
+log "Logs: queries say there are no logs, supavise logs reads the journal, the request chart counts proxy requests"
+# A log query is an error, not an empty answer (Studio's logs pages, the reports and the MCP tools show it).
+code=$(papi "${JWT[dev]}" GET "/platform/projects/$REF/analytics/endpoints/logs.all?sql=select%201&iso_timestamp_start=2026-01-01T00:00:00Z&iso_timestamp_end=2026-01-01T01:00:00Z")
+[[ $code == 200 ]] || fail "logs.all answered $code"
+[[ $(json_get 'len(d["result"])' <"$WORK/last.json") == 0 ]] || fail "logs.all returned rows"
+json_get 'd["error"]' <"$WORK/last.json" | grep -q "supavise logs $REF" || { cat "$WORK/last.json" >&2; fail "logs.all does not say to run supavise logs $REF"; }
+[[ $(st "${PAT[owner]}" GET "$CFG/analytics/endpoints/logs.all") == 410 ]] || fail "v1 logs.all is not gone (410)"
+json_get 'd["error"]' < <(body "${PAT[owner]}" GET "$CFG/analytics/endpoints/logs") | grep -q "supavise logs $REF" || fail "v1 logs does not say to run supavise logs $REF"
+# Iceberg and vector buckets are hidden: the profile lists them as disabled features.
+[[ $(curl -sS -m 30 -H "Authorization: Bearer ${JWT[owner]}" "$ADMIN/platform/profile" | json_get '"storage:analytics" in d["disabled_features"] and "storage:vectors" in d["disabled_features"]') == True ]] \
+  || fail "the profile does not hide storage:analytics and storage:vectors"
+
+# supavise logs runs as root here: the supavise user may not read the system journal.
+SVLOG=/usr/local/bin/supavise
+$SVLOG logs "$REF" --service postgres -n 200 >"$WORK/pglog.txt" 2>"$WORK/pglog.err" || { cat "$WORK/pglog.err" >&2; fail "supavise logs --service postgres failed"; }
+[[ -s $WORK/pglog.txt ]] || { cat "$WORK/pglog.err" >&2; fail "supavise logs printed no Postgres line"; }
+grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z postgres +' "$WORK/pglog.txt" || { head -5 "$WORK/pglog.txt" >&2; fail "supavise logs lines are not '<time> postgres <message>'"; }
+grep -q "ready to accept connections" "$WORK/pglog.txt" || { tail -5 "$WORK/pglog.txt" >&2; fail "supavise logs does not show the Postgres start"; }
+# A shared service shows only the lines that mention the project.
+$SVLOG logs "$REF" --service realtime -n 500 >"$WORK/rtlog.txt" 2>/dev/null || fail "supavise logs --service realtime failed"
+if [[ -s $WORK/rtlog.txt ]] && grep -v "$REF" "$WORK/rtlog.txt" | grep -q .; then head -3 "$WORK/rtlog.txt" >&2; fail "supavise logs shows realtime lines that do not mention the project"; fi
+# Every service together, a window, and the refusals.
+$SVLOG logs "$REF" -n 50 --since 1d >"$WORK/alllog.txt" 2>/dev/null || fail "supavise logs (all services, --since 1d) failed"
+[[ $(wc -l <"$WORK/alllog.txt") -le 50 ]] || fail "supavise logs -n 50 printed more than 50 lines"
+$SVLOG logs "$REF" --since yesterday >/dev/null 2>"$WORK/since.err" && fail "supavise logs accepted --since yesterday"
+grep -q -- "--since" "$WORK/since.err" || fail "supavise logs --since yesterday: no explanation"
+$SVLOG logs not-a-ref >/dev/null 2>"$WORK/ref.err" && fail "supavise logs accepted a bad ref"
+# --follow prints a line that Postgres writes after it started (a statement the log records at LOG level).
+( timeout 10 $SVLOG logs "$REF" --service postgres -n 0 -f >"$WORK/follow.txt" 2>/dev/null || true ) &
+FOLLOW_PID=$!
+sleep 2
+sql "do \$\$ begin raise warning 'supavise-logs-follow-marker'; end \$\$"
+wait "$FOLLOW_PID"
+grep -q "supavise-logs-follow-marker" "$WORK/follow.txt" || { cat "$WORK/follow.txt" >&2; fail "supavise logs -f did not print a line written after it started"; }
+
+# The project home's request chart (usage.api-counts) counts what the proxy served: unauthenticated
+# requests answered 401 are requests too.
+req_sum() { # the REST requests of the last hour, as the dashboard asks for them
+  papi "${JWT[owner]}" GET "/platform/projects/$REF/analytics/endpoints/usage.api-counts?interval=1hr" >/dev/null
+  json_get 'sum(r["total_rest_requests"] for r in d["result"])' <"$WORK/last.json"
+}
+before=$(req_sum)
+for _ in 1 2 3 4 5; do
+  [[ $(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Host: $REF.api.$SUPAVISE_DOMAIN" "http://127.0.0.1/rest/v1/roles_t") == 401 ]] || fail "an unauthenticated REST request was not refused with 401"
+done
+after=$(req_sum)
+[[ $((after - before)) -ge 5 ]] || fail "usage.api-counts counted $((after - before)) of 5 requests (before $before, after $after)"
+[[ $(json_get 'len(d["result"])' <"$WORK/last.json") -ge 60 ]] || fail "usage.api-counts 1hr has fewer than 60 minute buckets"
 
 log "Administrator: settings and members, never Owners"
 # An Administrator passes the permission check of a restore; the time is far outside any window, so
