@@ -106,6 +106,10 @@ type Deps struct {
 	// *failover.Orchestrator implements it. Nil: the node is not part of a cluster and the route
 	// answers 404.
 	Failover FailoverSource
+	// Metrics is the node's utilization collector (internal/metrics): the series of GET
+	// infra-monitoring and the answer of GET projects-resource-warnings. Nil: the series have no
+	// points and no project has a warning.
+	Metrics MetricsSource
 	// OAuth is the OAuth authorization server's service (internal/oauth): dynamic registration, the
 	// consent flow, the token endpoint, the organization's OAuth Apps and the lookup of OAuth access
 	// tokens. Empty builds one. NewServer fills the fields of the service that are empty, in place:
@@ -177,6 +181,9 @@ type Server struct {
 	// mcp limits the requests of each grant and personal access token on the /mcp gate (mcp.go). The
 	// zero value is usable.
 	mcp mcpLimiter
+
+	// metrics is Deps.Metrics (infra_monitoring.go, resource_warnings.go).
+	metrics MetricsSource
 
 	// disk is the data volume and the projects' disk limits (compute.go).
 	disk DiskLimits
@@ -304,6 +311,7 @@ func NewServer(d Deps) (*Server, error) {
 		}
 	}
 	s.replicas, s.lbOn, s.failover = d.Replicas, d.LoadBalancers, d.Failover
+	s.metrics = d.Metrics
 	s.disk = d.Disk
 	if s.disk == nil {
 		s.disk = diskquota.New(d.Config, nil)

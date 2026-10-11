@@ -315,6 +315,20 @@ type Report struct {
 	Instances []InstanceStatus `json:"instances,omitempty"`
 	// Projects is the health of the projects homed on the node when it is not the leader.
 	Projects []ProjectHealth `json:"projects,omitempty"`
+	// Metrics is the newest utilization sample of each project homed on the node, when it is not the
+	// leader: the leader's Management API answers for every project of the cluster, and the control
+	// groups of a project can be read only on its home.
+	Metrics []ProjectMetrics `json:"metrics,omitempty"`
+}
+
+// ProjectMetrics is one project's newest utilization sample (internal/metrics). V holds the values in
+// the order of metrics.Field, null for a value that could not be measured; a report from a build with
+// more or fewer fields than the receiver's is read as far as both go, and the rest is unknown.
+type ProjectMetrics struct {
+	Ref  string     `json:"ref"`
+	Name string     `json:"name,omitempty"`
+	At   time.Time  `json:"at"`
+	V    []*float64 `json:"v"`
 }
 
 // ProjectHealth is one project's health as its home node sees it.

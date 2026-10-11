@@ -89,6 +89,9 @@ func (r *Reports) Subscribe(fn func(peerapi.Report)) {
 // health check adds the projects. It runs every ReportEvery and should answer from memory.
 type Contributor func(ctx context.Context) (instances []peerapi.InstanceStatus, projects []peerapi.ProjectHealth)
 
+// MetricsContributor adds the node's utilization samples to the report it sends (internal/metrics).
+type MetricsContributor func(ctx context.Context) []peerapi.ProjectMetrics
+
 // Reporter sends the node's report to the leader every ReportEvery, or stores it when this node is
 // the leader.
 type Reporter struct {
@@ -103,14 +106,22 @@ type Reporter struct {
 	// Every overrides ReportEvery (tests).
 	Every time.Duration
 
-	mu   sync.Mutex
-	adds []Contributor
+	mu      sync.Mutex
+	adds    []Contributor
+	metrics []MetricsContributor
 }
 
 // Add registers a contributor. Call it before Run.
 func (p *Reporter) Add(c Contributor) {
 	p.mu.Lock()
 	p.adds = append(p.adds, c)
+	p.mu.Unlock()
+}
+
+// AddMetrics registers a contributor of utilization samples. Call it before Run.
+func (p *Reporter) AddMetrics(c MetricsContributor) {
+	p.mu.Lock()
+	p.metrics = append(p.metrics, c)
 	p.mu.Unlock()
 }
 
@@ -126,11 +137,15 @@ func (p *Reporter) Once(ctx context.Context) error {
 	rep := peerapi.Report{Node: p.Self(), At: p.now().UTC(), Epoch: p.Epoch()}
 	p.mu.Lock()
 	adds := append([]Contributor{}, p.adds...)
+	mets := append([]MetricsContributor{}, p.metrics...)
 	p.mu.Unlock()
 	for _, c := range adds {
 		in, pr := c(ctx)
 		rep.Instances = append(rep.Instances, in...)
 		rep.Projects = append(rep.Projects, pr...)
+	}
+	for _, c := range mets {
+		rep.Metrics = append(rep.Metrics, c(ctx)...)
 	}
 	if p.IsLeader() {
 		p.Reports.Put(rep.Node, rep, p.now())
