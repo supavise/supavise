@@ -374,6 +374,17 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 		return nil
 	})
 	g.Go(func() error { settleUpgrades(gctx, node, log); return nil })
+	if boot.Role != cluster.RoleFollower { // the leader's registry holds the decision, and its plane router reaches the other nodes' projects
+		g.Go(func() error {
+			select {
+			case <-projectsUp:
+			case <-gctx.Done():
+				return nil
+			}
+			convergeDataAPI(gctx, node, log)
+			return nil
+		})
+	}
 	log.Info("Supavise is up", "domain", cfg.BaseDomain(), "api", cfg.APIURL(), "dashboard", cfg.DashboardURL())
 	err = g.Wait()
 	log.Info("Supavise stopped")
