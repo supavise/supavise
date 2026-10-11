@@ -34,12 +34,13 @@ func (s *Service) Merge(ctx context.Context, idOrRef string, in ActionInput) (st
 	if err != nil {
 		return "", err
 	}
-	r, err := s.begin(b.Ref, "merge")
+	r, err := s.beginRun(ctx, b.Ref, "merge", parent.Ref, parent.Ref)
 	if err != nil {
 		return "", err
 	}
 	s.setState(ctx, b.Ref, registry.BranchRunningMigration, "merging into "+parent.Ref, nil)
 	s.spawn(r, b.Ref, parent.Ref, func(ctx context.Context) (string, error) {
+		s.phase(ctx, StepPull)
 		branchMigs, err := s.db.Migrations(ctx, b.Ref)
 		if err != nil {
 			return "", fmt.Errorf("read the branch's migrations: %w", err)
@@ -48,6 +49,8 @@ func (s *Service) Merge(ctx context.Context, idOrRef string, in ActionInput) (st
 		if err != nil {
 			return "", fmt.Errorf("read the parent's migrations: %w", err)
 		}
+		s.phase(ctx, StepMigrate)
+		s.logRun(ctx, "the branch has %d migration(s) and the parent %d", len(branchMigs), len(parentMigs))
 		plan := Compare(branchMigs, parentMigs)
 		if d := plan.Summary(); d != "" && !in.Force {
 			return "", fmt.Errorf("%w: %s (use force to merge anyway)", ErrDiverged, d)
@@ -72,6 +75,7 @@ func (s *Service) Merge(ctx context.Context, idOrRef string, in ActionInput) (st
 		if err != nil {
 			return "", fmt.Errorf("apply to the parent (rolled back where the SQL allows): %w", err)
 		}
+		s.phase(ctx, StepDeploy)
 		detail := fmt.Sprintf("merged %d migration(s) into %s: %s", res.Applied, parent.Ref, versions(apply))
 		if res.NonAtomic {
 			detail += " (not atomic: a statement cannot run inside a transaction)"

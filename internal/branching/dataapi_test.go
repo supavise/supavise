@@ -32,7 +32,7 @@ func TestSchemaOnlyBranchFollowsTheParentsDefaultPrivileges(t *testing.T) {
 				setParentChoice(t, h, tc.choice)
 			}
 			b := h.create("feature", nil)
-			h.mustState(b, registry.BranchMigrationsPassed)
+			h.mustState(b, registry.BranchFunctionsDeployed)
 			got := h.eng.creates[0].DataAPI
 			if got.ExposeNewTables != tc.expose || got.CopyFrom != parentRef {
 				t.Fatalf("the branch was created with %+v, want ExposeNewTables=%v CopyFrom=%s", got, tc.expose, parentRef)
@@ -54,7 +54,7 @@ func TestDataBranchTakesTheParentsDecision(t *testing.T) {
 		return &CloneStats{Method: method, FS: "apfs"}, nil
 	}
 	b := h.create("data", func(in *CreateInput) { in.WithData = true })
-	h.mustState(b, registry.BranchMigrationsPassed)
+	h.mustState(b, registry.BranchFunctionsDeployed)
 	req := h.eng.creates[0]
 	if req.Seed == nil || req.DataAPI.CopyFrom != parentRef {
 		t.Fatalf("a clone must name the parent as the source of the decision: %+v", req.DataAPI)

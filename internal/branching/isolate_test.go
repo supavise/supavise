@@ -272,7 +272,7 @@ func TestResetRecordsThePolicyThroughTheSetter(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := h.wait(b.Ref)
-	h.mustState(got, registry.BranchMigrationsPassed)
+	h.mustState(got, registry.BranchFunctionsDeployed)
 	if len(sets) != 1 || sets[0] != registry.EgressDenied+">"+registry.EgressPending || got.Egress != registry.EgressPending {
 		t.Fatalf("setter calls = %v, egress = %q", sets, got.Egress)
 	}

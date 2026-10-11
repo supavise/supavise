@@ -68,7 +68,7 @@ func TestWithDataRefusedWithoutFreeDisk(t *testing.T) {
 	// Exactly enough passes.
 	h.svc.freeBytes = func(string) int64 { return need }
 	b := h.create("fits", func(in *CreateInput) { in.WithData = true })
-	h.mustState(b, registry.BranchMigrationsPassed)
+	h.mustState(b, registry.BranchFunctionsDeployed)
 }
 
 // The same check guards the base-backup path (and a node whose way to get data is the backup).
@@ -87,7 +87,7 @@ func TestSchemaOnlyCreateIgnoresTheDiskCheck(t *testing.T) {
 	parentData(t, h, parentRef, 10*mib)
 	h.svc.freeBytes = func(string) int64 { return 0 }
 	b := h.create("schema", nil)
-	h.mustState(b, registry.BranchMigrationsPassed)
+	h.mustState(b, registry.BranchFunctionsDeployed)
 }
 
 // An unreadable free-space figure does not block creation.
@@ -95,7 +95,7 @@ func TestDiskCheckSkippedWhenFreeSpaceIsUnknown(t *testing.T) {
 	h := cloneHarness(t)
 	h.svc.freeBytes = func(string) int64 { return -1 }
 	b := h.create("unknown", func(in *CreateInput) { in.WithData = true })
-	h.mustState(b, registry.BranchMigrationsPassed)
+	h.mustState(b, registry.BranchFunctionsDeployed)
 }
 
 // The default reserve is 2 GB, and the 1.2 factor applies to the parent's data.
@@ -127,7 +127,7 @@ func TestResetRefusedWithoutFreeDisk(t *testing.T) {
 		t.Fatalf("the refused reset removed %v", h.eng.deletes)
 	}
 	got, err := h.svc.Resolve(context.Background(), b.ID)
-	if err != nil || got.State != registry.BranchMigrationsPassed || got.ProjectStatus != registry.StatusActiveHealthy {
+	if err != nil || got.State != registry.BranchFunctionsDeployed || got.ProjectStatus != registry.StatusActiveHealthy {
 		t.Fatalf("branch after the refused reset: %+v %v", got, err)
 	}
 
@@ -158,7 +158,7 @@ func TestEgressPolicyOfANewBranch(t *testing.T) {
 			h := cloneHarness(t)
 			h.cfg.Supervisor = tc.supervisor
 			b := h.create("e", func(in *CreateInput) { in.WithData, in.AllowEgress = tc.withData, tc.allow })
-			h.mustState(b, registry.BranchMigrationsPassed)
+			h.mustState(b, registry.BranchFunctionsDeployed)
 			if b.Egress != tc.want {
 				t.Fatalf("egress = %q, want %q (%s)", b.Egress, tc.want, b.Detail)
 			}
@@ -204,7 +204,7 @@ func TestResetKeepsTheEgressPolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := h.wait(b.Ref)
-			h.mustState(got, registry.BranchMigrationsPassed)
+			h.mustState(got, registry.BranchFunctionsDeployed)
 			if got.Egress != tc.want {
 				t.Fatalf("after reset egress = %q, want %q", got.Egress, tc.want)
 			}

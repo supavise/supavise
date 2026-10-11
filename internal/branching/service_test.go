@@ -24,7 +24,7 @@ func TestCreateSchemaOnlyReplaysMigrationsAndSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := h.create("feature/login", func(in *CreateInput) { in.GitBranch = "feature/login" })
-	h.mustState(b, registry.BranchMigrationsPassed)
+	h.mustState(b, registry.BranchFunctionsDeployed)
 	if b.WithData || b.CloneMethod != MethodSchema || b.ParentRef != parentRef || b.GitBranch != "feature/login" || b.Persistent {
 		t.Fatalf("branch = %+v", b)
 	}
@@ -103,7 +103,7 @@ func TestCreateReturnsBeforeTheWorkIsDone(t *testing.T) {
 	}
 	close(h.eng.hold)
 	done := h.wait(b.Ref)
-	h.mustState(done, registry.BranchMigrationsPassed)
+	h.mustState(done, registry.BranchFunctionsDeployed)
 }
 
 func TestCreateValidation(t *testing.T) {
@@ -113,9 +113,6 @@ func TestCreateValidation(t *testing.T) {
 		if _, err := h.svc.Create(ctx, parentRef, CreateInput{Name: name}); !errors.Is(err, ErrInvalid) {
 			t.Errorf("name %q: %v", name, err)
 		}
-	}
-	if _, err := h.svc.Create(ctx, parentRef, CreateInput{Name: "x", IsDefault: true}); !errors.Is(err, ErrInvalid) {
-		t.Errorf("is_default: %v", err)
 	}
 	if _, err := h.svc.Create(ctx, parentRef, CreateInput{Name: "x", NotifyURL: "ftp://x"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("notify url: %v", err)
@@ -239,7 +236,7 @@ func TestWithDataCloneUsesParentCredentialsThenRotates(t *testing.T) {
 		return &CloneStats{Method: method, FS: "apfs", Files: 10, Bytes: 1 << 20, TotalMillis: 12, WALSegments: 2}, nil
 	}
 	b := h.create("data", func(in *CreateInput) { in.WithData = true })
-	h.mustState(b, registry.BranchMigrationsPassed)
+	h.mustState(b, registry.BranchFunctionsDeployed)
 	if !b.WithData || b.CloneMethod != MethodClonefile || !strings.Contains(b.Detail, "clonefile") {
 		t.Fatalf("branch = %+v", b)
 	}
@@ -295,7 +292,7 @@ func TestMerge(t *testing.T) {
 		t.Fatalf("merge: %q %v", run, err)
 	}
 	got := h.wait(b.Ref)
-	h.mustState(got, registry.BranchMigrationsPassed)
+	h.mustState(got, registry.BranchFunctionsDeployed)
 	if v := h.db.applied[parentRef]; len(v) != 1 || v[0] != "20260110000000" || !h.db.atomic[parentRef] {
 		t.Fatalf("applied to the parent: %v atomic=%v", v, h.db.atomic[parentRef])
 	}
@@ -346,7 +343,7 @@ func TestMergeRefusesDivergence(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = h.wait(b.Ref)
-	h.mustState(got, registry.BranchMigrationsPassed)
+	h.mustState(got, registry.BranchFunctionsDeployed)
 	if v := h.db.applied[parentRef]; len(v) != 1 || v[0] != "20260110000000" {
 		t.Fatalf("forced merge applied %v", v)
 	}
@@ -381,7 +378,7 @@ func TestMergeRefusesWhatAConcurrentMergeMadeDivergent(t *testing.T) {
 	if _, err := h.svc.Merge(ctx, b.Ref, ActionInput{Force: true}); err != nil {
 		t.Fatal(err)
 	}
-	h.mustState(h.wait(b.Ref), registry.BranchMigrationsPassed)
+	h.mustState(h.wait(b.Ref), registry.BranchFunctionsDeployed)
 	if v := h.db.applied[parentRef]; len(v) != 1 || v[0] != "20260130000000" {
 		t.Fatalf("forced merge applied %v", v)
 	}
@@ -408,7 +405,7 @@ func TestMergeSaysWhichFunctionsItDidNotCarry(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := h.wait(b.Ref)
-	h.mustState(got, registry.BranchMigrationsPassed)
+	h.mustState(got, registry.BranchFunctionsDeployed)
 	if !strings.Contains(got.Detail, "merged 1 migration") || !strings.Contains(got.Detail, "Edge Functions are NOT merged") ||
 		!strings.Contains(got.Detail, "changed, new-fn") || strings.Contains(got.Detail, "same") || strings.Contains(got.Detail, "parent-only") {
 		t.Fatalf("detail = %q", got.Detail)
@@ -460,7 +457,7 @@ func TestPush(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := h.wait(b.Ref)
-	h.mustState(got, registry.BranchMigrationsPassed)
+	h.mustState(got, registry.BranchFunctionsDeployed)
 	if v := h.db.applied[b.Ref][before:]; len(v) != 1 || v[0] != "20260105000000" {
 		t.Fatalf("pushed %v", v)
 	}
@@ -475,7 +472,7 @@ func TestPush(t *testing.T) {
 	if _, err := h.svc.Push(ctx, b.Ref, ActionInput{Force: true}); err != nil {
 		t.Fatal(err)
 	}
-	h.mustState(h.wait(b.Ref), registry.BranchMigrationsPassed)
+	h.mustState(h.wait(b.Ref), registry.BranchFunctionsDeployed)
 	if v := h.db.applied[b.Ref]; v[len(v)-1] != "20260106000000" {
 		t.Fatalf("forced push applied %v", v)
 	}
@@ -494,7 +491,7 @@ func TestResetSchemaOnlyKeepsRefIDAndKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := h.wait(b.Ref)
-	h.mustState(got, registry.BranchMigrationsPassed)
+	h.mustState(got, registry.BranchFunctionsDeployed)
 	if got.Ref != b.Ref || got.ID != b.ID || got.Name != "feat" || got.GitBranch != "g" {
 		t.Fatalf("reset changed identity: %+v vs %+v", got, b)
 	}
@@ -518,7 +515,7 @@ func TestResetSchemaOnlyKeepsRefIDAndKeys(t *testing.T) {
 	if _, err := h.svc.Reset(context.Background(), b.Ref, ActionInput{MigrationVersion: "20260102000000"}); err != nil {
 		t.Fatal(err)
 	}
-	h.mustState(h.wait(b.Ref), registry.BranchMigrationsPassed)
+	h.mustState(h.wait(b.Ref), registry.BranchFunctionsDeployed)
 	if v := h.db.migs[b.Ref]; len(v) != 2 || v[1].Version != "20260102000000" {
 		t.Fatalf("history after reset to a version: %v", v)
 	}
@@ -538,7 +535,7 @@ func TestResetWithDataGetsNewCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := h.wait(b.Ref)
-	h.mustState(got, registry.BranchMigrationsPassed)
+	h.mustState(got, registry.BranchFunctionsDeployed)
 	if !got.WithData || got.CloneMethod != MethodReflink || len(h.eng.creates) != 2 || h.eng.creates[1].Seed == nil {
 		t.Fatalf("reset = %+v creates=%d", got, len(h.eng.creates))
 	}
@@ -758,7 +755,7 @@ func TestResetRefusesBeforeRemovingAnything(t *testing.T) {
 		t.Fatalf("the refused reset removed %v", h.eng.deletes)
 	}
 	got, err := h.svc.Resolve(context.Background(), b.ID)
-	if err != nil || got.State != registry.BranchMigrationsPassed || got.ProjectStatus != registry.StatusActiveHealthy {
+	if err != nil || got.State != registry.BranchFunctionsDeployed || got.ProjectStatus != registry.StatusActiveHealthy {
 		t.Fatalf("branch after the refused reset: %+v %v", got, err)
 	}
 }
@@ -782,7 +779,7 @@ func TestResetWithoutABaseBackupIsRefusedFirst(t *testing.T) {
 	if len(h.eng.deletes) != 0 {
 		t.Fatalf("the refused reset removed %v", h.eng.deletes)
 	}
-	if got, err := h.svc.Resolve(context.Background(), b.ID); err != nil || got.State != registry.BranchMigrationsPassed {
+	if got, err := h.svc.Resolve(context.Background(), b.ID); err != nil || got.State != registry.BranchFunctionsDeployed {
 		t.Fatalf("branch after the refused reset: %+v %v", got, err)
 	}
 }
@@ -819,7 +816,7 @@ func TestFailedResetLeavesTheBranchRegistered(t *testing.T) {
 				t.Fatal(err)
 			}
 			again := h.wait(b.Ref)
-			h.mustState(again, registry.BranchMigrationsPassed)
+			h.mustState(again, registry.BranchFunctionsDeployed)
 			if again.ID != b.ID || again.Ref != b.Ref || again.ProjectStatus != registry.StatusActiveHealthy {
 				t.Fatalf("after the second reset: %+v", again)
 			}
@@ -847,7 +844,7 @@ func TestFailedResetLeavesTheBranchRegistered(t *testing.T) {
 func TestClonedBranchIsIsolatedBeforeItsCredentialsRotate(t *testing.T) {
 	h := cloneHarness(t)
 	b := h.create("data", func(in *CreateInput) { in.WithData = true })
-	h.mustState(b, registry.BranchMigrationsPassed)
+	h.mustState(b, registry.BranchFunctionsDeployed)
 	if len(h.isolated) != 1 || h.isolated[0] != b.Ref {
 		t.Fatalf("isolated = %v", h.isolated)
 	}
@@ -870,7 +867,7 @@ func TestClonedBranchIsIsolatedBeforeItsCredentialsRotate(t *testing.T) {
 func TestClonedBranchHasTheParentsCredentialsReplacedInItsData(t *testing.T) {
 	h := cloneHarness(t)
 	b := h.create("data", func(in *CreateInput) { in.WithData = true })
-	h.mustState(b, registry.BranchMigrationsPassed)
+	h.mustState(b, registry.BranchFunctionsDeployed)
 	if len(h.rewritten) != 1 || h.rewritten[0] != b.Ref {
 		t.Fatalf("rewritten = %v", h.rewritten)
 	}

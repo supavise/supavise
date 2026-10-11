@@ -26,12 +26,13 @@ func (s *Service) Push(ctx context.Context, idOrRef string, in ActionInput) (str
 	if err != nil {
 		return "", err
 	}
-	r, err := s.begin(b.Ref, "push")
+	r, err := s.beginRun(ctx, b.Ref, "push", b.Ref, parent.Ref)
 	if err != nil {
 		return "", err
 	}
 	s.setState(ctx, b.Ref, registry.BranchRunningMigration, "applying the parent's migrations", nil)
 	s.spawn(r, b.Ref, parent.Ref, func(ctx context.Context) (string, error) {
+		s.phase(ctx, StepPull)
 		parentMigs, err := s.db.Migrations(ctx, parent.Ref)
 		if err != nil {
 			return "", fmt.Errorf("read the parent's migrations: %w", err)
@@ -40,6 +41,8 @@ func (s *Service) Push(ctx context.Context, idOrRef string, in ActionInput) (str
 		if err != nil {
 			return "", fmt.Errorf("read the branch's migrations: %w", err)
 		}
+		s.phase(ctx, StepMigrate)
+		s.logRun(ctx, "the parent has %d migration(s) and the branch %d", len(parentMigs), len(branchMigs))
 		plan := Compare(parentMigs, branchMigs)
 		if len(plan.Conflicts) > 0 && !in.Force {
 			var v []string
@@ -59,6 +62,7 @@ func (s *Service) Push(ctx context.Context, idOrRef string, in ActionInput) (str
 		if err != nil {
 			return "", fmt.Errorf("apply to the branch: %w", err)
 		}
+		s.phase(ctx, StepDeploy)
 		return fmt.Sprintf("applied %d migration(s) from %s: %s", res.Applied, parent.Ref, versions(apply)), nil
 	})
 	return r.id, nil
