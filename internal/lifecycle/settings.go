@@ -88,9 +88,11 @@ type Reconfigurer interface {
 // JWT secret" with a secret of the caller's own. *Engine implements it.
 type JWTSecretSetter interface {
 	// SetJWTSecret makes secret the project's JWT secret, signs the legacy anon and
-	// service_role keys with it again and restarts what verifies a JWT. A failure after the
-	// first step is a *JWTSecretError and leaves the previous secret in place, unless its
-	// NotRestored is set: then putting the previous secret back failed too.
+	// service_role keys with it again and restarts what verifies a JWT, the PostgREST of the
+	// project's read replicas included. A failure after the first step is a *JWTSecretError and
+	// leaves the previous secret in place, unless its NotRestored is set: then putting the previous
+	// secret back failed too. A read replica that could not be updated is a *ReplicaKeysError
+	// returned with the keys: the new secret is in force and stays.
 	SetJWTSecret(ctx context.Context, ref, secret string) (*secrets.ProjectKeys, error)
 }
 

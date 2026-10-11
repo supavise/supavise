@@ -1,6 +1,8 @@
 package secrets
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -93,4 +95,13 @@ func (k *ProjectKeys) UseLegacyKey(role, key string) error {
 		k.ServiceRoleKey = key
 	}
 	return nil
+}
+
+// JWTDigest is a short fingerprint of the JWT secret. The leader sends it to a node that is to
+// render the secret into a unit (a replica's PostgREST), so that the node can tell whether its copy
+// of the registry already holds the secret the leader means without the secret crossing the mesh
+// again. It is not a key and is not stored.
+func (k *ProjectKeys) JWTDigest() string {
+	sum := sha256.Sum256([]byte("supavise/jwt-secret/v1\x00" + k.JWTSecret))
+	return hex.EncodeToString(sum[:8])
 }

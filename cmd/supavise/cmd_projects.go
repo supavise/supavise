@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -234,6 +235,15 @@ again when ` + "`supavise replicas ls`" + ` no longer lists it.`
 	rotate := projectCmd("rotate-keys <ref>", "Issue a new JWT secret and API keys and restart GoTrue and PostgREST", cobra.ExactArgs(1),
 		func(cmd *cobra.Command, n *lifecycle.Node, a []string) error {
 			k, err := n.Engine.RotateKeys(cmd.Context(), a[0])
+			// The read replicas run on other servers, which this command cannot reach: the daemon restarts
+			// their PostgREST when the change is made through the Management API. The new keys are in
+			// force, so they are printed first and the replicas are named after them.
+			var replicaErr *lifecycle.ReplicaKeysError
+			if errors.As(err, &replicaErr) && k != nil {
+				err = nil
+			} else {
+				replicaErr = nil
+			}
 			if err != nil {
 				return err
 			}
@@ -246,10 +256,16 @@ again when ` + "`supavise replicas ls`" + ` no longer lists it.`
 				}
 			}
 			if pJSON {
-				return printJSON(cmd.OutOrStdout(), viewKeys(k))
+				if err := printJSON(cmd.OutOrStdout(), viewKeys(k)); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "keys of %s rotated\npublishable key:  %s\nsecret key:       %s\nanon key:         %s\nservice_role key: %s\n",
+					a[0], k.PublishableKey, k.SecretKey, k.AnonKey, k.ServiceRoleKey)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "keys of %s rotated\npublishable key:  %s\nsecret key:       %s\nanon key:         %s\nservice_role key: %s\n",
-				a[0], k.PublishableKey, k.SecretKey, k.AnonKey, k.ServiceRoleKey)
+			if replicaErr != nil {
+				return replicaErr
+			}
 			return nil
 		})
 	rotate.Flags().BoolVar(&pJSON, "json", false, "print JSON")

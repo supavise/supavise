@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -628,7 +629,7 @@ func TestDoRefusesWhileTheReplicaIsBeingSetUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { s, _ := e.a.Observe(ctx, testReplicaID()); return s.Step == StepInitiated })
-	for _, act := range []peerapi.Action{peerapi.ActionPromote, peerapi.ActionRestart, peerapi.ActionStop} {
+	for _, act := range []peerapi.Action{peerapi.ActionPromote, peerapi.ActionRestart, peerapi.ActionRestartAPI, peerapi.ActionStop} {
 		if _, err := e.a.Do(ctx, testReplicaID(), act, peerapi.InstanceAction{Epoch: 5}); !errors.Is(err, lifecycle.ErrInvalidState) {
 			t.Fatalf("%s during the setup: %v", act, err)
 		}
@@ -944,7 +945,7 @@ func TestDoRefusesAReplicaActionOnTheHome(t *testing.T) {
 	e.plane.calls, e.plane.targets = nil, nil
 	e.plane.mu.Unlock()
 	id := testReplicaID()
-	for _, act := range []peerapi.Action{peerapi.ActionStart, peerapi.ActionRestart, peerapi.ActionStop} {
+	for _, act := range []peerapi.Action{peerapi.ActionStart, peerapi.ActionRestart, peerapi.ActionRestartAPI, peerapi.ActionStop} {
 		if _, err := e.a.Do(ctx, id, act, peerapi.InstanceAction{Epoch: 5}); !errors.Is(err, lifecycle.ErrInvalidState) || !strings.Contains(err.Error(), "is its home") {
 			t.Errorf("%s on the home: %v", act, err)
 		}
@@ -1002,7 +1003,7 @@ func TestDoStartAndRestartLeaveAPromotedCluster(t *testing.T) {
 
 	// A promoted cluster: a PG_VERSION and no standby.signal.
 	writeClusterAt(t, e, map[string]string{"PG_VERSION": "17\n"})
-	for _, act := range []peerapi.Action{peerapi.ActionStart, peerapi.ActionRestart} {
+	for _, act := range []peerapi.Action{peerapi.ActionStart, peerapi.ActionRestart, peerapi.ActionRestartAPI} {
 		if _, err := e.a.Do(ctx, id, act, peerapi.InstanceAction{Epoch: 5}); !errors.Is(err, lifecycle.ErrInvalidState) || !strings.Contains(err.Error(), "primary") {
 			t.Errorf("%s of a promoted cluster: %v", act, err)
 		}
@@ -1237,5 +1238,82 @@ func TestObserveAllReadsTheProjectsOncePerPass(t *testing.T) {
 		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Fatalf("report %d differs: %+v and %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// A change of the project's keys renders the replica's PostgREST again and nothing else: the standby's
+// Postgres is not stopped. The node renders the keys the leader names: its copy of the registry trails the
+// leader's by a moment, and a unit rendered from the previous secret would be reported as updated.
+func TestDoRestartAPIRendersThePostgRESTOnTheKeysTheLeaderNames(t *testing.T) {
+	ctx := context.Background()
+	e := newAgentEnv(t)
+	if _, err := e.a.Ensure(ctx, e.spec()); err != nil {
+		t.Fatal(err)
+	}
+	e.settle(t)
+	id := testReplicaID()
+	reset := func() {
+		e.plane.mu.Lock()
+		e.plane.calls, e.plane.targets = nil, nil
+		e.plane.mu.Unlock()
+	}
+	reset()
+	prev, next := testKeys(), testKeys()
+	next.JWTSecret = "jwt-the-new-secret"
+
+	// The copy already holds the new keys.
+	e.a.o.Keys = func(context.Context, string) (*secrets.ProjectKeys, error) { return next, nil }
+	st, err := e.a.Do(ctx, id, peerapi.ActionRestartAPI, peerapi.InstanceAction{Epoch: 5, KeysDigest: next.JWTDigest()})
+	if err != nil || !st.PostgRESTReady {
+		t.Fatalf("restart_api = %+v, %v", st, err)
+	}
+	if got := e.plane.all(); got != "start-api "+testRef {
+		t.Fatalf("calls = %s, want only the PostgREST", got)
+	}
+	if k := e.plane.targets[0].Keys; k == nil || k.JWTSecret != "jwt-the-new-secret" {
+		t.Fatalf("rendered from %+v", k)
+	}
+
+	// The copy trails: the node reads again until it has the keys, and renders those.
+	reset()
+	var reads atomic.Int32
+	e.a.o.Keys = func(context.Context, string) (*secrets.ProjectKeys, error) {
+		if reads.Add(1) <= 3 {
+			return prev, nil
+		}
+		return next, nil
+	}
+	e.a.o.KeysWait = 10 * time.Second
+	if _, err := e.a.Do(ctx, id, peerapi.ActionRestartAPI, peerapi.InstanceAction{Epoch: 5, KeysDigest: next.JWTDigest()}); err != nil {
+		t.Fatalf("a copy that catches up: %v", err)
+	}
+	if reads.Load() != 4 || e.plane.targets[0].Keys.JWTSecret != "jwt-the-new-secret" {
+		t.Fatalf("reads %d, rendered from %+v", reads.Load(), e.plane.targets[0].Keys)
+	}
+
+	// The copy never catches up: the action fails and no unit is rendered from the previous secret.
+	reset()
+	e.a.o.Keys = func(context.Context, string) (*secrets.ProjectKeys, error) { return prev, nil }
+	e.a.o.KeysWait = 20 * time.Millisecond
+	if _, err := e.a.Do(ctx, id, peerapi.ActionRestartAPI, peerapi.InstanceAction{Epoch: 5, KeysDigest: next.JWTDigest()}); !errors.Is(err, ErrKeysBehind) {
+		t.Fatalf("a copy that stays behind: %v", err)
+	}
+	if e.plane.all() != "" {
+		t.Fatalf("the plane was asked: %s", e.plane.all())
+	}
+
+	// No digest: whatever the copy holds. A node that is asked by an older leader behaves as restart does.
+	if _, err := e.a.Do(ctx, id, peerapi.ActionRestartAPI, peerapi.InstanceAction{Epoch: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.plane.all(); got != "start-api "+testRef {
+		t.Fatalf("calls = %s", got)
+	}
+
+	// An error of the plane reaches the leader.
+	reset()
+	e.plane.err["start-api"] = errors.New("postgrest did not answer")
+	if _, err := e.a.Do(ctx, id, peerapi.ActionRestartAPI, peerapi.InstanceAction{Epoch: 5}); err == nil {
+		t.Fatal("a PostgREST that did not come back was reported as updated")
 	}
 }
