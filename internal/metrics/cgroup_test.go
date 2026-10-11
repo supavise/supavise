@@ -60,8 +60,57 @@ func TestCgroupReadsAUnit(t *testing.T) {
 		CPUUsageUsec: 36_000_000, CPUUserUsec: 30_000_000, CPUSystemUsec: 6_000_000, ThrottledUsec: 1_500_000,
 		MemCurrent: 900 << 20, Anon: 300 << 20, Shmem: 200 << 20, File: 500 << 20, Swap: 4 << 20, OOMKill: 2, MemMax: 1 << 30,
 	}
+	if u.ID == 0 {
+		t.Error("the control group has no ID")
+	}
+	u.ID = 0
 	if u != want {
 		t.Fatalf("got %+v\nwant %+v", u, want)
+	}
+}
+
+// writeSliceKills sets the oom_kill count in the memory.events of the slice, which the kernel keeps
+// for every group below it.
+func writeSliceKills(t *testing.T, root string, kills uint64) {
+	t.Helper()
+	dir := filepath.Join(root, config.Slice)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "memory.events"), []byte(fmt.Sprintf("low 0\nhigh 0\nmax 0\noom 3\noom_kill %d\noom_group_kill 0\n", kills)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCgroupReadsTheSlicesKillCount(t *testing.T) {
+	root := t.TempDir()
+	if _, ok := (Cgroup{Root: root}).SliceOOMKills(); ok {
+		t.Fatal("a slice without the file has a count")
+	}
+	writeSliceKills(t, root, 7)
+	if n, ok := (Cgroup{Root: root}).SliceOOMKills(); !ok || n != 7 {
+		t.Fatalf("count = %d, %v", n, ok)
+	}
+}
+
+func TestUnitRestarted(t *testing.T) {
+	prev := UnitStats{ID: 5, CPUUsageUsec: 1000, OOMKill: 2}
+	for name, c := range map[string]struct {
+		cur  UnitStats
+		want bool
+	}{
+		"same group, counters grew": {UnitStats{ID: 5, CPUUsageUsec: 2000, OOMKill: 2}, false},
+		"another group":             {UnitStats{ID: 6, CPUUsageUsec: 2000, OOMKill: 2}, true},
+		"CPU counter went back":     {UnitStats{ID: 5, CPUUsageUsec: 10, OOMKill: 2}, true},
+		"kill counter went back":    {UnitStats{ID: 5, CPUUsageUsec: 2000, OOMKill: 0}, true},
+		"no ID on either side":      {UnitStats{CPUUsageUsec: 2000, OOMKill: 2}, false},
+	} {
+		if got := c.cur.Restarted(prev); got != c.want {
+			t.Errorf("%s: %v", name, got)
+		}
+	}
+	if (UnitStats{ID: 6, CPUUsageUsec: 5000}).Restarted(UnitStats{CPUUsageUsec: 100}) {
+		t.Error("a unit with no earlier ID restarted")
 	}
 }
 
