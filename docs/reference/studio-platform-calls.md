@@ -314,11 +314,9 @@ A node has no log store and no hosted platform behind it. A stub that answers "s
 | Call | Answer | Studio shows |
 |---|---|---|
 | `GET`, `PUT /v1/projects/{ref}/ssl-enforcement` | `400` "This project is not allowed to configure SSL enforcements: ..." | The switch is disabled with "Your project does not have access to SSL enforcement". Studio matches this text. |
-| `PATCH /platform/projects/{ref}/config/secrets` | `400` naming ``supavise projects rotate-keys <ref>`` | "Failed to update JWT secret: ..." |
-| `GET /platform/projects/{ref}/config/secrets/update-status` | `200 {"update_status": null}` (a stub says status `0`, which is "updating": the legacy API keys tab showed "Updating JWT secret..." in place of the keys) | Nothing is updating. |
-| `GET .../config/auth/signing-keys/legacy` | `404` | "Start using JWT signing keys" (the project uses the legacy secret, which is true) |
-| `POST .../signing-keys`, `POST .../signing-keys/legacy` | `400` | The mutation's error toast |
-| `GET`, `PATCH`, `DELETE .../signing-keys/{id}`, `GET`, `DELETE .../third-party-auth/{tpa_id}` | `404` | |
+| `GET .../signing-keys/{id}`, `GET`, `DELETE .../third-party-auth/{tpa_id}` | `404` | |
+
+The legacy JWT secret and the other signing-keys calls are in "Legacy JWT secret".
 | `POST .../config/auth/third-party-auth` | `400` | The add dialog's error toast; the list stays empty, which is true |
 | `POST /platform/feedback/send` | `400` pointing to the project's issue tracker | "Failed to submit feedback" (the widget would otherwise say the feedback was sent) |
 | `GET .../analytics/endpoints/auth.metrics` | `400` | The Auth overview's error alert |
