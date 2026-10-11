@@ -312,7 +312,37 @@ export const PROBES = [
         return 'hidden without an App'
       }
       ok(card.test(t), 'the GitHub integration card is hidden although a GitHub App is configured')
+      // The connect flow opens GitHub's authorize page in a popup: with the fake of the github lane that is the fake's URL.
+      if (e.cfg.github.authorize_url) {
+        const ctx = page.context()
+        const [popup] = await Promise.all([
+          ctx.waitForEvent('page', { timeout: 20_000 }),
+          page.getByRole('button', { name: /Authorize|Connect GitHub|Add GitHub/i }).first().click(),
+        ])
+        await popup.waitForLoadState('domcontentloaded', { timeout: 20_000 }).catch(() => {})
+        ok(popup.url().startsWith(e.cfg.github.authorize_url), `the GitHub popup opened ${popup.url()}, want ${e.cfg.github.authorize_url}`)
+        return 'shown with an App, and the connect flow reaches the fake'
+      }
       return 'shown with an App'
+    },
+  },
+  {
+    name: 'review-with-the-assistant-says-the-truth',
+    skip: (e) => (e.fx.projects.pending ? null : 'no pending merge request fixture'),
+    async run(e) {
+      // Open question of the plan: what Review with Assistant does on a node without a provider key. Recorded, and held to
+      // the one rule that is not open: the page never shows the name of a server variable.
+      const page = await e.page()
+      await e.goto(page, `/project/${e.fx.projects.pending}/merge`)
+      const btn = page.getByRole('button', { name: /Review with Assistant/ }).first()
+      if (!(await btn.isVisible().catch(() => false))) return 'the button is not shown'
+      if (!(await btn.isEnabled().catch(() => false))) return 'the button is shown and disabled'
+      await btn.click()
+      await page.waitForTimeout(6000)
+      const t = await pageText(page)
+      ok(!/OPENAI_API_KEY/.test(t), 'the page names OPENAI_API_KEY to the user')
+      const said = t.split('\n').filter((l) => /assistant|api key|not available|unavailable|provider/i.test(l)).slice(0, 3).join(' | ')
+      return `clicked; the page says: ${said.slice(0, 200) || '(nothing about the assistant)'}`
     },
   },
   {
