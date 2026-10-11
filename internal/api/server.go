@@ -165,6 +165,9 @@ type Server struct {
 
 	ops opTracker
 
+	// jwtUpdates is the last JWT secret change of each project (jwt_secret.go).
+	jwtUpdates jwtUpdates
+
 	// replicas serves the read-replica routes (replicas.go); lbOn is Deps.LoadBalancers.
 	replicas replicas.Service
 	lbOn     bool
@@ -507,6 +510,7 @@ func (s *Server) implemented() map[string]route {
 	s.routesLoadBalancers(add)
 	s.routesInfraMonitoring(add)
 	s.routesFailover(add)
+	s.routesJWTSecret(add)
 	// The OAuth authorization server and the organization's OAuth Apps. Both are registered whether
 	// or not [api] disable_oauth is set; their handlers answer 404 when it is (oauthRoutes).
 	s.routesOAuth(add)
