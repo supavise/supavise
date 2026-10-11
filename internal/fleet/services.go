@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -98,6 +99,7 @@ func (m *Manager) spec(svc string, c *creds, follower bool) (units.Spec, error) 
 		s.Env = env // the server runs the multi-tenant migrations itself at start
 	case config.SvcStudio:
 		s.Env = studioEnv(cfg, c.dashboardSSO)
+		maps.Copy(s.Env, githubStudioEnv(c.githubApp))
 	case config.SvcEdgeRuntime:
 		return edgeRuntimeSpec(cfg, s)
 	default:
