@@ -83,10 +83,11 @@ type BranchRunStore interface {
 	// CreateBranchRun stores r with its Steps (all of them, in any order; ID is set by the caller).
 	// CreatedAt and UpdatedAt are set by the store.
 	CreateBranchRun(ctx context.Context, r *BranchRun) error
-	// GetBranchRun returns the run with its steps, or ErrNotFound.
+	// GetBranchRun returns the run with its steps and their logs, or ErrNotFound. It is the only
+	// read that returns logs: a step log may be 256 KiB, and a list page holds many runs.
 	GetBranchRun(ctx context.Context, id string) (*BranchRun, error)
 	// ListBranchRuns returns the runs owned by ownerRef, newest first, from offset on and at most
-	// limit of them, with the total number the owner has.
+	// limit of them, with the total number the owner has. Their steps carry no Log.
 	ListBranchRuns(ctx context.Context, ownerRef string, offset, limit int) ([]BranchRun, int, error)
 	// SetBranchRunSteps applies the changes in one step, then touches the run. ErrNotFound for an
 	// unknown run or step.
@@ -95,7 +96,7 @@ type BranchRunStore interface {
 	FinishBranchRun(ctx context.Context, id, status, failure string) error
 	// SetBranchRunCheck records the GitHub check run that reports the run.
 	SetBranchRunCheck(ctx context.Context, id string, checkRunID int64) error
-	// RunningBranchRuns returns the runs with status RunRunning, oldest first.
+	// RunningBranchRuns returns the runs with status RunRunning, oldest first. Their steps carry no Log.
 	RunningBranchRuns(ctx context.Context) ([]BranchRun, error)
 	// PruneBranchRuns removes the runs created before `before`, and the runs created before
 	// `orphans` whose owner is not a project any more (a create writes its run before the branch's

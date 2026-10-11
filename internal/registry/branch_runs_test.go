@@ -130,6 +130,27 @@ func testBranchRuns(t *testing.T, reg Registry) {
 	if err != nil || len(running) != 1 || running[0].ID != r1 {
 		t.Fatalf("running = %+v, %v", running, err)
 	}
+	// Lists carry the steps but not their logs; only GetBranchRun reads them. The log may hold any
+	// UTF-8 text.
+	if err := st.SetBranchRunSteps(ctx, r1, []BranchRunStepChange{{Name: "health", Log: "gr\u00fc\u00dfe \u65e5\u672c\u8a9e\n"}}); err != nil {
+		t.Fatal(err)
+	}
+	if running, _ = st.RunningBranchRuns(ctx); len(running) != 1 || len(running[0].Steps) != len(BranchRunSteps) {
+		t.Fatalf("running = %+v", running)
+	}
+	for _, s := range running[0].Steps {
+		if s.Log != "" {
+			t.Fatalf("a running list returned the log of step %s: %q", s.Name, s.Log)
+		}
+	}
+	if got, _ = st.GetBranchRun(ctx, r1); got == nil {
+		t.Fatal("run r1 is gone")
+	}
+	for _, s := range got.Steps {
+		if s.Name == "health" && s.Log != "gr\u00fc\u00dfe \u65e5\u672c\u8a9e\n" {
+			t.Fatalf("health log = %q", s.Log)
+		}
+	}
 	if err := st.FinishBranchRun(ctx, r1, RunFailed, "pull: boom"); err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +187,11 @@ func testBranchRuns(t *testing.T, reg Registry) {
 	page, total, _ := st.ListBranchRuns(ctx, a, 1, 1)
 	if total != 2 || len(page) != 1 || page[0].ID != r1 {
 		t.Fatalf("page = %+v total=%d", page, total)
+	}
+	for _, s := range page[0].Steps { // r1 has logs (pull and health), which a list leaves out
+		if s.Log != "" {
+			t.Fatalf("a list returned the log of step %s: %q", s.Name, s.Log)
+		}
 	}
 	if page, total, _ = st.ListBranchRuns(ctx, a, 5, 10); total != 2 || len(page) != 0 {
 		t.Fatalf("past the end = %+v total=%d", page, total)
