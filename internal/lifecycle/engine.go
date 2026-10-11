@@ -936,42 +936,148 @@ func (e *Engine) RotateKeys(ctx context.Context, ref string) (*secrets.ProjectKe
 	}
 	// The new default keys are not the ones that were revoked.
 	revived := nk.ReviveDefaults(ref, e.opts.Now())
-	rollback := func(cause error) (*secrets.ProjectKeys, error) {
-		cctx, cancel := cleanupCtx(ctx)
-		defer cancel()
-		if err := e.storeKeys(cctx, ref, old); err != nil {
-			e.log.Error("rotate-keys: could not restore previous keys", "ref", ref, "error", err)
-		} else if err := e.storeRecords(cctx, ref, old, revived); err != nil {
-			e.log.Error("rotate-keys: could not restore the previous key records", "ref", ref, "error", err)
-		} else if p.Status.Running() {
-			if err := e.plane.Reconfigure(cctx, p, old); err != nil {
-				e.log.Error("rotate-keys: could not restart on previous keys", "ref", ref, "error", err)
-			}
-		}
-		return nil, fmt.Errorf("lifecycle: rotate keys of %s (previous keys restored): %w", ref, cause)
-	}
-	if err := e.storeKeys(ctx, ref, &nk); err != nil {
-		return rollback(err)
-	}
-	if err := e.putRecords(ctx, ref, revived); err != nil {
-		return rollback(err)
-	}
-	if p.Status.Running() {
-		if err := e.plane.Reconfigure(ctx, p, &nk); err != nil {
-			return rollback(err)
-		}
-		if len(e.opts.Fleet) > 0 && ref != config.SystemRef {
-			spec, err := e.tenantSpec(ctx, p, &nk)
-			if err == nil {
-				err = e.opts.Fleet.EnsureTenant(ctx, spec)
-			}
-			if err != nil {
-				return rollback(fmt.Errorf("update fleet tenants: %w", err))
-			}
-		}
+	if _, err := e.applyKeys(ctx, p, old, &nk, revived); err != nil {
+		return nil, fmt.Errorf("lifecycle: rotate keys of %s (previous keys restored): %w", ref, err)
 	}
 	e.event(ctx, ref, "project.keys_rotated", nil)
 	return &nk, nil
+}
+
+// KeyStep names the step of a key change that failed, for JWTSecretError.
+type KeyStep string
+
+const (
+	// KeyStepStore: sealing the keys into the registry.
+	KeyStepStore KeyStep = "store"
+	// KeyStepRestart: re-rendering the env files and restarting GoTrue and PostgREST.
+	KeyStepRestart KeyStep = "restart"
+	// KeyStepTenants: sending the keys to the fleet tenants (Realtime, Storage).
+	KeyStepTenants KeyStep = "tenants"
+)
+
+// JWTSecretError is the failure of SetJWTSecret after it began to apply the secret. The
+// previous secret and keys were put back (or the attempt to do so is in the log); Step says
+// where it stopped.
+type JWTSecretError struct {
+	Step KeyStep
+	Err  error
+}
+
+func (e *JWTSecretError) Error() string {
+	return fmt.Sprintf("lifecycle: change the JWT secret (previous secret restored; failed at %s): %v", e.Step, e.Err)
+}
+
+func (e *JWTSecretError) Unwrap() error { return e.Err }
+
+// SetJWTSecret implements JWTSecretSetter: the project's legacy JWT secret becomes secret,
+// the dashboard's "Change legacy JWT secret" with a secret of your own. The anon and
+// service_role keys are signed again with it (the keys the project had are gone, as on
+// hosted); the publishable and secret keys, the database passwords and the pgsodium root key
+// stay. Everything that checks a JWT follows it, in this order: the sealed keys in the
+// registry (the proxy's key cache drops them at once), the env files of GoTrue and PostgREST
+// and their restart, the Realtime and Storage tenants. A paused project only gets the stored
+// keys and applies them when it resumes. If a step fails the previous keys are stored and
+// applied again, and the error is a *JWTSecretError. Setting the secret the project already
+// has changes nothing. The caller restarts what this package does not run: the Edge Functions
+// environment (internal/functions) and the PostgREST of read replicas on other nodes.
+func (e *Engine) SetJWTSecret(ctx context.Context, ref, secret string) (*secrets.ProjectKeys, error) {
+	if ref == config.SystemRef {
+		return nil, fmt.Errorf("%w: the JWT secret of the system project is the dashboard's own", ErrInvalidState)
+	}
+	if err := secrets.CheckJWTSecret(secret); err != nil {
+		return nil, fmt.Errorf("lifecycle: %w", err)
+	}
+	if err := e.upgradeBusy(ref, "change the JWT secret of"); err != nil {
+		return nil, err
+	}
+	unlock, err := e.lock(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	p, err := e.reg.GetProject(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.atHome(p, "change the JWT secret of"); err != nil {
+		return nil, err
+	}
+	if p.Status != registry.StatusInactive && !p.Status.Running() {
+		return nil, invalidState(p, "change the JWT secret of")
+	}
+	old, err := e.loadKeys(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	if old.JWTSecret == secret {
+		return old, nil
+	}
+	nk := *old
+	nk.JWTSecret = secret
+	if err := nk.ResignLegacy(ref, e.opts.Now()); err != nil {
+		return nil, err
+	}
+	if step, err := e.applyKeys(ctx, p, old, &nk, nil); err != nil {
+		return nil, &JWTSecretError{Step: step, Err: err}
+	}
+	e.event(ctx, ref, "project.jwt_secret_changed", nil)
+	return &nk, nil
+}
+
+// applyKeys makes nk the credentials of p: sealed in the registry (with revived, the default
+// key records the new keys bring back), rendered into the env files of GoTrue and PostgREST,
+// which restart one after the other and are health-checked, and sent to the fleet tenants. A
+// paused project only gets the stored keys. When a step fails, old and its records are stored
+// and applied again and applyKeys returns the failed step with the cause. The caller holds
+// the project's lock and has loaded old.
+func (e *Engine) applyKeys(ctx context.Context, p *registry.Project, old, nk *secrets.ProjectKeys, revived []secrets.APIKeyRecord) (KeyStep, error) {
+	ref := p.Ref
+	rollback := func(step KeyStep, cause error) (KeyStep, error) {
+		cctx, cancel := cleanupCtx(ctx)
+		defer cancel()
+		if err := e.storeKeys(cctx, ref, old); err != nil {
+			e.log.Error("keys: could not restore previous keys", "ref", ref, "error", err)
+		} else if err := e.storeRecords(cctx, ref, old, revived); err != nil {
+			e.log.Error("keys: could not restore the previous key records", "ref", ref, "error", err)
+		} else if p.Status.Running() {
+			if err := e.plane.Reconfigure(cctx, p, old); err != nil {
+				e.log.Error("keys: could not restart on previous keys", "ref", ref, "error", err)
+			}
+			// Only a failed tenant update can have left a tenant on the new keys.
+			if step == KeyStepTenants && len(e.opts.Fleet) > 0 && ref != config.SystemRef {
+				spec, err := e.tenantSpec(cctx, p, old)
+				if err == nil {
+					err = e.opts.Fleet.EnsureTenant(cctx, spec)
+				}
+				if err != nil {
+					e.log.Error("keys: could not put the previous keys back into the fleet tenants", "ref", ref, "error", err)
+				}
+			}
+		}
+		return step, cause
+	}
+	if err := e.storeKeys(ctx, ref, nk); err != nil {
+		return rollback(KeyStepStore, err)
+	}
+	if err := e.putRecords(ctx, ref, revived); err != nil {
+		return rollback(KeyStepStore, err)
+	}
+	if !p.Status.Running() {
+		return "", nil
+	}
+	if err := e.plane.Reconfigure(ctx, p, nk); err != nil {
+		return rollback(KeyStepRestart, err)
+	}
+	if len(e.opts.Fleet) > 0 && ref != config.SystemRef {
+		spec, err := e.tenantSpec(ctx, p, nk)
+		if err == nil {
+			err = e.opts.Fleet.EnsureTenant(ctx, spec)
+		}
+		if err != nil {
+			return rollback(KeyStepTenants, fmt.Errorf("update fleet tenants: %w", err))
+		}
+	}
+	return "", nil
 }
 
 // StartActive starts every project the registry lists as ACTIVE (after a reboot, or
