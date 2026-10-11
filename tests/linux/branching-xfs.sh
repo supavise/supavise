@@ -9,6 +9,9 @@
 # 2. ext4 (the runner's root): the same parent size, but the filesystem cannot clone files, so
 #    supavise restores the parent's latest base backup plus WAL (internal/backup) and says so.
 #
+# After them, tests/linux/branching/runs.sh drives the Management API of a node on real clusters:
+# the action runs of branch operations, the notify_url envelope and its signature.
+#
 # Both runs also run the full branching scenario (schema-only and with_data branches,
 # isolation in both directions, merge, push, reset, delete, expiry), a clone of a parent under
 # write load checked with amcheck (file-clone filesystems only), the isolation of a clone from
@@ -58,7 +61,8 @@ fetch() { # fetch <artifact> : unpack the pinned release into $unpacked/<tag>-<p
   zstd -dc "$work/$name.tar.zst" | tar -x -C "$unpacked/${tag}-${platform}"
   rm -f "$work/$name.tar.zst"
 }
-for a in postgres auth postgrest; do fetch "$a"; done
+# pgmeta is for the stack of tests/linux/branching/runs.sh (TestServe serves the Management API with it).
+for a in postgres auth postgrest pgmeta; do fetch "$a"; done
 ls "$unpacked"
 
 # Build the test binary once; both runs use it. The supavise binary the tests build for
@@ -93,4 +97,10 @@ sudo mkdir -p "$ext4"
 sudo chown "$(id -u):$(id -g)" "$ext4"
 findmnt -no FSTYPE -T "$ext4"
 run "ext4 on the runner root" "$ext4" base-backup
+
+# 3. The action runs of branch operations over HTTP (tests/linux/branching/runs.sh): a node on
+#    real clusters, the Management API, a notify_url receiver.
+# shellcheck source=branching/runs.sh
+source tests/linux/branching/runs.sh
+branching_runs_check
 echo "branching-xfs: done"

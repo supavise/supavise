@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/supavise/supavise/internal/registry"
 )
 
 // Migration is one row of supabase_migrations.schema_migrations: what `supabase db push`
@@ -343,4 +345,67 @@ func (d *pgDatabase) RunScript(ctx context.Context, ref, script string) error {
 		_, err := tx.Exec(ctx, script)
 		return err
 	})
+}
+
+// upTo keeps the migrations with version <= v ("" keeps all); v must name one of them.
+func upTo(ms []Migration, v string) ([]Migration, error) {
+	if v == "" {
+		return ms, nil
+	}
+	var out []Migration
+	found := false
+	for _, m := range ms {
+		if m.Version <= v {
+			out = append(out, m)
+		}
+		found = found || m.Version == v
+	}
+	if !found {
+		return nil, invalid("migration_version %s is not a migration the target lacks", v)
+	}
+	return out, nil
+}
+
+// replay gives a schema-only branch the parent's migration history, then the seed.
+func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, seeded bool, err error) {
+	s.phase(ctx, StepMigrate)
+	parentMigs, err := s.db.Migrations(ctx, j.parent.Ref)
+	if err != nil {
+		return 0, false, fmt.Errorf("read the parent's migration history: %w", err)
+	}
+	if j.upTo != "" {
+		cut := parentMigs[:0:0]
+		found := false
+		for _, m := range parentMigs {
+			if m.Version <= j.upTo {
+				cut = append(cut, m)
+			}
+			found = found || m.Version == j.upTo
+		}
+		if !found {
+			return 0, false, invalid("migration_version %s is not in the parent's migration history", j.upTo)
+		}
+		parentMigs = cut
+	}
+	if len(parentMigs) > 0 {
+		s.setState(ctx, j.ref, registry.BranchRunningMigration, fmt.Sprintf("replaying %d migration(s)", len(parentMigs)), nil)
+		if _, err := s.db.Apply(ctx, j.ref, parentMigs, ApplyOptions{}); err != nil {
+			return 0, false, fmt.Errorf("replay the parent's migrations: %w", err)
+		}
+	}
+	seed := j.in.Seed
+	if strings.TrimSpace(seed) == "" {
+		if seed, err = s.GetSeed(ctx, j.parent.Ref); err != nil {
+			return 0, false, err
+		}
+	}
+	if strings.TrimSpace(seed) != "" {
+		s.phase(ctx, StepSeed)
+		s.setState(ctx, j.ref, registry.BranchRunningMigration, "applying the seed", nil)
+		if err := s.db.RunScript(ctx, j.ref, seed); err != nil {
+			return len(parentMigs), false, fmt.Errorf("apply the seed: %w", err)
+		}
+		return len(parentMigs), true, nil
+	}
+	return len(parentMigs), false, nil
 }

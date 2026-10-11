@@ -89,6 +89,12 @@ const (
 	BranchRunningMigration BranchState = "RUNNING_MIGRATIONS"
 	BranchMigrationsPassed BranchState = "MIGRATIONS_PASSED"
 	BranchMigrationsFailed BranchState = "MIGRATIONS_FAILED"
+	// BranchFunctionsDeployed is where a create, push, merge or reset ends when it succeeds, and
+	// BranchFunctionsFailed where it ends when its deploy step fails. MIGRATIONS_PASSED is the
+	// state in between (and the state of branches that finished before these existed): anything
+	// that accepts one of the two accepts the other.
+	BranchFunctionsDeployed BranchState = "FUNCTIONS_DEPLOYED"
+	BranchFunctionsFailed   BranchState = "FUNCTIONS_FAILED"
 )
 
 // BranchInfo is what makes a project a branch.
@@ -223,6 +229,11 @@ type Registry interface {
 	// a restore) would otherwise put a stale policy over one set meanwhile. ErrNotFound when
 	// ref is not a branch; ErrConflict when the name is taken under the same parent.
 	UpdateBranch(ctx context.Context, ref string, b *BranchInfo) error
+	// UpdateBranchSettings is UpdateBranch without the state and detail: the settings a PATCH
+	// changes (name, git branch, persistence, expiry, notify URL, review mark) and nothing an
+	// operation owns. A PATCH that read the branch while an operation ran would otherwise write
+	// the state it saw back over the one the operation set meanwhile.
+	UpdateBranchSettings(ctx context.Context, ref string, b *BranchInfo) error
 	// SetBranchEgress is the only writer of a branch's egress policy after creation (the
 	// policy of a new branch is part of its row): a compare-and-set from the policy the caller
 	// saw to the new one. ErrConflict when the policy is not from any more, ErrNotFound when ref

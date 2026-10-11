@@ -266,7 +266,7 @@ func (st *stack) createBranch(parent, name string, mut func(*CreateInput)) *Bran
 	}
 	b = st.wait(b.Ref)
 	st.t.Logf("branch %s ready in %s: %s | %s", name, time.Since(started).Round(time.Millisecond), b.State, b.Detail)
-	if b.State != registry.BranchMigrationsPassed {
+	if b.State != registry.BranchFunctionsDeployed {
 		st.t.Fatalf("branch %s: %s: %s", name, b.State, b.Detail)
 	}
 	return b
@@ -404,7 +404,7 @@ func TestIntegrationBranching(t *testing.T) {
 	if _, err := st.svc.Merge(ctx, schema.Ref, ActionInput{}); err != nil {
 		t.Fatal(err)
 	}
-	if b := st.wait(schema.Ref); b.State != registry.BranchMigrationsPassed {
+	if b := st.wait(schema.Ref); b.State != registry.BranchFunctionsDeployed {
 		t.Fatalf("merge: %s: %s", b.State, b.Detail)
 	}
 	if got := st.migrations(pref); got[len(got)-1] != "20260110000000" {
@@ -419,7 +419,7 @@ func TestIntegrationBranching(t *testing.T) {
 	if _, err := st.svc.Push(ctx, schema.Ref, ActionInput{}); err != nil {
 		t.Fatal(err)
 	}
-	if b := st.wait(schema.Ref); b.State != registry.BranchMigrationsPassed {
+	if b := st.wait(schema.Ref); b.State != registry.BranchFunctionsDeployed {
 		t.Fatalf("push: %s: %s", b.State, b.Detail)
 	}
 	if n := st.count(schema.Ref, "public.audit"); n != 0 {
@@ -446,7 +446,7 @@ func TestIntegrationBranching(t *testing.T) {
 		t.Fatal(err)
 	}
 	reset := st.wait(schema.Ref)
-	if reset.State != registry.BranchMigrationsPassed || reset.Ref != schema.Ref || reset.ID != schema.ID {
+	if reset.State != registry.BranchFunctionsDeployed || reset.Ref != schema.Ref || reset.ID != schema.ID {
 		t.Fatalf("reset: %+v", reset)
 	}
 	if n := st.count(reset.Ref, "public.items"); n != 1 { // only the seed again
@@ -489,7 +489,7 @@ func TestIntegrationBranching(t *testing.T) {
 	}
 	again := st.wait(fromBackup.Ref)
 	st.cfg.Branching.Clone = ""
-	if again.State != registry.BranchMigrationsPassed || again.Ref != fromBackup.Ref || again.ID != fromBackup.ID || again.CloneMethod != MethodBackup {
+	if again.State != registry.BranchFunctionsDeployed || again.Ref != fromBackup.Ref || again.ID != fromBackup.ID || again.CloneMethod != MethodBackup {
 		t.Fatalf("reset of the restored branch: %+v", again)
 	}
 	if n := st.count(again.Ref, "public.items"); n != 201 {

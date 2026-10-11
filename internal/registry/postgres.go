@@ -342,6 +342,16 @@ func (r *Postgres) UpdateBranch(ctx context.Context, ref string, b *BranchInfo) 
 		nullStr(b.NotifyURL), nullStr(string(b.State)), nullStr(b.Detail), nullStr(b.CloneMethod), b.ReviewRequestedAt))
 }
 
+// UpdateBranchSettings implements Registry: UpdateBranch without branch_state and branch_detail.
+func (r *Postgres) UpdateBranchSettings(ctx context.Context, ref string, b *BranchInfo) error {
+	return affected(r.pool.Exec(ctx, `
+		update supavise.projects set branch_name = $2, git_branch = $3, persistent = $4, with_data = $5, expires_at = $6,
+			deletion_scheduled_at = $7, notify_url = $8, clone_method = $9, review_requested_at = $10, updated_at = now()
+		where ref = $1 and parent_ref is not null`,
+		ref, nullStr(b.Name), nullStr(b.GitBranch), b.Persistent, b.WithData, b.ExpiresAt, b.DeletionScheduledAt,
+		nullStr(b.NotifyURL), nullStr(b.CloneMethod), b.ReviewRequestedAt))
+}
+
 // SetBranchEgress implements Registry: a compare-and-set on branch_egress alone.
 func (r *Postgres) SetBranchEgress(ctx context.Context, ref, from, to string) error {
 	tag, err := r.pool.Exec(ctx, `

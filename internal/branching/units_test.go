@@ -239,7 +239,7 @@ func TestNotifyRefusesPrivateAddressesByDefault(t *testing.T) {
 
 	h := newHarness(t, nil)
 	b := h.create("n", func(in *CreateInput) { in.NotifyURL = srv.URL })
-	h.mustState(b, registry.BranchMigrationsPassed)
+	h.mustState(b, registry.BranchFunctionsDeployed)
 	h.svc.Drain(context.Background()) // the notification is sent after the state shows
 	if hits.Load() != 0 {
 		t.Fatal("the default client reached a loopback address")
@@ -247,7 +247,7 @@ func TestNotifyRefusesPrivateAddressesByDefault(t *testing.T) {
 
 	h2 := newHarness(t, func(c *config.Config) { c.Branching.AllowPrivateNotifyURLs = true })
 	b2 := h2.create("n", func(in *CreateInput) { in.NotifyURL = srv.URL })
-	h2.mustState(b2, registry.BranchMigrationsPassed)
+	h2.mustState(b2, registry.BranchFunctionsDeployed)
 	h2.svc.Drain(context.Background())
 	if hits.Load() != 1 {
 		t.Fatalf("hits = %d, want 1 (allowed)", hits.Load())
@@ -280,7 +280,7 @@ func TestNotifyBody(t *testing.T) {
 	b := h.create("n", func(in *CreateInput) { in.NotifyURL = srv.URL })
 	h.svc.Drain(context.Background()) // the notification is sent after the state shows
 	got, _ := body.Load().(string)
-	for _, want := range []string{`"branch_name":"n"`, `"operation":"create"`, `"status":"MIGRATIONS_PASSED"`, `"project_ref":"` + b.Ref + `"`, `"parent_project_ref":"` + parentRef + `"`} {
+	for _, want := range []string{`"branch_name":"n"`, `"operation":"create"`, `"status":"FUNCTIONS_DEPLOYED"`, `"project_ref":"` + b.Ref + `"`, `"parent_project_ref":"` + parentRef + `"`, `"type":"run.completed"`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("notification %q lacks %s", got, want)
 		}

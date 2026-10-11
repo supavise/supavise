@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -84,6 +85,33 @@ func viewBranch(b *branching.Branch) branchView {
 	}
 }
 
+// runView is an action run as the CLI prints it.
+type runView struct {
+	ID        string    `json:"id"`
+	Op        string    `json:"operation"`
+	Status    string    `json:"status"`
+	Owner     string    `json:"owner_ref"`
+	Steps     string    `json:"steps"`
+	Failure   string    `json:"failure,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// viewRun summarizes a run: the status Studio derives from its steps, and the steps that are not
+// done or skipped (the ones that explain a run that is not a success).
+func viewRun(r *registry.BranchRun) runView {
+	var open []string
+	for _, s := range r.Steps {
+		if s.Status != registry.StepExited && s.Status != registry.StepPaused {
+			open = append(open, s.Name+"="+s.Status)
+		}
+	}
+	steps := "all done"
+	if len(open) > 0 {
+		steps = strings.Join(open, " ")
+	}
+	return runView{ID: r.ID, Op: r.Op, Status: branching.DeriveRunStatus(r.Steps), Owner: r.OwnerRef, Steps: steps, Failure: r.Failure, CreatedAt: r.CreatedAt}
+}
+
 func printBranch(w io.Writer, b *branching.Branch) {
 	v := viewBranch(b)
 	fmt.Fprintf(w, "name:     %s%s\nid:       %s\nref:      %s\nparent:   %s\nstatus:   %s (project %s)\n", v.Name, map[bool]string{true: " (default)"}[v.Default], v.ID, v.Ref, v.Parent, v.State, v.Project)
@@ -101,7 +129,11 @@ func printBranch(w io.Writer, b *branching.Branch) {
 		fmt.Fprintf(w, "deleted:  scheduled for %s\n", v.DeleteAt.Local().Format(time.RFC3339))
 	}
 	if v.Detail != "" {
-		fmt.Fprintf(w, "detail:   %s\n", v.Detail)
+		label := "detail:  "
+		if b.State == registry.BranchMigrationsFailed || b.State == registry.BranchFunctionsFailed {
+			label = "failed:  " // the reason the last operation failed
+		}
+		fmt.Fprintf(w, "%s %s\n", label, v.Detail)
 	}
 }
 
@@ -126,7 +158,7 @@ func waitDone(ctx context.Context, svc *branching.Service, ref string) (*branchi
 	if err != nil {
 		return nil, err
 	}
-	if b.State == registry.BranchMigrationsFailed {
+	if b.State == registry.BranchMigrationsFailed || b.State == registry.BranchFunctionsFailed {
 		return b, fmt.Errorf("branch %s: %s", b.Name, b.Detail)
 	}
 	return b, nil
@@ -138,6 +170,7 @@ func init() {
 		gitBranch, size, notifyURL, ttl                   string
 		seedFile, project, version                        string
 		force, schedule, dryRun                           bool
+		limit                                             int
 	)
 	cmd := &cobra.Command{
 		Use:   "branches",
@@ -392,6 +425,87 @@ CLI and MCP server.`,
 	})
 	seed.AddCommand(seedSet, seedGet, seedClear)
 
-	cmd.AddCommand(list, create, get, del, restore, merge, reset, push, diff, sweep, seed)
+	runs := run("runs <id-or-ref|name>", "List the action runs of a branch: its create, push, reset and the merges of it", cobra.ExactArgs(1), func(ctx context.Context, cmd *cobra.Command, svc *branching.Service, a []string) error {
+		b, err := selectBranch(ctx, svc, project, a[0])
+		if err != nil {
+			return err
+		}
+		rs, err := svc.BranchRuns(ctx, b, limit)
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			vs := make([]runView, len(rs))
+			for i := range rs {
+				vs[i] = viewRun(&rs[i])
+			}
+			return printJSON(cmd.OutOrStdout(), vs)
+		}
+		t := newTable(cmd.OutOrStdout())
+		fmt.Fprintln(t, "RUN\tOPERATION\tSTATUS\tSTEPS\tSTARTED\tFAILURE")
+		for i := range rs {
+			v := viewRun(&rs[i])
+			fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%s\n", v.ID, v.Op, v.Status, v.Steps, v.CreatedAt.Local().Format(time.RFC3339), orDash(v.Failure))
+		}
+		return t.Flush()
+	})
+	runs.Flags().StringVar(&project, "project", "", "look the argument up as a branch name of this project")
+	runs.Flags().IntVar(&limit, "limit", 20, "how many runs to show")
+	runs.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+
+	logs := run("logs <id-or-ref|name> [run-id]", "Print the log of an action run of a branch (the newest unless a run id is given)", cobra.RangeArgs(1, 2), func(ctx context.Context, cmd *cobra.Command, svc *branching.Service, a []string) error {
+		b, err := selectBranch(ctx, svc, project, a[0])
+		if err != nil {
+			return err
+		}
+		rs, err := svc.BranchRuns(ctx, b, 200)
+		if err != nil {
+			return err
+		}
+		var pick *registry.BranchRun
+		for i := range rs {
+			if len(a) == 1 || rs[i].ID == a[1] {
+				pick = &rs[i]
+				break
+			}
+		}
+		if pick == nil {
+			if len(a) == 2 {
+				return fmt.Errorf("branch %s has no run %s (supavise branches runs %s lists them)", b.Name, a[1], b.Name)
+			}
+			return fmt.Errorf("branch %s has no runs", b.Name)
+		}
+		text, err := svc.RunLogs(ctx, pick.OwnerRef, pick.ID)
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return printJSON(cmd.OutOrStdout(), map[string]any{"run": viewRun(pick), "log": text})
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "run %s: %s %s\n", pick.ID, pick.Op, pick.Status)
+		_, err = io.WriteString(cmd.OutOrStdout(), text)
+		return err
+	})
+	logs.Flags().StringVar(&project, "project", "", "look the argument up as a branch name of this project")
+	logs.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+
+	var rotateSecret bool
+	notifySecret := run("notify-secret", "Print the secret that signs the calls to the notify URLs of branches (Standard Webhooks)", cobra.NoArgs, func(ctx context.Context, cmd *cobra.Command, svc *branching.Service, _ []string) error {
+		var s string
+		var err error
+		if rotateSecret {
+			s, err = svc.RotateNotifySecret(ctx)
+		} else {
+			s, err = svc.NotifySecret(ctx)
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), s)
+		return nil
+	})
+	notifySecret.Flags().BoolVar(&rotateSecret, "rotate", false, "replace the secret; receivers must take the new one before the next notification")
+
+	cmd.AddCommand(list, create, get, del, restore, merge, reset, push, diff, runs, logs, notifySecret, sweep, seed)
 	rootCmd.AddCommand(cmd)
 }

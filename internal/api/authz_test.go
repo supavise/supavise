@@ -162,6 +162,12 @@ func matrixCases() []routeCase {
 		rc("YYYYYN", "GET", p+"/secrets", nil),
 		rc("YYYYYN", "GET", p+"/functions", nil),
 		rc("YYYYYN", "GET", p+"/branches", nil),
+		// the action runs of branch operations: read with the branches, report a step with the right to change them
+		rc("YYYYYN", "GET", p+"/actions", nil),
+		rc("YYYYYN", "HEAD", p+"/actions", nil),
+		rc("YYYYYN", "GET", p+"/actions/00000000-0000-4000-8000-000000000000", nil),
+		rc("YYYYYN", "GET", p+"/actions/00000000-0000-4000-8000-000000000000/logs", nil),
+		rc("YYYNYN", "PATCH", p+"/actions/00000000-0000-4000-8000-000000000000/status", map[string]any{"pull": "EXITED"}),
 		// project: lifecycle and settings (Owner and Administrator)
 		rc("YYNNNN", "PATCH", pp, map[string]any{"name": "Renamed"}),
 		rd("YYNNNN", "DELETE", pp, nil),
@@ -509,7 +515,7 @@ func TestResetOfBranchWithDataNeedsOwnerOrAdministrator(t *testing.T) {
 	mk := func(name string, withData bool) string {
 		rec := rf.status(201, "owner", "POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": name})
 		b := decodeBody(t, rec).(map[string]any)
-		rf.waitBranch(t, name, "MIGRATIONS_PASSED")
+		rf.waitBranch(t, name, "FUNCTIONS_DEPLOYED")
 		if withData {
 			// The fixture's node cannot clone data, so a branch that was created without it is
 			// marked as having it: what the reset route looks at is the registry row.
@@ -540,7 +546,7 @@ func TestResetOfBranchWithDataNeedsOwnerOrAdministrator(t *testing.T) {
 	// The schema-only branch resets for the Developer, the project-scoped one included.
 	for _, role := range []string{"dev", "scoped"} {
 		rf.status(201, role, "POST", "/v1/branches/"+plain+"/reset", map[string]any{})
-		rf.waitBranch(t, "plain", "MIGRATIONS_PASSED")
+		rf.waitBranch(t, "plain", "FUNCTIONS_DEPLOYED")
 	}
 	// Owner and Administrator pass the check. The reset itself then needs a node that can clone,
 	// which the fixture is not, so only the absence of a 403 is asserted.

@@ -7,7 +7,7 @@ itself when its lifetime ends.
 
 `branching.Service` is the library. The Management API's branch endpoints
 (`internal/api/branches.go`) and `supavise branches` (`cmd/supavise/cmd_branches.go`) are thin
-wrappers over it, so the stock Supabase CLI (`supabase branches ...`, which needs `--experimental`) and
+wrappers over it, so the stock Supabase CLI (`supabase branches ...`) and
 the Supabase MCP server's branch tools work unchanged. The MCP server must run unscoped (no
 `--project-ref`): the project scope hides the account tools `create_branch` needs. `testdata/mcp-branches.mjs`
 drives them against the API.
@@ -35,6 +35,21 @@ not cleaned up on delete. The base-backup path restores through `Backup.WithMana
 the service that stamps the new project as a branch. Without `Deps.Branching` the API lists only the
 default branch and refuses to create one.
 
+## Source layout
+
+One file per operation, so that a change to one operation stays in one file:
+
+| File | Holds |
+|---|---|
+| `service.go` | `Service`, `Deps`, reading (`List`, `Get`, `Resolve`) and the helpers the operations share |
+| `ops.go` | `ActionInput`, the in-process operation table (`begin`, `end`, `checkIdle`, `WaitIdle`) and the detached run wrapper `spawn` |
+| `create.go` | `Create` and `doCreate` |
+| `merge.go`, `push.go`, `reset.go` | `Merge` and `Diff`, `Push`, `Reset` |
+| `update.go` | `Update` (PATCH of a branch) |
+| `delete.go` | `Delete`, `Restore`, `DisableBranching` and `removeBranch` |
+| `migrations.go` | the migration history (`Migration`, `Compare`, `Apply`) and `replay` into a schema-only branch |
+| `sweep.go`, `notify.go` | the expiry sweeper and the `notify_url` call |
+
 ## Data model
 
 Migration `0700_branching.sql` adds nullable columns to `supavise.projects`: `branch_id` (UUID,
@@ -61,22 +76,114 @@ each checks the other's write and no branch is left on a deleted parent.
 
 Create, merge, reset and push run detached from the request. The API answers at once (`201` with the
 new branch in `CREATING_PROJECT` for a create, `{workflow_run_id, message: "ok"}` for the others) and
-the branch's `status` follows: `CREATING_PROJECT`, `RUNNING_MIGRATIONS`, then `MIGRATIONS_PASSED` or
-`MIGRATIONS_FAILED` with the cause in `branch_detail` (`supavise branches get`). `preview_project_status`
-is the project's own status. A busy branch refuses another operation with `409`. Events
-`branch.<op>.started`, `.succeeded` and `.failed` (with the run id) go to the branch's and the parent's
-event log; a `notify_url` gets a POST when the operation ends. The sweeper marks an operation that no
-process works on as failed: the process that started it (host, pid and service instance in the started
-event) is gone, or the branch has been busy for 30 minutes. After a daemon crash the first sweep
-recovers its interrupted operations at once; an operation of another host or of a live process keeps
-the 30 minute rule.
+the branch's `status` follows: `CREATING_PROJECT`, `RUNNING_MIGRATIONS`, `MIGRATIONS_PASSED` while the
+functions deploy, then `FUNCTIONS_DEPLOYED`, or `MIGRATIONS_FAILED` / `FUNCTIONS_FAILED` with the cause in
+`branch_detail` (`supavise_detail` in the branch JSON, `supavise branches get`). A branch that finished
+before these statuses existed keeps `MIGRATIONS_PASSED`; everything that waits for a branch accepts both.
+`preview_project_status` is the project's own status. A busy branch refuses another operation with `409`
+(an in-process table per branch ref plus the registry state, so a push during a merge of the same branch is
+refused). The registry state counts as busy while it is `CREATING_PROJECT` or `RUNNING_MIGRATIONS`, and while it
+is `MIGRATIONS_PASSED` with a run still `RUNNING` on the branch (the deploy step), so the CLI and the sweeper of
+another process leave a deploying branch alone; `MIGRATIONS_PASSED` with no run going is a branch at rest. Events `branch.<op>.started`, `.succeeded` and `.failed` (with the run id) go to the branch's and
+the parent's event log. The sweeper marks an operation that no process works on as failed: the process that
+started it (host, pid and service instance in the started event) is gone, or the branch has been busy for
+30 minutes. After a daemon crash the first sweep recovers its interrupted operations at once; an operation
+of another host or of a live process keeps the 30 minute rule.
+
+### Action runs
+
+Every create, push, merge and reset is an **action run**: the record Studio's Branches and merge pages poll
+(`GET /v1/projects/{ref}/actions`), the CLI and MCP clients can follow, and a `notify_url` receiver is told
+about. `runs.go` is the recorder; the tables are `supavise.branch_runs` and `supavise.branch_run_steps`
+(migration 1500).
+
+* **Seven steps**, in this order: `clone`, `pull`, `health`, `configure`, `migrate`, `seed`, `deploy`, with
+  the statuses `CREATED`, `RUNNING`, `EXITED`, `PAUSED` (skipped, or cut off by a failure before it) and `DEAD`
+  (failed). The run is stored with all seven steps before the HTTP call returns, because Studio reads a run
+  without steps as running for ever. `clone` and `configure` belong to the Git flow and start `PAUSED`.
+* **Phases.** An operation reports progress with `s.phase(ctx, StepX)`: it closes the open step (`EXITED`),
+  pauses the steps it skipped and opens the next. `spawn` finishes the run: a success closes the open step and
+  pauses what never started; a failure makes the open step `DEAD` with the error in its log, pauses the steps
+  after it and marks the run `FAILED` (`Run.Finish`). The run ends before the branch's status changes, so a
+  client that sees the new status finds the run finished.
+
+  | Operation | pull | health | migrate | seed | deploy |
+  |---|---|---|---|---|---|
+  | create, reset | the parent's state is read, the old cluster removed (reset) | the new project starts | the parent's history is replayed | the seed runs (skipped without one) | `MIGRATIONS_PASSED`, then the functions |
+  | push | both histories are read | skipped | the plan is made (a divergence fails here) and applied | skipped | the functions |
+  | merge | both histories are read | skipped | same | skipped | the functions |
+* **Log.** Each step has a text log of lines `<time> [<step>] <text>`: the progress text of the operation (what
+  `setState` records as `branch_detail`), the final outcome and the error of a failure. A step's log stops at
+  256 KiB (cut at a character boundary; invalid UTF-8 is replaced and NUL bytes dropped, because Postgres
+  refuses both). The run lists (`ListBranchRuns`, `RunningBranchRuns`) return steps without their logs; only
+  `GetBranchRun` reads them. `GET .../actions/{id}/logs` returns the steps' logs in order as `text/plain`.
+* **Owner.** A merge run is listed under the **parent** ref; create, push and reset runs under the branch ref.
+  The other ref answers `404` for the run, its log and its status (Studio polls both refs and stops polling the
+  one that answers 404). `Service.BranchRuns` gathers a branch's own runs and the merges of it.
+* **Status.** The Management API has none; Studio derives it from the steps (no steps or a step not done:
+  running; all `EXITED` or `PAUSED`: success; a `DEAD` step: failed), `DeriveRunStatus` is that rule, and
+  `branch_runs.status` (`RUNNING`, `SUCCESS`, `FAILED`) stores the same answer. The default branch's status
+  follows the merges into it: `RUNNING_MIGRATIONS` during one, `MIGRATIONS_FAILED` (reason in the detail) after a
+  failed one, `FUNCTIONS_DEPLOYED` after a good one. A failure shows only while the merged branch still exists
+  and is still failed: deleting that branch, or a later push, reset or merge of it that works, clears it.
+* **Recovery.** A run still `RUNNING` whose runner (host, pid, service instance, stored on the run) is gone is
+  failed by the next sweep with "interrupted by restart" (`DEAD` open step, `PAUSED` rest) and the branch it left
+  busy becomes `MIGRATIONS_FAILED`; a run of an unknown runner is failed after the 30 minutes. Runs older than 30
+  days, and those of a project that no longer exists, are removed.
+* **PATCH `/actions/{id}/status`** sets the status of steps for a CI system that runs them itself (`UpdateRunStatusBody`).
+  A run this process is working on refuses it (`409`). The run's status follows the steps. `REMOVING` and
+  `RESTARTING` are container words this node's steps never have and are refused.
+* **For code outside the package** (the GitHub runner): `Service.StartRun(ctx, op, branchRef, ownerRef, parentRef)`
+  records a run the caller drives itself (all seven steps `CREATED`; the service leaves the branch's status and
+  `notify_url` to the caller), and `Service.Recorder(ctx, runID)` returns a `*Run` for a run that exists, with
+  `Step(name).Start/Finish/Fail/Skip`, `Phase`, `Log`/`Logf` and `Finish(err)`; `Create` returns the run it started
+  in `Branch.RunID` (the run row exists before `Create` returns), and `Service.LatestRun(ctx, ref)` finds the newest run
+  listed under a ref later. All of them are no-ops on a nil
+  `*Run`. `registry.BranchRun.CheckRunID` and `Workdir` are for that runner.
+
+### Notifications
+
+A branch with a `notify_url` gets a POST when a run ends, for every operation (hosted sends it for persistent
+branches only; this is a superset). The body is the envelope hosted documents
+(<https://supabase.com/docs/guides/deployment/branching/working-with-branches>), with what the node sent
+before the envelope existed under `supavise`:
+
+```json
+{
+  "type": "run.completed",
+  "timestamp": "2026-10-11T20:11:12Z",
+  "data": {
+    "project_ref": "<the branch's ref>",
+    "details_url": "https://studio.<domain>/project/<parent ref>/branches",
+    "action_run": {
+      "id": "<run id>", "created_at": "...",
+      "steps": [{"name": "clone", "status": "paused", "updated_at": "..."}, "..."],
+      "failure": "migrate: ..."
+    }
+  },
+  "supavise": {"branch_id": "...", "branch_name": "...", "project_ref": "...", "parent_project_ref": "...",
+               "operation": "create", "status": "FUNCTIONS_DEPLOYED", "message": "...", "project_status": "ACTIVE_HEALTHY"}
+}
+```
+
+`failure` is present only after a failed run (`<step>: <reason>`; the shape is Supavise's, hosted documents none).
+Step statuses are lowercase. The call carries the Standard Webhooks headers `webhook-id` (`msg_` and the run id without its dashes, the same for every delivery of a run),
+`webhook-timestamp` (Unix seconds) and `webhook-signature` (`v1,` and the base64 HMAC-SHA256 of
+`<id>.<timestamp>.<body>`), signed with one node-wide secret (`whsec_` and base64) that the node creates when it is
+first needed and keeps sealed under the system project. `supavise branches notify-secret` prints it, `--rotate`
+replaces it. A node that cannot read the secret still sends the call, unsigned. The call has one attempt and a
+10 second timeout, follows no redirect and refuses private targets (below).
 
 ### Create
 
-`POST /v1/projects/{ref}/branches` body `{branch_name, is_default, git_branch, region,
-desired_instance_size, persistent, with_data, notify_url}`. The parent must be running. `region` is
-accepted and the parent's is used. A non-empty `secrets`, a `release_channel` other than `ga` and a
-`postgres_engine` other than the parent's are refused with 400, as is an unknown `desired_instance_size`
+`POST /v1/projects/{ref}/branches` (and `POST /v2/projects/{ref}/branches`, the JSON:API form of the same
+create: `{data: {type: "branch", attributes: {name, git_branch, region, persistent, with_data, desired_instance_size,
+notify_url}}}`; `desired_disk_size_gb` is refused with the reason) body `{branch_name, is_default, git_branch, region,
+desired_instance_size, persistent, with_data, notify_url, secrets}`. The parent must be running. `region` is
+accepted and the parent's is used (the answer says so in `supavise_region`). `secrets` (names of letters, digits and
+underscores, not starting with `SUPABASE_`, at most 100) become the branch's Edge Function secrets; secrets are
+never copied from the parent. A `release_channel` other than `ga` and a `postgres_engine` other than the
+parent's are refused with 400, as is an unknown `desired_instance_size`
 (`pico` is Nano; see `internal/lifecycle/README.md`, "Compute sizes"); without one a branch gets
 `[branching] default_class` (`micro`, as on hosted) and counts against the node's memory budget. A
 `with_data` create is refused with `409` before anything exists when the state disk cannot hold the clone
@@ -100,6 +207,13 @@ schema-only branch: use `with_data`.
 > Administrator role (also when scoped to the parent project); Developers keep creating and resetting
 > schema-only branches, and get 403 otherwise. `supavise branches create` runs on the node as its operator
 > and is not checked.
+
+`is_default: true` returns the default branch (the project itself) and creates nothing, again and again; a
+`git_branch` in the same request is stored as the Git branch the default branch tracks (Studio's "Production
+branch" save sends it). `PATCH` on the default branch stores `git_branch` too (migration 1501,
+`supavise.default_branch_git`; nothing acts on it yet) and refuses what a default branch cannot have: a rename
+by itself (Studio sends `branch_name` together with `git_branch`, which is ignored), `persistent: false`, a
+`notify_url`, `request_review: true` and a status other than the current.
 
 ### What a branch contains
 
@@ -234,8 +348,10 @@ Limits:
 * Egress is blocked only under systemd, covers the branch's Postgres unit only, and blocks WAL archiving to an
   `s3://` backend.
 * No idle sleep: an unused branch costs its idle memory (about 130 MB with GoTrue and PostgREST).
-* The Management API's action-run endpoints (`/v1/projects/{ref}/actions`, used by Studio's branch pages) are
-  stubs; progress is the branch's status and `branch_detail`.
+* The `deploy` step does not copy Edge Functions on its own: it is the place where functions are deployed, and a
+  step with nothing to do is `EXITED`.
+* In a cluster, an operation a v0.3.x server runs leaves no action run (Studio's polls get 404 for it); the
+  branch's status and `branch_detail` still follow it.
 * `GET /v1/branches/{id}` reports the pooler (`pooler.<domain>`, session port, user `postgres.<ref>`) as the
   database address: Supavise has no direct database host.
 * Two operations on one branch are excluded through the registry state and an in-process table, not a cross-process lock, so two processes starting one in the same instant can both proceed.
@@ -264,6 +380,9 @@ supavise branches create <project-ref> <name> [--with-data [--allow-egress]] [--
                       [--git-branch b] [--seed-file f] [--notify-url u] [--no-wait] [--json]
 supavise branches get|delete|restore|diff <id|ref|name --project <ref>>   # delete --schedule
 supavise branches merge|reset|push <id|ref|name> [--project <ref>] [--migration-version v] [--force] [--no-wait]
+supavise branches runs <id|ref|name> [--project <ref>] [--limit 20] [--json]    # the action runs of a branch
+supavise branches logs <id|ref|name> [run-id] [--project <ref>] [--json]         # the newest run's log, or run-id's
+supavise branches notify-secret [--rotate]                                       # the Standard Webhooks signing secret
 supavise branches sweep [--dry-run]
 supavise branches seed set|get|clear <project-ref> [--file seed.sql]
 ```
@@ -277,6 +396,9 @@ The `ci.yml` job `test` runs the unit tests. The
 `linux.yml` job `branching-xfs` runs `tests/linux/branching-xfs.sh` (the whole branching scenario on a
 loop-file XFS with `reflink=1` and on ext4) and `tests/linux/branching-egress.sh` (egress isolation under
 systemd: the denied unit cannot reach a non-loopback host while the parent can, the allow list is exactly
-127.0.0.1 and ::1, `--allow-egress` reaches the host, the restriction survives pause, resume and reset). The
+127.0.0.1 and ::1, `--allow-egress` reaches the host, the restriction survives pause, resume and reset). After
+the clone runs, `tests/linux/branching/runs.sh` starts `TestServe` (the Management API over real clusters) and
+checks the action runs over HTTP: seven steps, logs, the owner rule, `FUNCTIONS_DEPLOYED`, a forced divergence
+as a `DEAD` migrate step, and the `notify_url` envelope and its signature at a python receiver. The
 integration tests in `internal/branching` run real clusters and are skipped unless `SUPAVISE_TEST_UNPACKED`
 points at the unpacked artifacts directory.

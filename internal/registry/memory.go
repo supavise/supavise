@@ -40,6 +40,11 @@ type Memory struct {
 
 	// advisorRules are the advisor rules (advisors_mem.go), by project ref.
 	advisorRules map[string][]AdvisorException
+
+	// branchRuns are the action runs of branches by id, in creation order (branch_runs_mem.go),
+	// and defaultGit the Git branch each default branch tracks, by project ref.
+	branchRuns []*BranchRun
+	defaultGit map[string]string
 }
 
 func NewMemory() *Memory {
@@ -252,6 +257,15 @@ func (m *Memory) UpdateProject(_ context.Context, p *Project) error {
 
 // UpdateBranch implements Registry.
 func (m *Memory) UpdateBranch(_ context.Context, ref string, b *BranchInfo) error {
+	return m.updateBranch(ref, b, true)
+}
+
+// UpdateBranchSettings implements Registry.
+func (m *Memory) UpdateBranchSettings(_ context.Context, ref string, b *BranchInfo) error {
+	return m.updateBranch(ref, b, false)
+}
+
+func (m *Memory) updateBranch(ref string, b *BranchInfo, withState bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.projects[ref]
@@ -265,7 +279,10 @@ func (m *Memory) UpdateBranch(_ context.Context, ref string, b *BranchInfo) erro
 	}
 	nb := *cur.Branch
 	nb.Name, nb.GitBranch, nb.Persistent, nb.WithData, nb.ExpiresAt, nb.DeletionScheduledAt = b.Name, b.GitBranch, b.Persistent, b.WithData, b.ExpiresAt, b.DeletionScheduledAt
-	nb.NotifyURL, nb.State, nb.Detail, nb.CloneMethod, nb.ReviewRequestedAt = b.NotifyURL, b.State, b.Detail, b.CloneMethod, b.ReviewRequestedAt
+	nb.NotifyURL, nb.CloneMethod, nb.ReviewRequestedAt = b.NotifyURL, b.CloneMethod, b.ReviewRequestedAt
+	if withState {
+		nb.State, nb.Detail = b.State, b.Detail
+	}
 	cur.Branch, cur.UpdatedAt = &nb, time.Now()
 	m.projects[ref] = cloneProject(cur)
 	m.notify("projects", "update", ref)
@@ -339,6 +356,7 @@ func (m *Memory) DeleteProject(_ context.Context, ref string) error {
 	m.upgrades = kept
 	delete(m.hostnames, ref)
 	delete(m.advisorRules, ref)
+	delete(m.defaultGit, ref)
 	delete(m.vanity, ref)
 	delete(m.dataAPI, ref)
 	for h, r := range m.routes {
