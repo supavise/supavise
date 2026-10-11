@@ -24,6 +24,7 @@ import (
 	"github.com/supavise/supavise/internal/failover"
 	"github.com/supavise/supavise/internal/fleet"
 	"github.com/supavise/supavise/internal/functions"
+	"github.com/supavise/supavise/internal/github"
 	"github.com/supavise/supavise/internal/health"
 	"github.com/supavise/supavise/internal/lifecycle"
 	"github.com/supavise/supavise/internal/notice"
@@ -173,6 +174,20 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	if err != nil {
 		return err
 	}
+	// The GitHub integration: the server's GitHub App, the authorizations and connections, and the
+	// webhook that builds a preview branch from a pull request (internal/github). The Management API
+	// gives it the parts of itself it saves settings and deploys functions with.
+	ghSvc, err := github.New(github.Options{
+		Cfg: cfg, Registry: node.Registry, Secrets: node.Secrets, Branches: bsvc, Log: log.With("component", "github"),
+		Audit: func(ctx context.Context, kind string, payload map[string]any) {
+			if err := node.Registry.AppendEvent(context.WithoutCancel(ctx), config.SystemRef, kind, payload); err != nil {
+				log.Warn("a GitHub audit event was not recorded", "kind", kind, "error", err)
+			}
+		},
+	})
+	if err != nil {
+		return err
+	}
 	// Studio shows "Continue with SSO" only while the dashboard has an SSO provider, and reads
 	// that when it starts: the API re-renders its unit when the first provider appears or the
 	// last one goes (fleet.Manager.RefreshStudio).
@@ -209,7 +224,7 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	apiDeps := api.Deps{
 		Requests: requests,
 		Health:   monitor,
-		Registry: node.Registry, Secrets: node.Secrets, Manager: node.Engine, Config: cfg, Branching: bsvc,
+		Registry: node.Registry, Secrets: node.Secrets, Manager: node.Engine, Config: cfg, Branching: bsvc, GitHub: ghSvc,
 		Store:         store,
 		Settings:      node.Settings, // the settings the engine renders units and tenants from
 		StudioRefresh: fm.RefreshStudio,
@@ -318,7 +333,8 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	}
 	drain := func(ctx context.Context) error {
 		err := apiH.Drain(ctx)
-		bsvc.Drain(ctx) // branch operations the API detached; cancelled when the budget ends
+		ghSvc.Drain(ctx) // the builds that webhooks started wait on the branch operations below
+		bsvc.Drain(ctx)  // branch operations the API detached; cancelled when the budget ends
 		return err
 	}
 	superviseStop(g, gctx, budget, edge.Run, drain, admin.Shutdown, log)

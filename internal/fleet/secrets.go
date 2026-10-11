@@ -64,6 +64,8 @@ type creds struct {
 	// registered: Studio then shows "Continue with SSO". It is read with the credentials
 	// because rendering Studio's unit needs the registry like they do.
 	dashboardSSO bool
+	// githubApp is the name and client id of the server's GitHub App, the zero value without one.
+	githubApp githubNames
 
 	supavisorAPIJWT, supavisorMetricsJWT, supavisorSecretBase, supavisorVaultKey string
 	realtimeAPIJWT, realtimeMetricsJWT, realtimeSecretBase                       string
@@ -169,6 +171,9 @@ func loadCreds(ctx context.Context, d Deps, create bool) (*creds, error) {
 	var err error
 	if c.dashboardSSO, err = d.dashboardSSO(ctx); err != nil {
 		return nil, fmt.Errorf("fleet: are there dashboard SSO providers: %w", err)
+	}
+	if c.githubApp, err = d.githubApp(ctx); err != nil {
+		return nil, fmt.Errorf("fleet: is there a GitHub App: %w", err)
 	}
 	return c, nil
 }
