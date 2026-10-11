@@ -374,6 +374,12 @@ func (p *Plan) describe() {
 	if len(p.NewMigrations) > 0 {
 		p.Notes = append(p.Notes, fmt.Sprintf("the release adds %d registry migration(s) (%s). The new daemon applies them when it starts, and migrations only go forward: from then on the node cannot go back to the previous release by itself, and `supavise rollback` is refused until the system cluster is restored by hand from its pre-upgrade backup (internal/backup/README.md, \"Disaster recovery of the system cluster\")", len(p.NewMigrations), refList(p.NewMigrations)))
 	}
+	for _, m := range p.NewMigrations {
+		if strings.HasPrefix(m, "1400_") { // the per-project Data API choice: the release also changes project databases
+			p.Notes = append(p.Notes, "the release revokes, once per project, the default privileges that give anon, authenticated and service_role access to new tables in `public`, as hosted Supabase does. The new daemon does it after the upgrade ends, and waits a day after a failed upgrade. A rollback does not bring the grants back, because restoring the system cluster leaves the project databases as they are; docs/guide.md (\"New tables need a grant\") has the statements that grant them again")
+			break
+		}
+	}
 	if p.HostPending {
 		when := "right after the binary is swapped, before the daemon restarts"
 		if !p.BinaryChange {
