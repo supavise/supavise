@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -126,5 +128,48 @@ func TestDataAPIWaitsForAnUpgradeThatRollsBack(t *testing.T) {
 	}
 	if dataAPIUpgradeRunning(p, now) {
 		t.Error("a finished upgrade holds the pass back")
+	}
+}
+
+// An upgrade that ended as failed (the registry rule refused its rollback, so the node stays on the new
+// release and the operator decides) holds the pass back for a day, dated by the marker's modification
+// time. Any other end, an older failure and a later upgrade do not.
+func TestDataAPIHoldsBackAfterAFailedUpgrade(t *testing.T) {
+	cfg := &config.Config{StateDir: t.TempDir()}
+	p := cfg.Paths()
+	now := time.Now()
+	if dataAPIUpgradeFailed(p, now) {
+		t.Fatal("no marker, and the last upgrade failed")
+	}
+	write := func(phase string, age time.Duration) {
+		t.Helper()
+		if err := notice.WriteUpgrade(p, notice.Upgrade{Phase: phase, From: "v0.2.1", To: "v0.3.0", StartedAt: now.Add(-age - time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		at := now.Add(-age)
+		if err := os.Chtimes(filepath.Join(p.Root, "system", "upgrade.json"), at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("failed", time.Minute)
+	if !dataAPIUpgradeFailed(p, now) {
+		t.Error("a failed upgrade of a minute ago does not hold the pass back")
+	}
+	if dataAPIUpgradeRunning(p, now) {
+		t.Error("a failed upgrade counts as running")
+	}
+	write("failed", 23*time.Hour)
+	if !dataAPIUpgradeFailed(p, now) {
+		t.Error("a failed upgrade of 23 hours ago does not hold the pass back")
+	}
+	write("failed", 25*time.Hour)
+	if dataAPIUpgradeFailed(p, now) {
+		t.Error("a failed upgrade of 25 hours ago still holds the pass back")
+	}
+	for _, phase := range []string{"done", "rolled_back", "refused", notice.PhaseRollingBack} {
+		write(phase, time.Minute)
+		if dataAPIUpgradeFailed(p, now) {
+			t.Errorf("phase %q holds the pass back as a failed upgrade", phase)
+		}
 	}
 }

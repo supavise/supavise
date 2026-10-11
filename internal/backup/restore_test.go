@@ -257,6 +257,15 @@ type fakeManager struct {
 	// failResume makes the n-th Resume call (1-based) fail; 0 never fails.
 	failResume  int
 	resumeCalls int
+	// restoredDataAPI are the RestoredDataAPI calls of an in-place restore ("ref choice"); dataAPIErr is
+	// what they return.
+	restoredDataAPI []string
+	dataAPIErr      error
+}
+
+func (f *fakeManager) RestoredDataAPI(_ context.Context, ref string, backup registry.DefaultPrivileges) error {
+	f.restoredDataAPI = append(f.restoredDataAPI, ref+" "+string(backup))
+	return f.dataAPIErr
 }
 
 func (f *fakeManager) Create(ctx context.Context, req lifecycle.CreateRequest) (*registry.Project, error) {
@@ -569,4 +578,127 @@ func TestRestoreAsNewIgnoresTheSourceRowWhenTheBackupPredatesIt(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The restored cluster holds the default privileges of the backup it came from, and the Data API row lives
+// in the registry, so an in-place restore hands the Manager the decision of the backup (never the row as
+// it is now): "granted" or "revoked" is recorded, and a backup that recorded nothing is converged again.
+// Studio's restore and `supavise backups restore` reach the same step, for a time and for a base backup.
+func TestRestoreInPlaceHandsTheBackupsDecisionToTheManager(t *testing.T) {
+	ctx := context.Background()
+	entries := []struct {
+		name    string
+		restore func(e *testEnv, m Manifest) error
+	}{
+		{"point in time, backups restore", func(e *testEnv, _ Manifest) error {
+			_, err := e.svc.RestoreWith(ctx, testRef, e.now, "", RestoreOptions{Force: true})
+			return err
+		}},
+		{"base backup, backups restore", func(e *testEnv, m Manifest) error {
+			_, err := e.svc.RestoreWith(ctx, testRef, time.Time{}, "", RestoreOptions{Force: true, ToBackup: true, BackupID: m.ID})
+			return err
+		}},
+		{"point in time, Studio", func(e *testEnv, _ Manifest) error {
+			return e.svc.RestoreInPlace(ctx, testRef, lifecycle.RestoreRequest{Target: e.now})
+		}},
+		{"base backup, Studio", func(e *testEnv, m Manifest) error {
+			return e.svc.RestoreInPlace(ctx, testRef, lifecycle.RestoreRequest{BackupID: m.ID})
+		}},
+	}
+	for _, entry := range entries {
+		for _, manifest := range []string{"", "granted", "revoked", "no project block"} {
+			t.Run(entry.name+"/manifest "+manifest, func(t *testing.T) {
+				e := newTestEnv(t)
+				e.addProject(t, testRef)
+				// The row as it is now says the opposite of what the backup held, and must not matter.
+				now := registry.PrivilegesRevoked
+				if manifest == "revoked" {
+					now = registry.PrivilegesGranted
+				}
+				if err := e.reg.PutDataAPI(ctx, registry.DataAPI{Ref: testRef, DefaultPrivileges: now, Source: registry.DataAPIUpgrade}); err != nil {
+					t.Fatal(err)
+				}
+				e.defaultPrivileges = manifest
+				if manifest == "no project block" {
+					e.defaultPrivileges = ""
+				}
+				m := e.storeBase(t, testRef, fakeDataDir(t), e.now.Add(-time.Hour), nil)
+				if manifest == "no project block" {
+					m.Project = nil
+					if err := e.svc.writeManifest(ctx, &m); err != nil {
+						t.Fatal(err)
+					}
+				}
+				writeFile(t, filepath.Join(e.svc.opt.DataDir(testRef), "PG_VERSION"), []byte("old"))
+				fm := &fakeManager{e: e}
+				e.svc.opt.Manager = fm
+				if err := entry.restore(e, m); err != nil {
+					t.Fatal(err)
+				}
+				want := testRef + " " + e.defaultPrivileges
+				if len(fm.restoredDataAPI) != 1 || fm.restoredDataAPI[0] != want {
+					t.Fatalf("RestoredDataAPI calls = %q, want [%q]", fm.restoredDataAPI, want)
+				}
+				if len(fm.resumed) != 1 {
+					t.Fatalf("resumed %v", fm.resumed)
+				}
+			})
+		}
+	}
+}
+
+// A failure of the step is logged and recorded; the restore stands.
+func TestRestoreInPlaceStandsWhenTheDataAPIStepFails(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	e.addProject(t, testRef)
+	e.storeBase(t, testRef, fakeDataDir(t), e.now.Add(-time.Hour), nil)
+	writeFile(t, filepath.Join(e.svc.opt.DataDir(testRef), "PG_VERSION"), []byte("old"))
+	fm := &fakeManager{e: e, dataAPIErr: errors.New("registry is read-only")}
+	e.svc.opt.Manager = fm
+	if _, err := e.svc.RestoreWith(ctx, testRef, e.now, "", RestoreOptions{Force: true}); err != nil {
+		t.Fatalf("the restore failed over the Data API step: %v", err)
+	}
+	evs, _ := e.reg.ListEvents(ctx, testRef, 20)
+	var failed, completed bool
+	for _, ev := range evs {
+		failed = failed || ev.Kind == "restore.data_api_failed"
+		completed = completed || ev.Kind == "restore.completed"
+	}
+	if !failed || !completed {
+		t.Fatalf("events = %+v, want restore.data_api_failed and restore.completed", evs)
+	}
+}
+
+// The original row is the truth while the original data is: a restore that is rolled back, and a restore
+// as new, leave it alone.
+func TestRestoreLeavesTheDataAPIStepAloneWhenTheOriginalComesBack(t *testing.T) {
+	ctx := context.Background()
+	t.Run("resume fails", func(t *testing.T) {
+		e := newTestEnv(t)
+		e.addProject(t, testRef)
+		e.storeBase(t, testRef, fakeDataDir(t), e.now.Add(-time.Hour), nil)
+		writeFile(t, filepath.Join(e.svc.opt.DataDir(testRef), "PG_VERSION"), []byte("old"))
+		fm := &fakeManager{e: e, failResume: 1}
+		e.svc.opt.Manager = fm
+		if _, err := e.svc.RestoreWith(ctx, testRef, e.now, "", RestoreOptions{Force: true}); err == nil {
+			t.Fatal("the restore with a failing start succeeded")
+		}
+		if len(fm.restoredDataAPI) != 0 {
+			t.Fatalf("a rolled-back restore changed the Data API decision: %q", fm.restoredDataAPI)
+		}
+	})
+	t.Run("restore as new", func(t *testing.T) {
+		e := newTestEnv(t)
+		src := e.addProject(t, testRef)
+		e.storeBase(t, testRef, fakeDataDir(t), e.now.Add(-time.Hour), src)
+		fm := &fakeManager{e: e, dataDir: filepath.Join(t.TempDir(), "restored")}
+		e.svc.opt.Manager = fm
+		if _, err := e.svc.RestoreWith(ctx, testRef, e.now.Add(-time.Minute), testRef2, RestoreOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if len(fm.restoredDataAPI) != 0 {
+			t.Fatalf("a restore as new called the in-place step: %q", fm.restoredDataAPI)
+		}
+	})
 }

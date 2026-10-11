@@ -574,6 +574,20 @@ func testDataAPI(t *testing.T, m Registry) {
 	if got, _ := st.GetDataAPI(ctx, p.Ref); got.DefaultPrivileges != PrivilegesGranted {
 		t.Fatalf("decision after a replace = %+v", got)
 	}
+	// An in-place restore to a backup that recorded nothing forgets the decision; forgetting twice,
+	// or a project without one, is no error.
+	if err := st.DeleteDataAPI(ctx, p.Ref); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetDataAPI(ctx, p.Ref); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a forgotten decision is still there: %v", err)
+	}
+	if err := st.DeleteDataAPI(ctx, p.Ref); err != nil {
+		t.Fatalf("forgetting a decision that is not there: %v", err)
+	}
+	if err := st.PutDataAPI(ctx, DataAPI{Ref: p.Ref, DefaultPrivileges: PrivilegesRevoked, Source: DataAPIUpgrade}); err != nil {
+		t.Fatal(err)
+	}
 	if err := m.DeleteProject(ctx, p.Ref); err != nil {
 		t.Fatal(err)
 	}

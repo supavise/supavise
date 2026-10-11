@@ -93,15 +93,31 @@ new function stays callable through `rpc`, on hosted too. Objects that exist kee
   again, and is the event `project.data_api_defaults_failed` once per distinct message and hour, not at every pass. A cluster in
   recovery (`ErrNotPrimary`) and a home node on an older release (`ErrPeerBehind`) are waited for with no event. A project with
   a row is never touched again, and a pass does not even take its lock, so a user who rolled the revoke back with SQL keeps the
-  rollback across restarts and upgrades. A project whose lock another operation holds is skipped after `convergeLockWait` (10 s)
+  rollback across restarts and upgrades. Only an in-place restore rewrites a row (next bullet). A project whose lock another operation holds is skipped after `convergeLockWait` (10 s)
   and tried at the next pass. A paused project is done by `resume`.
   The leader's Engine drives every project, through the plane router for one homed on another node (`apply_data_api` on the
   peer plane path, see `internal/placement`); a follower's Engine, whose registry is read-only, does nothing. `internal/app`
   runs it after the projects start, skips it while a node upgrade runs in any phase, `rolling_back` included, as long as
-  its process is alive (an upgrade that fails rolls the node back to a release that does not know the change), and repeats it:
+  its process is alive (an upgrade that fails rolls the node back to a release that does not know the change), skips it for a
+  day after an upgrade ended in phase `failed` (the node stays on the new release and the operator chooses between fixing
+  forward and restoring the system cluster for `supavise rollback`; a revoke made meanwhile would outlast that rollback, since
+  the project databases are not part of the restore; the marker's modification time dates the failure, a later upgrade replaces
+  the marker, and the hold ends by itself after a day), and repeats it:
   after 5 minutes, then 15 minutes, then every hour while a project stays undone, and every hour otherwise. A create whose
   home node is on an older release goes on without the revoke (a warning) and is converged later; a create that needs the
   schema `api` or an exposed list fails with `ErrPeerBehind`.
+- **In-place restore.** The restored cluster holds the default privileges of its backup, and the row lives in the registry,
+  which the swap of the data directory does not touch. So the backup decides, as for a restore as new, never the row as it is
+  now: `backup.Service` hands the manifest's `project.default_privileges` to `Engine.RestoredDataAPI` (the optional
+  `DataAPIRestorer` capability of the Manager) once the restored cluster has started and left recovery, before the base
+  backup that follows a restore. `granted` or `revoked` becomes the row (source `copy`), with no SQL: the database already
+  holds it. Empty (a backup from before the step, or with no project block) deletes the row and converges the project at
+  once (`convergeLocked`, source `upgrade`), the revoke runs once on the restored database, and the project is looked at by
+  the next pass if the cluster is still in recovery or fails. Either way a row exists from then on, so SQL a user runs after
+  the restore keeps its effect. It runs for a point in time and for a base backup, through `supavise backups restore` and
+  through Studio (`Restore.Run`). A restore that is rolled back (the original data returns) leaves the row alone; a failure
+  to write it is the event `restore.data_api_failed` and the restore stands. A point in time after a rollback the user made
+  by hand, restored from a base backup that recorded nothing, is revoked once more, as a restore as new of that backup is.
 - **The row is a record of what Supavise did, not of the database.** SQL a user runs changes the database and leaves the row alone.
 
 ## Other operations
@@ -176,6 +192,8 @@ through `Options.Backup`; `ErrNoRestorer` when the backend does not open).
   `Pause` and `Resume` then accept `RESTORING` and leave the status alone.
 - `BeginRestore` first checks that the disk can hold the restored copy next to the current data
   (`ErrInsufficientDisk`, 409 through the API; skipped when the free space cannot be read).
+- Before that, inside the backup service, the project's Data API row follows the restored backup
+  (`RestoredDataAPI`, see the Data API section; it takes the project lock, not the status).
 - After a restore that worked, `Run` sets the cluster's role passwords to the registry's again (a
   failure is recorded as `restore.passwords_failed`; the restore stands) and prunes leftovers of earlier
   restores: the newest `data.pre-restore-*` stays, older ones and all `data.failed-restore-*` go. After

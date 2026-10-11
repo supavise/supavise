@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/supavise/supavise/internal/config"
@@ -18,7 +19,7 @@ type dataAPIConverger interface {
 // How often the leader looks for a running project that no release has put through the Data API
 // step (lifecycle.Engine.ConvergeDataAPI): soon after a pass left one undone, and now and then
 // after a clean one, for a project that appeared without a decision (a restore as new of a
-// deleted project). A project that stays undone is tried less often each time (5 minutes, 15
+// deleted project, or an in-place restore whose converge did not go through). A project that stays undone is tried less often each time (5 minutes, 15
 // minutes, then every hour), and its failure is logged when the message changes or once an hour.
 const (
 	dataAPIRetry = 5 * time.Minute
@@ -49,14 +50,54 @@ func dataAPIUpgradeRunning(p config.Paths, now time.Time) bool {
 	return running && u.ProcessAlive()
 }
 
+// dataAPIFailedHold is how long the pass stays back after an upgrade ended in phase "failed". That phase
+// is how an upgrade ends when it could not put the node back (nodeupgrade: the registry holds a
+// migration the old release does not know, which is every upgrade to a release that adds one once its
+// daemon has started), and the operator then decides between fixing forward and restoring the system
+// cluster for `supavise rollback`. A revoke made in between would outlast a rollback: the restored
+// registry loses the row, and the project databases keep the revoked defaults. A day is the time to
+// decide; a marker the operator never replaces (a fix that is not a new `supavise upgrade`) would
+// otherwise hold the step for good, so the hold ends by itself, and a later upgrade that ends replaces
+// the marker and ends it at once.
+const dataAPIFailedHold = 24 * time.Hour
+
+// dataAPIUpgradeFailed reports whether the last upgrade ended in phase "failed" less than
+// dataAPIFailedHold before now. The marker's modification time dates it: the upgrade writes it at each
+// phase change, the failing one last.
+func dataAPIUpgradeFailed(p config.Paths, now time.Time) bool {
+	u := notice.ReadUpgrade(p)
+	if u == nil || strings.ToLower(strings.TrimSpace(u.Phase)) != "failed" {
+		return false
+	}
+	at := u.Heartbeat
+	if at.IsZero() {
+		at = u.StartedAt
+	}
+	return !at.IsZero() && now.Sub(at) < dataAPIFailedHold
+}
+
 // convergeDataAPI revokes the default privileges of "public" for the Data API roles of every project
 // that existed before the release that does so (hosted Supabase does the same to all its projects on
-// 2026-10-30). It waits for the projects to be started, and while a node upgrade is running: an upgrade
-// that fails rolls the node back to the release before, and a change the old release does not know
-// should not have been made by then. The leader runs it; a follower's Engine would have nothing to
-// write the decision to.
+// 2026-10-30). It waits for the projects to be started, while a node upgrade is running, and for a day
+// after one ended as failed: an upgrade that fails rolls the node back to the release before, or ends
+// with the operator deciding whether to, and a change the old release does not know should not have
+// been made by then. The leader runs it; a follower's Engine would have nothing to write the decision
+// to.
 func convergeDataAPI(ctx context.Context, n *lifecycle.Node, log *slog.Logger) {
-	upgrading := func() bool { return dataAPIUpgradeRunning(n.Cfg.Paths(), time.Now()) }
+	paths := n.Cfg.Paths()
+	var holding bool // the failed-upgrade hold was logged for the marker that is there now
+	upgrading := func() bool {
+		now := time.Now()
+		if dataAPIUpgradeRunning(paths, now) {
+			return true
+		}
+		failed := dataAPIUpgradeFailed(paths, now)
+		if failed && !holding {
+			log.Warn("the last node upgrade ended as failed, so the Data API step (revoking the default privileges of the projects) waits; it goes ahead after a later upgrade ends, or a day after the failure", "marker", "system/upgrade.json")
+		}
+		holding = failed
+		return failed
+	}
 	convergeDataAPILoop(ctx, n.Engine, upgrading, log, dataAPIUpgradePoll, dataAPIRetry, dataAPIIdle)
 }
 

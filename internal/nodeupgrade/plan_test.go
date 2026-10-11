@@ -162,6 +162,25 @@ func TestPlanRegistryMigrationsNote(t *testing.T) {
 	}
 }
 
+// A release that adds the per-project Data API choice (migration 1400) changes the project databases too,
+// which a restore of the system cluster does not undo: the plan says so, and only for that release.
+func TestPlanSaysTheDataAPIStepOutlastsARollback(t *testing.T) {
+	n := testNode()
+	to := newInfo()
+	to.RegistryMigrations = append(append([]string(nil), migsV1...), "1400_data_api.sql")
+	var out bytes.Buffer
+	BuildPlan(n, to, PlanOptions{}).Render(&out)
+	if !strings.Contains(out.String(), "default privileges") || !strings.Contains(out.String(), "A rollback does not bring the grants back") {
+		t.Fatalf("plan:\n%s", out.String())
+	}
+	to.RegistryMigrations = migsV2
+	out.Reset()
+	BuildPlan(n, to, PlanOptions{}).Render(&out)
+	if strings.Contains(out.String(), "default privileges") {
+		t.Fatalf("a release without the Data API migration mentions it:\n%s", out.String())
+	}
+}
+
 // The impact text names what each release actually restarts and nothing else.
 func TestPlanSaysWhatRestarts(t *testing.T) {
 	n := testNode()
