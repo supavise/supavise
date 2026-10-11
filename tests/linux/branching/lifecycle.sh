@@ -9,7 +9,8 @@
 # period ($SUPAVISE_BRANCH_SERVE_IDLE, 8 s here). This script drives it over HTTP and with psql:
 #
 #   - a deletion scheduled with force=false pauses the branch (preview_project_status INACTIVE), a request
-#     through the proxy does not wake it, pause/status offers Resume, and restore brings it back;
+#     through the proxy does not wake it, and restore brings it back (pause/status and the other /platform
+#     routes take the dashboard's session JWT, which this stack does not have; Go tests cover them);
 #   - a branch nobody uses pauses by itself (paused for idleness), an HTTP request through the proxy wakes
 #     it and gets 200, and it pauses again; a psql connection to its database port, which is where the
 #     pooler connects, wakes it and runs its statement;
@@ -81,9 +82,18 @@ def branch(name):
     return b if code == 200 else None
 
 
-def project_status(ref):
-    code, p = call("GET", f"/platform/projects/{ref}")
+def parent_status():
+    # The /platform routes are the dashboard's and take a session JWT, which this stack has none of; a personal
+    # access token reads the parent through /v1.
+    code, p = call("GET", f"/v1/projects/{PARENT}")
     return p["status"] if code == 200 else None
+
+
+def db_port(ref):
+    """The branch's database port, from the connection string the stack hands out."""
+    code, dsn = call("GET", "/" + ref, base=DSN.rstrip("/"))
+    m = re.search(r"@127\.0\.0\.1:(\d+)/", dsn) if code == 200 and isinstance(dsn, str) else None
+    return int(m.group(1)) if m else None
 
 
 def wait_for(what, cond, timeout=120, every=1.0):
@@ -156,9 +166,6 @@ code, _ = call("DELETE", f"/v1/branches/{bid}?force=false")
 check(code == 200, f"force=false schedules the deletion ({code})")
 check(wait_for("a branch scheduled for deletion is INACTIVE", is_paused("sched"), timeout=120) is not None,
       "a branch scheduled for deletion is paused (Studio's Restore is enabled)")
-code, ps = call("GET", f"/platform/projects/{ref}/pause/status")
-check(code == 200 and ps["can_restore"] is True and ps["remaining_days_till_restore_disabled"] is None and ps["max_days_till_restore_disabled"] == 365,
-      f"pause/status offers Resume with no expiry ({code} {ps})")
 status, secs, hdrs = through_proxy(ref, key)
 check(status == 503 and hdrs.get("Retry-After"), f"a request does not wake a branch scheduled for deletion ({status})")
 check((branch("sched") or {}).get("preview_project_status") == "INACTIVE", "it is still paused after the request")
@@ -173,7 +180,8 @@ check(code == 200, "the restored branch is deleted for good")
 # ---- idle pause, wake on a request, wake on a database connection ------------------------------------
 ref, bid = create("idle")
 key = anon_key(ref)
-port = BASE + 3 * call("GET", f"/platform/projects/{ref}")[1]["id"]
+port = db_port(ref)
+check(port is not None and port > BASE, f"the stack hands out the branch's database port ({port})")
 code, out, _ = psql_run(ref, "select 1")
 check(code == 0 and out == "1", f"the database answers while the branch runs ({code} {out})")
 check(wait_for("an unused branch pauses by itself", is_paused("idle"), timeout=int(IDLE * 8) + 60) is not None,
@@ -226,7 +234,7 @@ check(code == 200 and wait_for("the owner resumes it", is_running("idle"), timeo
 pref, pid = create("keep", persistent=True)
 time.sleep(IDLE * 3 + 10)
 check((branch("keep") or {}).get("preview_project_status") == "ACTIVE_HEALTHY", "a persistent branch is not paused for idleness")
-check(project_status(PARENT) == "ACTIVE_HEALTHY", "the parent project is not paused for idleness")
+check(parent_status() == "ACTIVE_HEALTHY", "the parent project is not paused for idleness")
 call("DELETE", f"/v1/branches/{pid}")
 
 # ---- deleting a branch as a project goes through the branch service -----------------------------------
@@ -241,19 +249,17 @@ had_archive = os.path.isdir(archive) and any(os.scandir(archive))
 print(("note " if not had_archive else "ok   ") + f"the ephemeral branch archived WAL under {archive}: {had_archive}", flush=True)
 code, _ = call("DELETE", f"/v1/projects/{ref}")
 check(code == 200, f"DELETE /v1/projects/{{branchRef}} answers 200 ({code})")
-check(branch("viaproject") is None and project_status(ref) is None, "the branch is gone")
+check(branch("viaproject") is None and db_port(ref) is None, "the branch is gone")
 if had_archive:
     check(not os.path.exists(archive), "the ephemeral branch's WAL archive is removed (it is on the branch path of the delete)")
-check(project_status(PARENT) == "ACTIVE_HEALTHY", "the parent is still there")
+check(parent_status() == "ACTIVE_HEALTHY", "the parent is still there")
 
-# GET /v1/projects/{branchRef} answers 404, like hosted; the platform route (Studio) and the branch routes work.
+# GET /v1/projects/{branchRef} answers 404, like hosted; the branch routes work.
 ref, bid = create("v1404")
 code, _ = call("GET", f"/v1/projects/{ref}")
 check(code == 404, f"GET /v1/projects/{{branchRef}} answers 404 ({code})")
 code, _ = call("GET", f"/v1/projects/{ref}/branches")
 check(code == 404, f"GET /v1/projects/{{branchRef}}/branches answers 404 ({code})")
-code, _ = call("GET", f"/platform/projects/{ref}")
-check(code == 200, "Studio's platform route still reads the branch")
 code, _ = call("GET", f"/v1/branches/{bid}")
 check(code == 200, "GET /v1/branches/{id} reads the branch")
 call("DELETE", f"/v1/branches/{bid}")
