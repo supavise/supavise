@@ -29,6 +29,8 @@ type testEnv struct {
 	sec   secrets.Secrets
 	cfg   *config.Config
 	now   time.Time
+	// defaultPrivileges is what storeBase writes as the manifest's Data API decision.
+	defaultPrivileges string
 }
 
 func newTestEnv(t *testing.T) *testEnv {

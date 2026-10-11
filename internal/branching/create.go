@@ -253,6 +253,10 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 	req := lifecycle.CreateRequest{
 		Name: j.in.Name, OrgSlug: j.org, Region: j.parent.Region, Class: j.class, Ref: j.ref, Branch: j.info, Recreate: j.recreate,
 	}
+	// The branch's default privileges follow its parent's recorded choice: a schema-only branch is a
+	// new cluster and gets the same revoke or grant before its migrations replay, and a branch
+	// made from the parent's data holds the parent's own default privileges and copies the row.
+	req.DataAPI = lifecycle.DataAPIOptions{ExposeNewTables: s.parentExposesNewTables(ctx, j.parent.Ref), CopyFrom: j.parent.Ref}
 	method := MethodSchema
 	var stats *CloneStats
 	var reason string
@@ -452,6 +456,18 @@ func (s *Service) quarantine(ctx context.Context, ref string, err error) error {
 		return fmt.Errorf("%w (the branch could not be stopped either: %v; delete it)", err, perr)
 	}
 	return fmt.Errorf("%w (the branch was stopped; delete it or reset it)", err)
+}
+
+// parentExposesNewTables reports whether the parent was told to keep the default grants on new
+// tables (registry.PrivilegesGranted). A parent with no choice recorded, which no pass of this release
+// has looked at yet, is on its way to hosted's default, and so is its branch.
+func (s *Service) parentExposesNewTables(ctx context.Context, parentRef string) bool {
+	st := registry.DataAPIOf(s.reg)
+	if st == nil {
+		return false
+	}
+	d, err := st.GetDataAPI(ctx, parentRef)
+	return err == nil && d.DefaultPrivileges == registry.PrivilegesGranted
 }
 
 // stampManager makes the projects a backup restore creates into branches, sizes them, and has

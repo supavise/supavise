@@ -133,6 +133,43 @@ type createInput struct {
 	// DesiredInstanceSize is the compute size asked for ("small", "xlarge", ...); empty is the
 	// default size, which the node does not check against its capacity.
 	DesiredInstanceSize string `json:"desired_instance_size"`
+	// The Data API fields of the platform body (CreateProjectBody; the v1 body has none). Studio's
+	// form sends data_api_exposed_schemas: [] when "Enable Data API" is off and omits it otherwise,
+	// data_api_use_api_schema: false, and data_api_revoke_default_privileges as "Enable Data API" and
+	// not "Automatically expose new tables". The spec gives no default; see dataAPIOptions.
+	DataAPIExposedSchemas          *[]string `json:"data_api_exposed_schemas"`
+	DataAPIUseAPISchema            *bool     `json:"data_api_use_api_schema"`
+	DataAPIRevokeDefaultPrivileges *bool     `json:"data_api_revoke_default_privileges"`
+}
+
+// dataAPIOptions turns the Data API fields of a create body into the lifecycle options.
+//
+// Omitted data_api_revoke_default_privileges means true: hosted Supabase makes new tables unreachable
+// through the Data API until they are granted for every project created since 2026-05-30, whatever
+// the way it was created (changelog 45329, "Breaking change: tables not exposed to Data and GraphQL
+// API automatically"; the v1 body has no field for it at all, so the CLI, the MCP server and plain
+// API calls get the default). The platform spec gives the three fields no default and no
+// description; Studio's form sends an explicit boolean. Only an explicit false keeps the grants.
+//
+// data_api_use_api_schema creates the schema "api" and exposes it (Studio's "Switch the default API
+// schema" dialog does the same by hand). data_api_exposed_schemas names the schemas PostgREST serves:
+// omitted keeps public and graphql_public, a list replaces them, and [] (the Data API off) cannot
+// switch PostgREST off on a node, so it exposes graphql_public only, which holds no table.
+func dataAPIOptions(in createInput) (lifecycle.DataAPIOptions, error) {
+	o := lifecycle.DataAPIOptions{ExposeNewTables: in.DataAPIRevokeDefaultPrivileges != nil && !*in.DataAPIRevokeDefaultPrivileges}
+	if in.DataAPIUseAPISchema != nil {
+		o.APISchema = *in.DataAPIUseAPISchema
+	}
+	var list []string
+	if in.DataAPIExposedSchemas != nil {
+		list = *in.DataAPIExposedSchemas
+	}
+	schemas, err := lifecycle.ParseExposedSchemas(list, in.DataAPIExposedSchemas != nil, o.APISchema)
+	if err != nil {
+		return o, errf(http.StatusBadRequest, "%v", err)
+	}
+	o.ExposedSchemas = schemas
+	return o, nil
 }
 
 // createProject provisions a project through the lifecycle manager and returns it
@@ -179,8 +216,12 @@ func (s *Server) createProject(r *http.Request, in createInput) (*registry.Proje
 	if in.Region == "" && in.RegionSelection != nil && in.RegionSelection.Type == "specific" {
 		in.Region = in.RegionSelection.Code
 	}
+	dataAPI, err := dataAPIOptions(in)
+	if err != nil {
+		return nil, err
+	}
 	ref := secrets.NewRef()
-	req := lifecycle.CreateRequest{Name: strings.TrimSpace(in.Name), OrgSlug: org.Slug, Region: in.Region, Ref: ref, DBPassword: in.DBPass}
+	req := lifecycle.CreateRequest{Name: strings.TrimSpace(in.Name), OrgSlug: org.Slug, Region: in.Region, Ref: ref, DBPassword: in.DBPass, DataAPI: dataAPI}
 	if in.DesiredInstanceSize != "" {
 		size, ok := lifecycle.ParseSize(in.DesiredInstanceSize)
 		if !ok {

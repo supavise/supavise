@@ -39,6 +39,12 @@ holds the replica (replica design, sections 2.5 to 2.7 and 2.10).
   `node_resources` reads the memory and cores of the home (`lifecycle.NodeResources`; zero when the node
   does not know them), which the Engine judges a resume or a resize against (`Router` is the
   `lifecycle.NodeResourcer` given to `Engine.SetRemoteNodes`).
+- `apply_data_api` runs the Data API statements (`lifecycle.DataAPIPlane`, `lifecycle.DataAPISetup`: the revoke of the
+  default privileges of `public`, the schema `api`) in the project's database on its home. The leader's Engine
+  records the decision in the registry after the call, because a follower's registry is read-only (`Router.ApplyDataAPI`,
+  `RemotePlane.ApplyDataAPI`). A node that predates it answers 400 "unknown plane method", which `RemotePlane` turns into
+  `lifecycle.ErrPeerBehind`: the leader tries again at later passes (backing off, with no event), and a create placed on
+  that node during a rolling cluster upgrade goes on without the revoke unless it asked for a schema. Unlike the other optional capabilities, it goes over the wire.
 - A test fails when `lifecycle.Plane` gains a method that lacks a `peerapi.PlaneMethod`, an entry in the
   agent's table (`planeCalls`) or a method on `RemotePlane`.
 

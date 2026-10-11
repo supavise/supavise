@@ -184,6 +184,10 @@ func (f *fakeLocal) RestartPending(_ context.Context, p *registry.Project, _ *se
 	return true, f.rec("RestartPending " + p.Ref)
 }
 
+func (f *fakeLocal) ApplyDataAPI(_ context.Context, p *registry.Project, s lifecycle.DataAPISetup) error {
+	return f.rec(fmt.Sprintf("ApplyDataAPI %s revoke=%v api=%v", p.Ref, s.RevokeDefaultPrivileges, s.APISchema))
+}
+
 var _ lifecycle.FullPlane = (*fakeLocal)(nil)
 
 // testProject is a project of the registry's shape that survives JSON.

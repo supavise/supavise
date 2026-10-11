@@ -58,7 +58,16 @@ const (
 	planeStartTimer    peerapi.PlaneMethod = "start_timer"
 	planeStopTimer     peerapi.PlaneMethod = "stop_timer"
 	planeNodeResources peerapi.PlaneMethod = "node_resources"
+	// planeApplyDataAPI runs the Data API statements (lifecycle.DataAPIPlane) in a project's database on
+	// its home node. An older node answers an unknown method, and the leader tries again at its next pass.
+	planeApplyDataAPI peerapi.PlaneMethod = "apply_data_api"
 )
+
+// dataAPIArgs are the arguments of planeApplyDataAPI.
+type dataAPIArgs struct {
+	Project *registry.Project      `json:"project"`
+	Setup   lifecycle.DataAPISetup `json:"setup"`
+}
 
 // CheckpointReader reads the control file of a project's cluster on its home node.
 type CheckpointReader interface {

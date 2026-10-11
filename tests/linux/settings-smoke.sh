@@ -185,6 +185,56 @@ TURL=$(sudo grep '^GOTRUE_MAILER_TEMPLATES_RECOVERY=' "$SUPAVISE_STATE/projects/
 [[ $(http_code -H "Host: api.$SUPAVISE_DOMAIN" "http://127.0.0.1/internal/templates/$REF/recovery?${TURL#*\?}") == 404 ]] || fail "the template is reachable through the public proxy"
 must 200 PATCH "$CFG/config/auth" '{"disable_signup":true}'
 
+# ---- the Data API of a new project (hosted Supabase since 2026-05-30) ---------------------------------------
+# A table created as postgres (the SQL editor, a migration, the CLI) is not reachable through the Data API
+# until it is granted. The project above was created by `supavise projects create` with no flag. A project
+# created with data_api_revoke_default_privileges: false keeps the grants new tables used to get.
+log "data api: a table created without a grant is refused with 42501, a grant opens it"
+dbq() { # CFG SQL: the answer's body on stdout; returns 1, with the answer in the log, unless the API says 201
+  local code
+  code=$(api POST "$1/database/query" -o "$WORK/dbq.body" -w '%{http_code}' -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$2")") || { log "database/query on $1: no answer"; return 1; }
+  cat "$WORK/dbq.body"
+  [[ $code == 201 ]] || { log "database/query on $1 answered $code: $(head -c 500 "$WORK/dbq.body")"; return 1; }
+}
+# rest_body HOST KEY TABLE: the body of a read of TABLE through the proxy, once PostgREST knows the table.
+rest_body() {
+  local host=$1 key=$2 table=$3 b="" n
+  for ((n = 0; n < 30; n++)); do
+    b=$(curl -sS -m 30 -H "Host: $host" -H "apikey: $key" "http://127.0.0.1/rest/v1/$table?select=id" || true)
+    [[ $b == *42501* || $b == "["* ]] && break # 42501 permission denied, or rows (an empty list too)
+    sleep 2
+  done
+  printf '%s' "$b"
+}
+dbq "$CFG" "create table public.da_closed (id int primary key); insert into public.da_closed values (1); notify pgrst, 'reload schema';" >/dev/null || fail "create public.da_closed"
+BODY=$(rest_body "$HOST" "$PUB" da_closed)
+[[ $BODY == *42501* ]] || fail "a table created without grants in a new project answered '$BODY'; hosted answers 42501 (permission denied)"
+[[ $(sql "select count(*) from pg_default_acl d join pg_namespace n on n.oid = d.defaclnamespace join pg_roles r on r.oid = d.defaclrole cross join lateral aclexplode(d.defaclacl) a join pg_roles g on g.oid = a.grantee where n.nspname = 'public' and r.rolname = 'postgres' and d.defaclobjtype = 'r' and g.rolname in ('anon', 'authenticated', 'service_role') and a.privilege_type in ('SELECT', 'INSERT', 'UPDATE', 'DELETE')") == 0 ]] || fail "the default privileges on tables of public still give the Data API roles access"
+[[ $(sql "select count(*) from pg_default_acl d join pg_namespace n on n.oid = d.defaclnamespace join pg_roles r on r.oid = d.defaclrole cross join lateral aclexplode(d.defaclacl) a join pg_roles g on g.oid = a.grantee where n.nspname = 'public' and r.rolname = 'postgres' and g.rolname in ('anon', 'authenticated', 'service_role') and ((d.defaclobjtype = 'S' and a.privilege_type in ('USAGE', 'SELECT')) or (d.defaclobjtype = 'f' and a.privilege_type = 'EXECUTE'))") == 0 ]] || fail "the default privileges on sequences or functions of public still give the Data API roles access"
+[[ $(sysql supavise "select default_privileges || ':' || source from supavise.project_data_api where ref = '$REF'") == revoked:create ]] || fail "the registry does not record a revoked choice at creation: $(sysql supavise "select * from supavise.project_data_api where ref = '$REF'")"
+dbq "$CFG" "grant select on public.da_closed to anon; notify pgrst, 'reload schema';" >/dev/null || fail "grant on public.da_closed"
+for ((i = 0; i < 20; i++)); do
+  [[ $(pcode GET /rest/v1/da_closed -H "apikey: $PUB") == 200 ]] && break
+  sleep 1
+done
+[[ $(pcode GET /rest/v1/da_closed -H "apikey: $PUB") == 200 ]] || fail "a granted table is not served"
+
+log "data api: a project created with data_api_revoke_default_privileges false still grants new tables"
+ORG_SLUG=$(api GET /v1/organizations | json_get 'd[0]["slug"]') || fail "organization slug"
+OPEN=$(curl -sS -m 600 -X POST -H "Host: api.$SUPAVISE_DOMAIN" -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' http://127.0.0.1/platform/projects \
+  -d "{\"name\":\"da-open\",\"organization_slug\":\"$ORG_SLUG\",\"db_pass\":\"Settings-open-$RANDOM$RANDOM\",\"db_region\":\"us-east-1\",\"cloud_provider\":\"AWS\",\"data_api_revoke_default_privileges\":false,\"data_api_use_api_schema\":false}" | json_get 'd["ref"]') || fail "creating the project that keeps the grants"
+[[ $OPEN =~ ^[a-z]{20}$ ]] || fail "bad ref '$OPEN'"
+for ((i = 0; i < 180; i++)); do
+  [[ $(api GET "/v1/projects/$OPEN" | json_get 'd["status"]' 2>/dev/null || true) == ACTIVE_HEALTHY ]] && break
+  sleep 3
+done
+[[ $(api GET "/v1/projects/$OPEN" | json_get 'd["status"]') == ACTIVE_HEALTHY ]] || fail "$OPEN did not become ACTIVE_HEALTHY"
+OPEN_PUB=$(api GET "/v1/projects/$OPEN/api-keys?reveal=true" | json_get '[x["api_key"] for x in d if str(x.get("api_key","")).startswith("sb_publishable_")][0]') || fail "keys of $OPEN"
+dbq "/v1/projects/$OPEN" "create table public.da_open (id int primary key); insert into public.da_open values (1); notify pgrst, 'reload schema';" >/dev/null || fail "create public.da_open"
+BODY=$(rest_body "$OPEN.api.$SUPAVISE_DOMAIN" "$OPEN_PUB" da_open)
+[[ $BODY == "["* ]] || fail "a table created without grants in a project that keeps them answered '$BODY', want its rows"
+[[ $(sysql supavise "select default_privileges || ':' || source from supavise.project_data_api where ref = '$OPEN'") == granted:create ]] || fail "the registry does not record the granted choice of $OPEN"
+
 log "postgrest: a newly exposed schema"
 sql "create schema if not exists api_extra; create table if not exists api_extra.items (id int primary key); insert into api_extra.items values (1) on conflict do nothing; grant usage on schema api_extra to anon; grant select on api_extra.items to anon;" >/dev/null
 [[ $(pcode GET /rest/v1/items -H "apikey: $PUB" -H 'Accept-Profile: api_extra') != 200 ]] || fail "an unexposed schema is served"

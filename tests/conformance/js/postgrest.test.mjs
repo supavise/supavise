@@ -3,7 +3,7 @@
 // allowing and denying by role.
 import assert from 'node:assert/strict'
 import { before, describe, test } from 'node:test'
-import { client, keys, kinds, makeUser, projects, signedIn, sql, waitForRest } from './lib.mjs'
+import { client, keys, kinds, makeUser, projects, signedIn, sql, suffix, waitFor, waitForRest } from './lib.mjs'
 
 const p = projects.a
 
@@ -31,6 +31,63 @@ before(async () => {
     notify pgrst, 'reload schema';
   `)
   await waitForRest(p, keys.a.secret, 'conf_todos')
+})
+
+// A new project does not expose new tables, as on hosted Supabase since 2026-05-30: the project was created
+// through POST /v1/projects, which has no field for it, and a table created as postgres (the role of the
+// SQL endpoint, the SQL editor and migrations) answers 42501 until it is granted. GraphQL is off as well
+// until pg_graphql is enabled.
+describe('the Data API of a new project', () => {
+  const table = `conf_ungranted_${suffix}`
+  const read = (key) => fetch(`${p.url}/rest/v1/${table}?select=id`, { headers: { apikey: key, Authorization: `Bearer ${key}` } })
+
+  test('a table created without a grant answers 42501, a grant opens it', async () => {
+    await sql(p, `
+      create table public.${table} (id int primary key);
+      insert into public.${table} values (1);
+      notify pgrst, 'reload schema';
+    `)
+    await waitFor(`${table} in the PostgREST schema cache`, async () => (await read(keys.a.publishable)).status !== 404, { timeout: 60_000 })
+    for (const key of [keys.a.publishable, keys.a.anon, keys.a.secret, keys.a.serviceRole]) {
+      const r = await read(key)
+      const text = await r.text()
+      assert.ok(r.status === 401 || r.status === 403, `status ${r.status}: ${text}`)
+      assert.equal(JSON.parse(text).code, '42501', text)
+    }
+    await sql(p, `grant select on public.${table} to anon; notify pgrst, 'reload schema';`)
+    await waitFor(`${table} readable by anon`, async () => (await read(keys.a.publishable)).status === 200, { timeout: 60_000 })
+    assert.deepEqual(await (await read(keys.a.anon)).json(), [{ id: 1 }])
+    // The grant is the anon role's alone.
+    assert.equal((await read(keys.a.secret)).status, 403)
+  })
+
+  test('the default privileges of public are revoked for the three roles', async () => {
+    const rows = await sql(p, `
+      select d.defaclobjtype as kind, a.privilege_type as privilege, g.rolname as role
+      from pg_default_acl d
+      join pg_namespace n on n.oid = d.defaclnamespace
+      join pg_roles r on r.oid = d.defaclrole
+      cross join lateral aclexplode(d.defaclacl) a
+      join pg_roles g on g.oid = a.grantee
+      where n.nspname = 'public' and r.rolname = 'postgres' and g.rolname in ('anon', 'authenticated', 'service_role')
+        and ((d.defaclobjtype = 'r' and a.privilege_type in ('SELECT', 'INSERT', 'UPDATE', 'DELETE'))
+          or (d.defaclobjtype = 'S' and a.privilege_type in ('USAGE', 'SELECT'))
+          or (d.defaclobjtype = 'f' and a.privilege_type = 'EXECUTE'))`)
+    assert.deepEqual(rows, [])
+  })
+
+  test('GraphQL answers that pg_graphql is not enabled, until it is', async (t) => {
+    const [{ installed }] = await sql(p, "select exists (select 1 from pg_extension where extname = 'pg_graphql') as installed")
+    if (installed) return t.skip('pg_graphql is already enabled in this project')
+    const r = await fetch(`${p.url}/graphql/v1`, {
+      method: 'POST',
+      headers: { apikey: keys.a.anon, Authorization: `Bearer ${keys.a.anon}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: '{ __typename }' }),
+    })
+    const text = await r.text()
+    assert.match(text, /not enabled/i, text)
+    assert.equal(JSON.parse(text).data?.__typename, undefined, text)
+  })
 })
 
 for (const kind of kinds(keys.a)) {

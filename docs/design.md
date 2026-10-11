@@ -48,7 +48,7 @@ The code is split by job: `api`, `proxy`, `units`, `lifecycle`, `backup`, `artif
 ## 5. Creating a project
 
 1. Allocate a 20-letter ref, JWT secret, API keys, DB password and loopback ports.
-2. Render and start `supavise-postgres@<ref>`, then run the upstream init migrations and roles (the artifact ships them), then start `supavise-gotrue@<ref>` and `supavise-postgrest@<ref>`.
+2. Render and start `supavise-postgres@<ref>`, then run the upstream init migrations and roles (the artifact ships them), then start `supavise-gotrue@<ref>` and `supavise-postgrest@<ref>`. Once the cluster answers, revoke the default privileges of `public` for `anon`, `authenticated` and `service_role` unless the request keeps them (hosted's default for new projects since 2026-05-30), and record the choice in the registry so that a restore or a branch follows it.
 3. `PUT /api/tenants/<ref>` on Supavisor, `POST /api/tenants` on Realtime, `POST /tenants/<ref>` on Storage.
 4. Add the host route to the proxy's table; request a certificate if not under the wildcard.
 5. Return the project to Studio, the CLI or the MCP server in Management-API shape.
