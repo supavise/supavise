@@ -4,13 +4,16 @@ This guide picks up after the install in the [README](../README.md#get-started).
 
 - [Claim the node and sign in](#claim-the-node-and-sign-in)
 - [Create a project and connect an app](#create-a-project-and-connect-an-app)
+  - [New tables need a grant](#new-tables-need-a-grant)
 - [Use the Supabase CLI](#use-the-supabase-cli)
 - [Give an agent or a preview its own branch](#give-an-agent-or-a-preview-its-own-branch)
 - [Connect an AI tool to a project](#connect-an-ai-tool-to-a-project)
+- [Check a project with the advisors](#check-a-project-with-the-advisors)
 - [Back up and restore](#back-up-and-restore)
 - [Move a project from hosted Supabase](#move-a-project-from-hosted-supabase)
 - [Move a project off Supavise](#move-a-project-off-supavise)
 - [Monitor the node](#monitor-the-node)
+- [What the dashboard shows differently](#what-the-dashboard-shows-differently)
 - [Read replicas and failover](#read-replicas-and-failover)
 - [Updates and maintenance](#updates-and-maintenance)
 - [How Supavise compares](#how-supavise-compares)
@@ -423,7 +426,7 @@ Studio is the real hosted dashboard. Where a page depends on something a server 
 - **Logs and Reports.** The Logs Explorer and the log pages of each service show an error that points to `supavise logs <ref>`. The charts of the Auth, Edge Functions and some other reports have no way to show an error and stay empty.
 - **Requests on the project home.** The chart counts the requests that the server's proxy served to the project's REST, Auth, Storage and Realtime APIs, by minute, hour or day. The counts live in memory: they start at zero when `supavise` restarts, and on a two-server cluster they leave out the requests that the second server served.
 - **Database Webhooks.** Select **Enable webhooks** to create the `supabase_functions` schema and turn on `pg_net`. If you created a schema with that name yourself, the button fails with a message: drop or rename your schema first. Webhooks you create after that send an HTTP request when a row is inserted, updated or deleted, as you chose; the response is in `net._http_response`. A branch created with data cannot send those requests to the network unless it was created with `--allow-egress`.
-- **Features a server cannot offer.** Iceberg and vector buckets in Storage are hidden. SSL enforcement shows as unavailable. Adding a Third-party Auth provider, changing the JWT secret from the dashboard, creating JWT signing keys and sending feedback are refused with a message; to rotate a project's JWT secret and API keys, run `sudo -u supavise supavise projects rotate-keys <ref>`.
+- **Features a server cannot offer.** Iceberg and vector buckets in Storage are hidden. SSL enforcement shows as unavailable. Adding a Third-party Auth provider, creating JWT signing keys and sending feedback are refused with a message. A project signs its tokens with the legacy JWT secret: change it under **Project settings**, **JWT keys**, **Legacy JWT secret**, or rotate it together with the API keys with `sudo -u supavise supavise projects rotate-keys <ref>`.
 
 ## Read replicas and failover
 
@@ -472,14 +475,17 @@ By default every move is yours to start. `[failover] mode = "project"` or `"serv
 | Organizations | One | Many, each with its own members and projects | Many |
 | Dashboard | Studio for a single project | Supabase Studio in its hosted, multi-project mode | Supabase Studio |
 | Management API and `supabase link` | Not available | Yes: the parts that Studio, the Supabase CLI and the MCP server call | Yes |
-| Remote MCP server with OAuth sign-in | Not available | Yes, at `api.<domain>/mcp`, one organization per sign-in | Yes |
+| Remote MCP server with OAuth sign-in | No OAuth: the stack's MCP route stays closed to outside connections until you open it | Yes, at `api.<domain>/mcp`, one organization per sign-in | Yes |
 | Logs pages | Logflare and Vector, with an override file | No log store. `supavise logs <ref>` on the server reads the journal; the dashboard says so | Yes |
 | Branching | Not available | Yes, schema-only or with data | Yes |
-| Security and Performance Advisors | Studio's page for its one project; nothing for the CLI or an MCP client | Yes: Studio, `supabase db advisors` and the MCP server, without the health checks | Yes |
+| Security and Performance Advisors | Studio's advisor pages for its one project; `supabase db advisors --db-url` checks a database by its URL | Yes: Studio, `supabase db advisors --linked` and the MCP server's `get_advisors`, with the database checks Studio runs and checks from the Auth settings; the health checks answer "unavailable" | Yes, with health checks too, and the Management API |
+| Data API exposure of new tables | New tables in `public` keep the default grants to `anon`, `authenticated` and `service_role` unless you revoke them (the change is a platform default); `pg_graphql` is off in new installs | New projects expose no new `public` table until you grant it, and `pg_graphql` is off; an upgrade revokes the default grants of existing projects once, and existing tables keep their grants | New projects follow it from 2026-05-30 (`pg_graphql` off from 2026-05-18); existing projects are scheduled for 2026-10-30 |
+| Database Webhooks | Yes: the stack's database setup creates `pg_net` and the `supabase_functions` schema | Yes: **Enable webhooks** sets them up for a project; it refuses a `supabase_functions` schema that a project created itself | Yes |
 | Point-in-time restore | Not included; you set up backups yourself | Yes, in the dashboard (in place) or with `supavise backups restore` on the server | Yes |
+| Move a project from hosted Supabase | Supabase's restore guide covers the database only; Storage files, Edge Functions, settings and keys are yours to move | Yes: [a guide](#move-a-project-from-hosted-supabase) moves the database, users, Storage files, Edge Functions, settings and legacy keys, and [back](#move-a-project-off-supavise) | Between hosted projects, with Supabase's backup and restore guide |
 | Edge Functions | Yes | Yes, on by default | Yes |
 | Team roles and SSO | One shared dashboard login | Owner, Administrator, Developer and Read-only roles; SAML SSO | Yes |
-| Database report: CPU, memory, connections, disk | Not available | Yes, measured on the server and kept for 92 days; network, disk I/O budget and Realtime charts stay at zero | Yes |
+| Usage reports and resource warnings: CPU, memory, connections, disk | Not available: Supabase's docs say reports are not available for self-hosted instances | Yes: Studio's Database report and resource warnings, measured on the server and kept for 92 days; the network, disk I/O budget, memory commitment, PgBouncer and Realtime charts stay at zero | Yes; detail depends on your plan |
 | Read replicas | Not available | Yes, per project on a second Supavise server, added in Studio or with `supavise replicas` | Yes |
 | API load balancer | Not available | Yes, once a project has a replica: reads go to the nearest healthy database | Yes |
 | Failover | Not built in; you set it up yourself | A switchover or failover of one project or the whole server, by hand; automatic on AWS only, with a fence | Managed by Supabase; depends on your plan |
