@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/projectconfig"
@@ -293,7 +294,13 @@ func (e *Engine) ConvergeDataAPI(ctx context.Context) map[string]error {
 	return failed
 }
 
+// convergeTimeout bounds the step for one project, so that a project whose lock another operation
+// holds, or whose cluster hangs, does not hold up the others; the next pass tries it again.
+const convergeTimeout = 2 * time.Minute
+
 func (e *Engine) convergeOne(ctx context.Context, ref string) error {
+	ctx, cancel := context.WithTimeout(ctx, convergeTimeout)
+	defer cancel()
 	unlock, err := e.lock(ctx, ref)
 	if err != nil {
 		return err
