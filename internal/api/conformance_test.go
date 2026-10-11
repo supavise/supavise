@@ -207,11 +207,11 @@ func TestImplementedRoutesMatchSpec(t *testing.T) {
 		{key: "POST /v1/projects/{ref}/cli/login-role", body: map[string]any{"read_only": false}, check: want("ttl_seconds", 3600)},
 		{key: "DELETE /v1/projects/{ref}/cli/login-role", check: want("message", "ok")},
 		// The lints of the Auth settings are there with the SQL lints (the fake database finds none).
-		{key: "GET /v1/projects/{ref}/advisors/security", check: want("lints.0.name", "auth_leaked_password_protection")},
+		{key: "GET /v1/projects/{ref}/advisors/security", check: want("lints.0.name", "auth_otp_long_expiry")},
 		{key: "GET /v1/projects/{ref}/advisors/performance", check: want("lints.0.name", "auth_db_connections_absolute")},
-		{key: "GET /platform/projects/{ref}/run-lints", check: want("3.name", "auth_db_connections_absolute")},
-		{key: "POST /v2/projects/{ref}/advisors/run", body: map[string]any{"data": map[string]any{"type": "project_advisors", "attributes": map[string]any{"lints": []map[string]string{{"name": "auth_leaked_password_protection"}, {"name": "log_auth_error_rate_high"}}}}}, check: want("data.attributes.lints.1.name", "advisor_check_unavailable")},
-		{key: "POST /platform/projects/{ref}/notifications/advisor/exceptions", body: map[string]any{"exceptions": []map[string]any{{"lint_name": "auth_insufficient_mfa_options", "is_disabled": true}}}, check: want("exceptions.0.lint_name", "auth_insufficient_mfa_options")},
+		{key: "GET /platform/projects/{ref}/run-lints", check: want("1.name", "auth_db_connections_absolute")},
+		{key: "POST /v2/projects/{ref}/advisors/run", body: map[string]any{"data": map[string]any{"type": "project_advisors", "attributes": map[string]any{"lints": []map[string]string{{"name": "auth_otp_long_expiry"}, {"name": "log_auth_error_rate_high"}}}}}, check: want("data.attributes.lints.1.name", "advisor_check_unavailable")},
+		{key: "POST /platform/projects/{ref}/notifications/advisor/exceptions", body: map[string]any{"exceptions": []map[string]any{{"lint_name": "auth_otp_long_expiry", "is_disabled": true}}}, check: want("exceptions.0.lint_name", "auth_otp_long_expiry")},
 		{key: "GET /platform/projects/{ref}/notifications/advisor/exceptions", check: want("exceptions.0.is_disabled", true)},
 		// secrets
 		{key: "POST /v1/projects/{ref}/secrets", body: []map[string]string{{"name": "FOO", "value": "bar"}}, status: 201},

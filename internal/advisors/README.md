@@ -46,19 +46,29 @@ read it with `current_setting` to know what the Data API exposes. The API runs t
 rows of the last statement.
 
 **The configuration lints** (`config.go`) are the findings hosted computes from project settings,
-for the ones Supavise can: `auth_leaked_password_protection`, `auth_insufficient_mfa_options`,
-`auth_otp_long_expiry` and `auth_db_connections_absolute`. Their texts and links are what hosted's
-Management API returns for the same finding (observed in published advisor output and in the
-Supabase CLI's recorded responses); the triggers are Supavise's reading of them:
+for the ones Supavise can: `auth_otp_long_expiry` and `auth_db_connections_absolute`. The names,
+levels, categories and links are those of hosted's Management API specs and responses.
+`auth_db_connections_absolute` is word for word what the Supabase CLI's recorded responses hold
+(v2.120.0); `auth_otp_long_expiry`'s texts come from published advisor output, and the trigger of
+both is Supavise's reading of the setting they name:
 
 | Lint | Level, category | Reported when |
 |---|---|---|
-| `auth_leaked_password_protection` | WARN, security | `password_hibp_enabled` is off |
-| `auth_insufficient_mfa_options` | WARN, security | fewer than two of TOTP, phone and WebAuthn can both enroll and verify |
 | `auth_otp_long_expiry` | WARN, security | the email provider is on and `mailer_otp_exp` is over 3600 seconds |
 | `auth_db_connections_absolute` | INFO, performance | `db_max_pool_size_unit` is not `percent`; the detail names `db_max_pool_size` |
 
-Not computed, with the reason in `ConfigLints`: the compliance checks (`ssl_not_enforced`,
+The lints read the effective setting. A new hosted project has `mailer_otp_exp` 3600 and
+`db_max_pool_size` 10, and the CLI's recording of one answers `auth_db_connections_absolute` and
+nothing else. Supavise starts at GoTrue's own 86400 and 5, so a new Supavise project also answers
+`auth_otp_long_expiry` until its OTP expiry is an hour or less, and its connection detail says 5.
+Moving the default belongs to the Auth settings (`internal/projectconfig`, and the unit's
+environment so that GoTrue gets it); it would shorten the OTP of existing projects at their next
+restart, so it is a separate decision.
+
+Not computed, with the reason in `ConfigLints`: `auth_leaked_password_protection` and
+`auth_insufficient_mfa_options` (the CLI's recording of a hosted project that is entitled to both
+features answers neither while `password_hibp_enabled` is off and no MFA method is on, and the
+rule behind them is unknown), the compliance checks (`ssl_not_enforced`, `log_connections_not_enabled`,
 `network_restrictions_not_set`, `pitr_not_enabled`, `password_requirements_min_length`,
 `auth_password_policy_missing`, `no_backup_admin`, `leaked_service_key`), `auth_otp_short_length`,
 `auth_allow_anonymous_sign_ins` and `vulnerable_postgres_version`.
@@ -79,11 +89,15 @@ project that is not running answers `project_not_active`.
   `run-lints` returns all of them, and its pages split them the same way.
 - **Cache.** `Runner` keeps the SQL result of a project for 10 seconds (`DefaultTTL`) and gives
   callers that arrive during a run the same run, so a dashboard whose widgets all ask costs the
-  database one query. A failure is not kept. `Invalidate` drops the entry and also discards a run
-  that began before it. The API calls it after a migration and after a statement that may change the
-  schema (`create`, `alter`, `drop`, `grant`, `revoke`, `truncate`, `comment on`), whether it came
-  through `database/query` or Studio's SQL editor; a change made over a direct connection shows
-  within the 10 seconds.
+  database one query. A failure is not kept, and entries past their TTL go when the next result is
+  stored. A project has one run at a time and the node at most `MaxConcurrent` (4): `Invalidate`
+  drops the entry and marks a run under way as stale, which finishes for the callers that joined
+  it but is not kept, and a caller that arrives after it waits for that run and then shares one new
+  run with the others that waited. The API calls `Invalidate` after a migration, after a statement
+  that may change the schema (`create`, `alter`, `drop`, `grant`, `revoke`, `truncate`,
+  `comment on`) that came through `database/query` or Studio's SQL editor (the JSON body is
+  decoded first, because a line break is `\n` there), and when it deletes a project. A change
+  made over a direct or pooler connection shows within the 10 seconds.
 - **Time.** The query stops after 30 seconds in the database (`StatementTimeout`) and the API
   answers 504. A run is bounded by its own context and not by the first caller's, which may leave.
 - **Rules.** `Exception` is a rule of the Advisor Rules page (a feature preview in Studio). A rule
