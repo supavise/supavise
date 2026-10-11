@@ -39,7 +39,7 @@ before(async () => {
 // until pg_graphql is enabled.
 describe('the Data API of a new project', () => {
   const table = `conf_ungranted_${suffix}`
-  const read = (key) => fetch(`${p.url}/rest/v1/${table}?select=id`, { headers: { apikey: key } })
+  const read = (key) => fetch(`${p.url}/rest/v1/${table}?select=id`, { headers: { apikey: key, Authorization: `Bearer ${key}` } })
 
   test('a table created without a grant answers 42501, a grant opens it', async () => {
     await sql(p, `
