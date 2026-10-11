@@ -27,11 +27,12 @@ func (s *Server) routesAnalytics(add func(string, handlerFunc)) {
 		add("GET "+p+name, s.logsUnavailable)
 		add("POST "+p+name, s.logsUnavailable)
 	}
-	// Endpoints whose rows Hosted derives from logs (function invocations, auth events, the
-	// last use of an API key, service health).
+	// Endpoints whose rows Hosted derives from logs (function invocations, the last use of an API
+	// key, service health). auth.metrics is a refusal (unsupported.go): Studio's Auth overview shows
+	// zero sign-ups for an empty answer.
 	for _, name := range []string{
 		"functions.combined-stats", "functions.req-stats", "functions.resource-usage",
-		"auth.metrics", "api_keys.last_used.otel", "project.metrics", "project.metrics.otel", "service-health",
+		"api_keys.last_used.otel", "project.metrics", "project.metrics.otel", "service-health",
 	} {
 		add("GET "+p+name, s.logsUnavailable)
 	}

@@ -28,7 +28,6 @@ func TestLogEndpointsSayThereAreNoLogs(t *testing.T) {
 		{"GET", pp + "functions.combined-stats", "GET /platform/projects/{ref}/analytics/endpoints/functions.combined-stats"},
 		{"GET", pp + "functions.req-stats", "GET /platform/projects/{ref}/analytics/endpoints/functions.req-stats"},
 		{"GET", pp + "functions.resource-usage", "GET /platform/projects/{ref}/analytics/endpoints/functions.resource-usage"},
-		{"GET", pp + "auth.metrics", "GET /platform/projects/{ref}/analytics/endpoints/auth.metrics"},
 		{"GET", pp + "api_keys.last_used.otel", "GET /platform/projects/{ref}/analytics/endpoints/api_keys.last_used.otel"},
 		{"GET", pp + "project.metrics", "GET /platform/projects/{ref}/analytics/endpoints/project.metrics"},
 		{"GET", pp + "project.metrics.otel", "GET /platform/projects/{ref}/analytics/endpoints/project.metrics.otel"},
