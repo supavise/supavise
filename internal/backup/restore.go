@@ -372,6 +372,9 @@ func (s *Service) restoreInPlace(ctx context.Context, plan *RestorePlan, opts Re
 		}
 		return nil, fmt.Errorf("backup: recovery of %s did not finish; the original data is back in place and the failed restore is kept in %s: %w", ref, failed, err)
 	}
+	// The restore stands from here on: the original data is not coming back. Settle the Data API row
+	// first, so that the base backup below records the decision the database holds.
+	s.restoreDataAPI(ctx, ref, &plan.Manifest)
 	if done {
 		// The new timeline has no base backup yet, and the ones of the old timeline taken
 		// after the fork are unusable for it. Take one now rather than at the next timer run.
@@ -384,6 +387,29 @@ func (s *Service) restoreInPlace(ctx context.Context, plan *RestorePlan, opts Re
 	}
 	s.opt.Log.Info("restored in place", "ref", ref, "original_data", aside)
 	return s.opt.Registry.GetProject(ctx, ref)
+}
+
+// restoreDataAPI makes the project's recorded Data API decision follow the backup an in-place restore
+// brought back. The restored cluster holds the default privileges of that backup (or of the point in time
+// replayed from it), while the decision is a registry row that the swap of the data directory leaves
+// alone; so, as for a restore as new (restoreAsNew), the backup decides and never the row as it is now.
+// The manifest's project block carries it: "granted" or "revoked" is recorded as the project's choice,
+// and a backup that recorded nothing (it predates the node's Data API step, or has no project block)
+// lets the project be converged again, which revokes the old grants once. lifecycle.Engine does both
+// (RestoredDataAPI). A failure is logged and recorded as restore.data_api_failed; the restore stands.
+func (s *Service) restoreDataAPI(ctx context.Context, ref string, m *Manifest) {
+	r, ok := s.opt.Manager.(lifecycle.DataAPIRestorer)
+	if !ok {
+		return
+	}
+	var choice registry.DefaultPrivileges
+	if m.Project != nil {
+		choice = registry.DefaultPrivileges(m.Project.DefaultPrivileges)
+	}
+	if err := r.RestoredDataAPI(ctx, ref, choice); err != nil {
+		s.opt.Log.Warn("could not bring the Data API decision of the project in line with the restored backup; its default privileges may not match what the registry says", "ref", ref, "backup", m.ID, "err", err)
+		_ = s.opt.Registry.AppendEvent(ctx, ref, "restore.data_api_failed", map[string]any{"backup": m.ID, "error": err.Error()})
+	}
 }
 
 // rollbackInPlace undoes a failed in-place restore: stops the project (it may already be

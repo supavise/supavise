@@ -307,8 +307,9 @@ func (e *Engine) exposeSchemasAtCreate(ctx context.Context, ref, schemas string)
 // ConvergeDataAPI brings every running project that no release looked at before to hosted's default:
 // the default privileges of "public" are revoked for anon, authenticated and service_role, once,
 // and the registry records it (supavise.project_data_api, source "upgrade"). A project with a row
-// is never touched again, so a user who rolled the revoke back with SQL keeps the rollback.
-// Existing tables keep their grants. The leader's Engine drives every project, through the plane
+// is never touched again, so a user who rolled the revoke back with SQL keeps the rollback; an
+// in-place restore is the one thing that rewrites a row (RestoredDataAPI). Existing tables keep their
+// grants. The leader's Engine drives every project, through the plane
 // router for one homed on another node; the SQL runs on the primary only, and replicas get it by
 // replication. A follower's Engine, whose registry is read-only, does nothing. The result holds the
 // projects that could not be done now (the cluster does not answer, the home node is behind): they
@@ -408,6 +409,68 @@ func (e *Engine) convergeLocked(ctx context.Context, p *registry.Project) error 
 		return fmt.Errorf("record the Data API choice of %s: %w", p.Ref, err)
 	}
 	e.event(ctx, p.Ref, EventDataAPIRevoked, map[string]string{"source": registry.DataAPIUpgrade})
+	return nil
+}
+
+// DataAPIRestorer is the optional Manager capability behind the Data API step of an in-place restore
+// (internal/backup, restoreInPlace). The Engine has it.
+type DataAPIRestorer interface {
+	// RestoredDataAPI makes the recorded decision of ref follow the backup that an in-place restore
+	// has brought back, once the restored cluster has been started and has left recovery.
+	RestoredDataAPI(ctx context.Context, ref string, backup registry.DefaultPrivileges) error
+}
+
+var _ DataAPIRestorer = (*Engine)(nil)
+
+// RestoredDataAPI is the Data API step of an in-place restore. The restored cluster holds the default
+// privileges its backup held, and the registry row, which lives in the system cluster, is untouched by
+// the swap, so the two can disagree: a restore to a time before the node revoked the defaults brings
+// the old grants back under a row that says "revoked", and nothing looks at a project with a row again.
+// So the backup decides, as it does for a restore as new (DataAPIOptions.CopyChoice), never the row as
+// it is now:
+//
+//   - A backup that recorded "granted" or "revoked" (its manifest's project block) sets the row to
+//     that, source "copy". No SQL runs: the database already holds what the backup held.
+//   - A backup that recorded nothing (taken before the node knew the step, or a manifest without a
+//     project block) removes the row and converges the project now, as for any existing project: the
+//     revoke runs once on the restored database and the row is written again, source "upgrade". If the
+//     cluster is still in recovery or answers with an error, the next pass of ConvergeDataAPI does it.
+//
+// Either way the project has a row from here on, so a user who rolls the revoke back with SQL after the
+// restore keeps the rollback. A PITR to a time after a rollback made by hand, from a base backup that
+// recorded nothing, is revoked once more, as a restore as new of the same backup is.
+//
+// It takes the project's lock, not the status: it runs while the project is RESTORING (the Management
+// API) or ACTIVE (`supavise backups restore`). A failure to write the row is returned; the restore
+// stands. A follower's Engine, whose registry is read-only, and the system project do nothing.
+func (e *Engine) RestoredDataAPI(ctx context.Context, ref string, backup registry.DefaultPrivileges) error {
+	store := registry.DataAPIOf(e.reg)
+	if store == nil || e.opts.ReadOnly || ref == config.SystemRef {
+		return nil
+	}
+	unlock, err := e.lock(ctx, ref)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if backup == registry.PrivilegesGranted || backup == registry.PrivilegesRevoked {
+		if err := store.PutDataAPI(ctx, registry.DataAPI{Ref: ref, DefaultPrivileges: backup, Source: registry.DataAPICopy}); err != nil {
+			return fmt.Errorf("record the Data API choice of %s from its backup: %w", ref, err)
+		}
+		return nil
+	}
+	if err := store.DeleteDataAPI(ctx, ref); err != nil {
+		return fmt.Errorf("forget the Data API choice of %s, which its backup predates: %w", ref, err)
+	}
+	p, err := e.reg.GetProject(ctx, ref)
+	if err != nil {
+		return err
+	}
+	cctx, cancel := context.WithTimeout(ctx, convergeTimeout)
+	defer cancel()
+	if err := e.convergeLocked(cctx, p); err != nil {
+		e.log.Warn("restore: could not revoke the default privileges of the restored cluster yet; the next pass tries again", "ref", ref, "error", err)
+	}
 	return nil
 }
 

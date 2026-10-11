@@ -74,8 +74,10 @@ type ManifestProject struct {
 	Versions map[string]string `json:"versions,omitempty"`
 	Limits   config.Limits     `json:"limits"`
 	// DefaultPrivileges is the Data API decision recorded for the project ("granted" or "revoked", see
-	// registry.DataAPI) when the backup was taken; empty when none was. A restore as new uses it when the
-	// registry no longer has the source's row.
+	// registry.DataAPI) when the backup was taken; empty when none was. A restore uses it, never the row as
+	// it is now, because the restored cluster holds the default privileges of the backup: a restore as new
+	// records it for the new project, an in-place restore for the project itself, and empty leaves the
+	// project to the Data API step, which revokes the old grants once.
 	DefaultPrivileges string `json:"default_privileges,omitempty"`
 }
 
