@@ -500,8 +500,18 @@ func (e *Engine) Create(ctx context.Context, req CreateRequest) (*registry.Proje
 	if err := e.storeKeys(ctx, ref, keys); err != nil {
 		return fail("store secrets", err)
 	}
+	if req.Seed == nil {
+		// A seeded cluster brings its own PostgREST settings with the project it was taken from
+		// (the caller saves them); a fresh one starts with the exposed schemas that were asked for.
+		if err := e.exposeSchemasAtCreate(ctx, ref, req.DataAPI.ExposedSchemas); err != nil {
+			return fail("exposed schemas", err)
+		}
+	}
 	if err := e.plane.Create(ctx, p, keys, req.Seed); err != nil {
 		return fail("data plane", err)
+	}
+	if err := e.dataAPIAtCreate(ctx, p, req); err != nil {
+		return fail("data api", err)
 	}
 	if len(e.opts.Fleet) > 0 {
 		spec, err := e.tenantSpec(ctx, p, keys)
@@ -643,6 +653,11 @@ func (e *Engine) resume(ctx context.Context, ref string, checkNode bool) error {
 		return fmt.Errorf("lifecycle: resume %s: %w", ref, err)
 	}
 	e.applySavedSettings(ctx, p, keys)
+	// A project that was paused when the node moved to the release that revokes the default
+	// privileges is converged here, the first time its database answers again.
+	if err := e.convergeLocked(ctx, p); err != nil {
+		e.log.Warn("resume: could not revoke the default privileges; the next pass tries again", "ref", ref, "error", err)
+	}
 	if err := e.reg.PutRoute(ctx, registry.Route{Host: e.cfg.ProjectHost(ref), Ref: ref, Kind: "api"}); err != nil {
 		e.log.Warn("resume: route", "ref", ref, "error", err)
 	}
