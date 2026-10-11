@@ -1,10 +1,10 @@
 # studio
 
-Platform-mode Studio for `supavise`: a build of upstream Studio with `NEXT_PUBLIC_IS_PLATFORM=true` and four small patches, packaged like the slim-services `studio` artifact so the systemd unit does not change. Also the mock Management API and the browser spike that tests it. The calls Studio makes are listed in [docs/reference/studio-platform-calls.md](../docs/reference/studio-platform-calls.md).
+Platform-mode Studio for `supavise`: a build of upstream Studio with `NEXT_PUBLIC_IS_PLATFORM=true` and five small patches, packaged like the slim-services `studio` artifact so the systemd unit does not change. Also the mock Management API and the browser spike that tests it. The calls Studio makes are listed in [docs/reference/studio-platform-calls.md](../docs/reference/studio-platform-calls.md).
 
 | Path | What |
 |---|---|
-| `patches/` | The four patches, one `git format-patch` file each, made against `supabase/supabase@94b8b06eb294cf6b217c68d30357566cc8f146d9` (`internal/versions/versions.yaml` `studio.tag`). |
+| `patches/` | The five patches, one `git format-patch` file each, made against `supabase/supabase@94b8b06eb294cf6b217c68d30357566cc8f146d9` (`internal/versions/versions.yaml` `studio.tag`). |
 | `build.sh <platform>` | Fetch, patch, install, build, package, verify. Writes `dist/supavise-studio-<tag>-p<N>-<platform>.tar.zst` and a line in `dist/SHA256SUMS`. |
 | `Dockerfile.build` | The same build in an Ubuntu 24.04 image (`docker buildx build --target artifact --output type=local,dest=studio/dist`). |
 | `ci-prepare.sh` | For a GitHub-hosted runner (needs `SUPAVISE_CI=1` or `GITHUB_ACTIONS`, which `sudo` drops: `sudo env SUPAVISE_CI=1 studio/ci-prepare.sh`): frees disk, adds 6 GB swap, installs the build tools. |
@@ -42,6 +42,8 @@ The upstream dotenv file is not shipped; configuration is environment only.
 | `NEXT_PUBLIC_MCP_URL` | no | The remote MCP endpoint that Connect > MCP shows, e.g. `https://api.example.com/mcp`. Default `http://localhost:8080/mcp`, what Studio shows without it, so a unit that does not set it still starts. |
 | `NEXT_PUBLIC_DISABLED_FEATURES` | no | Comma-separated feature keys hidden before login. Default hides sign-up, GitHub, ChatGPT and SSO sign-in, the testimonial and the terms text (patch 0002). |
 | `CSP_EXTRA_PROJECT_HOSTS` | no | Host sources serving project APIs, e.g. `*.api.example.com` (patch 0003); each is allowed over `https` and `wss`. |
+| `NEXT_PUBLIC_CONFIGCAT_PROXY_URL` | no | The origin that serves Studio's feature flags, e.g. `https://api.example.com`: the client fetches `<origin>/configuration-files/configcat-proxy/frontend-v2/config_v6.json`, which the Management API answers (`internal/api/configcat.go`). Empty (the default): Studio reads every flag as off. The fleet sets it to the API origin, which the CSP already allows. Patch 0005 reads one flag of that document, `supaviseBranchClones`. |
+| `NIMBUS_PROD_PROJECTS_URL`, `NIMBUS_PROD_PROJECTS_URL_WS` | no | Read per request by Studio's server, not substituted into the build: `https://*.api.example.com` and `wss://*.api.example.com`. The Edge Function Test tab posts to `/api/edge-functions/test`, which accepts only a function URL whose host matches the first. A platform build without it accepts `*.supabase.co` only. The pattern takes a single lowercase label, so a vanity name with a digit or a hyphen and a custom hostname still fail there. |
 | `SUPAVISE_MANAGEMENT_API_URL` | for MCP | The Management API as this process reaches it, e.g. `http://127.0.0.1:7000`. Read for every request to `/api/mcp` (patch 0004), not substituted into the build. Without it, with `SUPAVISE_PROJECT_URL_TEMPLATE` missing, or if either is malformed, the route answers 500 "MCP is not configured". |
 | `SUPAVISE_PROJECT_URL_TEMPLATE` | for MCP | The public API URL of a project with `{ref}` where its ref goes, e.g. `https://{ref}.api.example.com`. The MCP tool `get_project_url` answers from it. |
 | `SUPAVISE_STUDIO_SKIP_RUNTIME_CONFIG=1` | no | Start without substitution (debugging). |
@@ -77,6 +79,7 @@ Applied with `git am --3way` onto the pinned commit. Each carries its own tests 
   - `get_project_url` is filled from `SUPAVISE_PROJECT_URL_TEMPLATE`. The package derives a hosted domain from the API host (`supabase.red` for any host it does not know), which is wrong here. The project ref comes from a tool argument, so it is checked before it goes into the template.
   - The patch adds `/mcp` to the allowlist of API routes (`lib/hosted-api-allowlist.ts`) and sets the body limit of the route to 8 MB, because deploying an Edge Function sends the files. Only the pages router changes; the TanStack twin of the route (`routes/api/mcp`) is not part of this build.
   - `search_docs` calls `supabase.com/docs/api/graphql` from the node, as hosted does.
+- **0005 the branching dialog and menu.** Three changes to the branching UI, each keeping hosted's behavior when the deployment signals nothing. Create branch (`CreateBranchModal.tsx`) prints the dollar prices of compute and disk and the tax notice only when `billing:all` is enabled, and Supavise disables it. Its Include data switch is enabled by the ConfigCat flag `supaviseBranchClones` (the node's flag document, `internal/api/configcat.go`) as well as by the PITR add-on, because a node clones the parent database itself and needs no add-on for that. The branch menu (`Overview.tsx`) lists Create pull request only when the project has a GitHub connection: the item linked to github.com for every branch that had a git branch. `build.sh` checks that all five patches apply at the pin (`git am --3way`); `verify.sh` checks a packaged build and does not look at the branching UI. The reason is in [design.md](../docs/design.md) section 10.
 
 ## Build on CI
 
