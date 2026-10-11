@@ -102,7 +102,11 @@ function fetchSource(pin) {
   git(dir, 'config', 'user.name', 'supavise')
   git(dir, 'config', 'user.email', 'supavise@users.noreply.invalid')
   git(dir, 'sparse-checkout', 'init', '--no-cone')
-  git(dir, 'sparse-checkout', 'set', '/apps/studio/', '/packages/')
+  // The same set as studio/build.sh: a patch may touch any file the build checks out, and git refuses to apply one to a
+  // file outside the sparse set.
+  git(dir, 'sparse-checkout', 'set',
+    '/*', '!/apps/', '!/packages/', '!/blocks/', '!/e2e/', '!/examples/', '!/i18n/', '!/docker/', '!/supabase/',
+    '/apps/studio/', '/packages/', '/patches/', '/apps/*/package.json', '/blocks/*/package.json', '/e2e/*/package.json')
   git(dir, 'fetch', '-q', '--depth', '1', '--filter=blob:none', 'origin', pin.commit)
   git(dir, 'checkout', '-q', '--detach', 'FETCH_HEAD')
   if (git(dir, 'rev-parse', 'HEAD').trim() !== pin.commit) die(`the fetched commit is not ${pin.commit}`)
