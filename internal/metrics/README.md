@@ -74,7 +74,7 @@ The node can run out of memory while every project is under its own limit, becau
 
 ## Limits
 
-- Control groups, the XFS quota and `/proc/pressure` exist only on Linux under systemd. With the exec supervisor (development and tests) there is no collector, and the routes answer series with no points.
+- The control groups must be the unified (v2) hierarchy under `/sys/fs/cgroup`, as on Ubuntu 24.04 and Debian 12; on a host without it the daemon logs that `supavise.slice` has no control group and the charts stay empty. Control groups, the XFS quota and `/proc/pressure` exist only on Linux under systemd. With the exec supervisor (development and tests) there is no collector, and the routes answer series with no points.
 - A project that is paused or stopped has no samples; its charts have gaps.
 - Network traffic, an EBS-style I/O budget, memory commitment, PgBouncer and Realtime have no source (see the table above).
 - Disk I/O is Postgres's own, not the device's, and counts WAL in bytes only.

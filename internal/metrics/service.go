@@ -187,6 +187,9 @@ func (s *Service) Tick(ctx context.Context) {
 		todo = append(todo, p)
 	}
 	s.forgetStale(live, todo)
+	if len(todo) > 0 && !s.o.Cgroup.SliceExists() {
+		s.warn("cgroup-slice", "metrics: there is no control group for supavise.slice, so no project can be measured (the host needs the unified cgroup v2 hierarchy under /sys/fs/cgroup)")
+	}
 
 	sem := make(chan struct{}, s.o.Concurrency)
 	var wg sync.WaitGroup

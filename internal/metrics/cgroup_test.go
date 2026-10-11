@@ -107,3 +107,14 @@ func TestProjectUnitsAreTheTemplateInstances(t *testing.T) {
 func removeUnit(root, unit string) error {
 	return os.RemoveAll(filepath.Join(root, config.Slice, unit))
 }
+
+func TestCgroupSliceExists(t *testing.T) {
+	root := t.TempDir()
+	if (Cgroup{Root: root}).SliceExists() {
+		t.Fatal("an empty tree has the slice")
+	}
+	writeUnit(t, root, "supavise-postgres@abc.service", unitFiles{})
+	if !(Cgroup{Root: root}).SliceExists() {
+		t.Fatal("the slice is missing")
+	}
+}

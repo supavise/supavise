@@ -99,6 +99,17 @@ func (c Cgroup) ReadUnit(unit string) (UnitStats, error) {
 	return u, nil
 }
 
+// SliceExists reports whether the control group of supavise.slice is there. It is not on a host
+// without the unified (v2) hierarchy, which no chart can be drawn from.
+func (c Cgroup) SliceExists() bool {
+	root := c.Root
+	if root == "" {
+		root = DefaultCgroupRoot
+	}
+	fi, err := os.Stat(filepath.Join(root, config.Slice))
+	return err == nil && fi.IsDir()
+}
+
 // ProjectUnits are the units of a project that count toward its utilization, by service.
 func ProjectUnits(ref string) map[string]string {
 	m := make(map[string]string, len(config.ProjectServices))
