@@ -21,6 +21,7 @@ import (
 	"github.com/supavise/supavise/internal/lifecycle"
 	"github.com/supavise/supavise/internal/registry"
 	"github.com/supavise/supavise/internal/secrets"
+	"github.com/supavise/supavise/internal/storagemigrate"
 )
 
 // Options are what the binary tells the composition about itself.
@@ -75,6 +76,7 @@ func LifecycleOptions(cfg *config.Config, o Options) lifecycle.OpenOptions {
 		ArchiveCommandFor: func(ref string) string { return backup.ArchiveCommandFor(cfg, ref, o.ConfigPath) },
 		ArchiveReady:      o.ArchiveReady,
 		ArchiveTimeout:    timeout,
+		Objects:           storagemigrate.NewObjectRemover(cfg),
 		BackupFactory: func(n *lifecycle.Node) (lifecycle.BaseBackuper, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
