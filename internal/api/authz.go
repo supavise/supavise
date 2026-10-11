@@ -296,7 +296,15 @@ var routeRules = []routeRule{
 	rule("POST", "/v1/projects/{ref}/database/webhooks/enable", chk(members.ActSQLAdminWrite, "triggers")),
 	rule("POST", "/platform/database/{ref}/hook-enable", chk(members.ActSQLAdminWrite, "triggers")),
 	rule("POST", "/platform/projects/{ref}/api/graphql", chk(members.ActSQLInsert, members.ResAny)),
+	// The advisors read the schema (table, function and policy names), as pg-meta's reads do. Hosted
+	// gates them on advisors_read, which every role that sees the project holds.
+	rule("GET", "/platform/projects/{ref}/run-lints", chk(members.ActSQLAdminRead, "schemas")),
+	rule("R", "/v1/projects/{ref}/advisors/**", chk(members.ActSQLAdminRead, "schemas")),
 	rule("POST", "/v2/projects/{ref}/advisors/run", chk(members.ActSQLAdminRead, "schemas")),
+	// The rules of the Advisor Rules page: every role that sees the project reads them; changing
+	// them is a project setting (Owner and Administrator).
+	rule("R", "/platform/projects/{ref}/notifications/advisor/**", chk(members.ActRead, P)),
+	rule("W", "/platform/projects/{ref}/notifications/advisor/**", chk(members.ActUpdate, P)),
 
 	// ---- projects: auth admin ----
 	rule("POST", "/platform/auth/{ref}/users", chk(members.ActAuthExecute, "create_user")),
