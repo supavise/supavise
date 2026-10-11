@@ -1006,6 +1006,12 @@
    "reason": "The Auth overview's usage numbers come from logs, which a node does not keep; Studio shows its error alert and the message names supavise logs."
   },
   {
+   "op": "GET /platform/telemetry/feature-flags",
+   "status": 401,
+   "reach": "crawl",
+   "reason": "Studio asks for the feature flags before the session exists, on the sign-in page; the call is repeated once the session is there."
+  },
+  {
    "op": "POST /v1/projects/{ref}/config/auth/signing-keys",
    "status": 501,
    "reach": "static",

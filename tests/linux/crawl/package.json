@@ -1,0 +1,12 @@
+{
+  "name": "supavise-studio-crawl",
+  "private": true,
+  "type": "module",
+  "description": "The runtime Studio crawl (tests/linux/studio-crawl.sh). Install with `npm ci --prefix tests/linux/crawl`.",
+  "scripts": {
+    "selftest": "node --test selftest.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

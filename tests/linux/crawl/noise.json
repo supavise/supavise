@@ -1,0 +1,29 @@
+{
+ "_comment": "Browser output the crawl does not count. Third parties and library noise only: a pattern that hides a Supavise problem does not belong here. The ConfigCat 'flag key does not exist' lines are deliberately absent: the node serves a flag document that lists every key Studio reads, so such a line is a regression.",
+ "console": [
+  {
+   "pattern": "usercentrics",
+   "reason": "Studio loads Usercentrics on every page even without a ruleset id; the proxy blocks the host (docs/reference/studio-platform-calls.md, Findings from running Studio, 3)."
+  },
+  {
+   "pattern": "^Canceled$|Canceled: Canceled",
+   "reason": "Monaco rejects its pending requests when a page navigates away."
+  },
+  {
+   "pattern": "Minified React error #418",
+   "reason": "Hydration mismatch of the 'last used' badge on /sign-in (docs/reference/studio-platform-calls.md, Findings from running Studio, 8)."
+  }
+ ],
+ "pageerror": [
+  {
+   "pattern": "^Canceled$|Canceled: Canceled",
+   "reason": "Monaco rejects its pending requests when a page navigates away."
+  }
+ ],
+ "requestfailed": [
+  {
+   "pattern": "net::ERR_ABORTED",
+   "reason": "A navigation or a React Query cancel aborts the requests in flight."
+  }
+ ]
+}
