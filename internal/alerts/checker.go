@@ -37,6 +37,11 @@ type Checker struct {
 	// debounces them like the others; what makes an alert end later than it began (the hysteresis of a
 	// value that sits on the line) is the source's.
 	Pressure func(ctx context.Context) []Pressure
+	// Unjudged says whether the source of Pressure has not measured yet what the condition with this
+	// key is about (metrics.Service.Unjudged: the daemon has just started, and the project's
+	// Postgres is not up to read its disk). An open alert for such a key is neither ended nor told as
+	// over. Nil judges every key.
+	Unjudged func(key string) bool
 	// CheckUpdate asks for the newest release and records it (health.CheckUpdate). Nil turns
 	// the update check off.
 	CheckUpdate func(ctx context.Context, now time.Time) (*health.UpdateRecord, error)
@@ -186,7 +191,7 @@ func (c *Checker) Once(ctx context.Context) {
 		return
 	}
 	for key, a := range active {
-		if !owned(a.Kind) || current[key] || (quiet && restartedByWindow(a.Kind, a.Severity)) {
+		if !owned(a.Kind) || current[key] || (quiet && restartedByWindow(a.Kind, a.Severity)) || (c.Unjudged != nil && c.Unjudged(key)) {
 			continue
 		}
 		if key == manyKey && anyProjectDown {

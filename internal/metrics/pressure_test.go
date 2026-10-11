@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -131,6 +132,18 @@ func diskSample(at time.Time, used, size float64, quota bool) Sample {
 	return s
 }
 
+// ingestOwn stores a sample the way the service does for a project it samples itself: Ingest keeps
+// what another node reported, which this node does not raise alerts for.
+func ingestOwn(t *testing.T, svc *Service, ref string, smp Sample) {
+	t.Helper()
+	if err := svc.Ingest(ref, "demo", smp); err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	svc.proj[ref].own = true
+	svc.mu.Unlock()
+}
+
 // A project's disk quota: warning from 80%, critical from 90%, and each ends five points lower.
 func TestPressureProjectDiskQuota(t *testing.T) {
 	r := newRig(t, nil)
@@ -140,9 +153,7 @@ func TestPressureProjectDiskQuota(t *testing.T) {
 	step := func(usedGB float64, quota bool) string {
 		at = at.Add(time.Minute)
 		r.clock.Set(at)
-		if err := r.svc.Ingest(testRef, "demo", diskSample(at, usedGB*gb, 10*gb, quota)); err != nil {
-			t.Fatal(err)
-		}
+		ingestOwn(t, r.svc, testRef, diskSample(at, usedGB*gb, 10*gb, quota))
 		return keysOf(r.svc.Pressure())
 	}
 	w, c := "project_disk_high/"+testRef+":warning", "project_disk_high/"+testRef+"/critical:critical"
@@ -182,13 +193,101 @@ func TestPressureEndsWhenTheProjectStopsReporting(t *testing.T) {
 	r.lister.ps = nil
 	const gb = float64(1 << 30)
 	r.clock.Set(t0.Add(time.Minute))
-	_ = r.svc.Ingest(testRef, "demo", diskSample(t0.Add(time.Minute), 9.5*gb, 10*gb, true))
+	ingestOwn(t, r.svc, testRef, diskSample(t0.Add(time.Minute), 9.5*gb, 10*gb, true))
 	if len(r.svc.Pressure()) != 2 {
 		t.Fatal("no conditions for a project at 95%")
 	}
 	r.clock.Set(t0.Add(time.Hour))
 	if got := keysOf(r.svc.Pressure()); got != "" {
 		t.Fatalf("conditions from an hour-old sample: %s", got)
+	}
+}
+
+// A project another server reports is judged by that server, whose alerts and destinations are its
+// own: this node raises nothing for it, and does not count its memory limit among the projects that
+// may use this node's memory. The project's resource warnings, which Studio shows, still come from the
+// report.
+func TestPressureLeavesTheProjectsOfOtherServersToThem(t *testing.T) {
+	r := newRig(t, nil)
+	const gb = float64(1 << 30)
+	r.units(unitFiles{anon: 1 << 20, memMax: "max"}, unitFiles{}, unitFiles{})
+	writeProc(t, r.proc, "meminfo", meminfo(400_000))
+	r.tick(t0.Add(2 * time.Second)) // the project of this node: a 1 GiB limit
+	far := diskSample(t0.Add(time.Second), 9.5*gb, 10*gb, true)
+	far.Set(MemLimit, 4*gb)
+	if err := r.svc.Ingest("farprojectfarprojectx", "far", far); err != nil {
+		t.Fatal(err)
+	}
+	cs := r.svc.Pressure()
+	if got := keysOf(cs); got != "memory_low/:warning" {
+		t.Fatalf("conditions = %q", got)
+	}
+	if !strings.Contains(cs[0].Detail, "up to 1.0 GiB") {
+		t.Errorf("detail counts the other server's project: %s", cs[0].Detail)
+	}
+	if w, ok := r.svc.Warnings("farprojectfarprojectx"); !ok || w.DiskSpace != LevelCritical {
+		t.Errorf("warnings of the reported project = %+v, %v", w, ok)
+	}
+	// A project that was paused does not count either.
+	r.clock.Set(t0.Add(time.Hour))
+	r.svc.Tick(context.Background())
+	r.lister.ps = nil
+	r.svc.Tick(context.Background())
+	for _, c := range r.svc.Pressure() {
+		if strings.Contains(c.Detail, "may use up to") {
+			t.Errorf("detail counts a project that is gone: %s", c.Detail)
+		}
+	}
+}
+
+// A minute in which the disk could not be read says nothing about the quota: the alert stays on what
+// was read last, until that is too old to judge by.
+func TestPressureHoldsTheLastDiskReading(t *testing.T) {
+	r := newRig(t, nil)
+	r.lister.ps = nil
+	const gb = float64(1 << 30)
+	ingestOwn(t, r.svc, testRef, diskSample(t0.Add(time.Minute), 9.5*gb, 10*gb, true))
+	unread := NewSample(t0.Add(2 * time.Minute)) // the control groups were read, the disk was not
+	unread.Set(MemUsed, 1)
+	ingestOwn(t, r.svc, testRef, unread)
+	r.clock.Set(t0.Add(3 * time.Minute))
+	if len(r.svc.Pressure()) != 2 {
+		t.Fatalf("a failed disk read ended the alert: %s", keysOf(r.svc.Pressure()))
+	}
+	r.clock.Set(t0.Add(time.Hour))
+	if got := keysOf(r.svc.Pressure()); got != "" {
+		t.Fatalf("conditions from a reading an hour old: %s", got)
+	}
+}
+
+// Just after the service started, a condition it has not measured yet is not over. It is, once the
+// first minutes have passed, or once it has been measured.
+func TestUnjudgedIsTrueUntilTheConditionHasBeenMeasured(t *testing.T) {
+	r := newRig(t, nil)
+	diskKey, memKey := KindProjectDiskHigh+"/"+testRef, KindMemoryLow+"/critical"
+	for _, k := range []string{diskKey, diskKey + "/critical", KindMemoryLow + "/", memKey} {
+		if !r.svc.Unjudged(k) {
+			t.Errorf("%s is judged before anything was measured", k)
+		}
+	}
+	if r.svc.Unjudged("disk_low") || r.svc.Unjudged(KindProjectDiskHigh+"/") {
+		t.Error("a key the service does not own is held")
+	}
+	const gb = float64(1 << 30)
+	r.lister.ps = nil
+	r.tick(t0.Add(2 * time.Second)) // the node's memory is read
+	if r.svc.Unjudged(memKey) || !r.svc.Unjudged(diskKey) {
+		t.Errorf("after the node's memory was read: memory %v, disk %v", r.svc.Unjudged(memKey), r.svc.Unjudged(diskKey))
+	}
+	ingestOwn(t, r.svc, testRef, diskSample(t0.Add(3*time.Second), 5*gb, 10*gb, true))
+	if r.svc.Unjudged(diskKey) {
+		t.Error("held after the project's disk was read")
+	}
+	// A project that never shows up is given up on after staleAfter.
+	r2 := newRig(t, nil)
+	r2.clock.Set(t0.Add(2*time.Second + staleAfter))
+	if r2.svc.Unjudged(diskKey) || r2.svc.Unjudged(memKey) {
+		t.Error("still held after the grace period")
 	}
 }
 

@@ -76,7 +76,10 @@ type Service struct {
 		known       bool
 	}
 	raised map[string]bool
-	swept  time.Time
+	// started is when the service was built: for staleAfter after it, what has not been measured yet
+	// is not taken for something that is over (Unjudged).
+	started time.Time
+	swept   time.Time
 	// warned is when each kind of failure was last logged: a full disk would otherwise write a line
 	// for every project every minute.
 	warned map[string]time.Time
@@ -124,7 +127,9 @@ func New(o Options) *Service {
 	if o.Store == nil && o.Cfg != nil {
 		o.Store = NewStore(filepath.Join(o.Cfg.StateDir, "system", "metrics"))
 	}
-	return &Service{o: o, proj: map[string]*projState{}, raised: map[string]bool{}, warned: map[string]time.Time{}}
+	s := &Service{o: o, proj: map[string]*projState{}, raised: map[string]bool{}, warned: map[string]time.Time{}}
+	s.started = s.now()
+	return s
 }
 
 func (s *Service) now() time.Time {

@@ -218,6 +218,7 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	if mx != nil { // likewise
 		apiDeps.Metrics = mx
 		checker.Pressure = metricsPressure(mx)
+		checker.Unjudged = mx.Unjudged
 	}
 	// Edge Functions: the syncer turns the stored deployments and secrets into the files the
 	// runtime (supavise-edge-runtime, started with the other shared services) serves, and bundles
