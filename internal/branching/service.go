@@ -170,6 +170,11 @@ func New(d Deps) (*Service, error) {
 	s.detect = func(srcData, dstParent string) (string, string, string) {
 		return detectClone(srcData, dstParent)
 	}
+	if s.nodeID == "" {
+		if n, ok := d.Engine.(nodeOfEngine); ok {
+			s.nodeID = n.NodeID()
+		}
+	}
 	s.instance, s.pid = secrets.NewUUID(), os.Getpid()
 	s.host, _ = os.Hostname()
 	s.rotate = s.rotateCredentials
