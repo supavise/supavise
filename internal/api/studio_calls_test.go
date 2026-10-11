@@ -206,7 +206,7 @@ func TestStudioCallsAreAnsweredByHandlers(t *testing.T) {
 func TestCrawlAllowlistIsWellFormed(t *testing.T) {
 	var allow crawlAllow
 	readJSON(t, crawlAllowFile, &allow)
-	op := regexp.MustCompile(`^(?:\*|GET|POST|PUT|PATCH|DELETE|HEAD) /(?:platform|v1|v2)/\S+$`)
+	op := regexp.MustCompile(`^(?:\*|GET|POST|PUT|PATCH|DELETE|HEAD) /\S+$`)
 	seen := map[string]bool{}
 	check := func(kind, key, reach, reason string) {
 		if reason == "" || len(strings.Fields(reason)) < 3 {
@@ -247,9 +247,11 @@ func TestCrawlAllowlistIsWellFormed(t *testing.T) {
 			t.Errorf("statuses %q: %d is not an error status", e.Op, e.Status)
 		}
 		check("statuses", e.Op+" "+http.StatusText(e.Status), e.Reach, e.Reason)
-		// A status entry names a route that exists, or a handler answers it with a typo of the path.
+		// A status entry for the Management API names a route that exists; the others (Studio's own /api
+		// routes, the project hosts) are outside this server's route table.
 		method, path, _ := strings.Cut(e.Op, " ")
-		if method != "*" && !inSpec[normOp(method, path)] {
+		managed := strings.HasPrefix(path, "/platform/") || strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/v2/")
+		if managed && method != "*" && !inSpec[normOp(method, path)] {
 			t.Errorf("statuses %q: no route of the server has this method and path", e.Op)
 		}
 	}
