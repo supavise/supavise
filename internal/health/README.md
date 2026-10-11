@@ -66,6 +66,7 @@ The escrow lookup lists the backup backend, which can be slow, so inside the dae
 |---|---|---|
 | `disk_low_percent` | 10 | free space below this percentage of the state volume degrades the node; below half of it is a failure |
 | `disk_low_gb` | 5 | the same as an absolute floor in GiB, for volumes where a percentage says little |
+| `memory_low_percent` | 10 | available memory (`MemAvailable`) below this percentage of the node's memory raises the `memory_low` alert; below half of it is critical (the alert checker reads it through `internal/metrics`; `supavise status` does not report it) |
 | `backup_stale_hours` | backup period + 12 | age of the newest completed base backup past which a project is stale (36 for the default nightly timer) |
 | `certificate_warn_days` | 14 | days before expiry at which a certificate is reported (CertMagic renews at 30) |
 | `cache_seconds` | 20 | how long the daemon reuses a report |
@@ -76,5 +77,5 @@ The escrow lookup lists the backup backend, which can be slow, so inside the dae
 
 ## Limits
 
-- No history: a report is a moment, not a trend.
+- No history: a report is a moment, not a trend. The trend of a project's CPU, memory, connections and disk is `internal/metrics`.
 - Health does not probe a project's data path end to end (a REST request through the proxy with its key); it probes each unit on loopback and the tenant records. The tenant check asks the service for the tenant record and does not open a Realtime socket or a Storage upload.

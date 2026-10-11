@@ -38,6 +38,7 @@ var wireHooks = []struct {
 	{"placement", wirePlacement},           // wire_placement.go: plane router, instance agent; provides placement.Resolver, InstanceOps, BackupOps
 	{"fleet", wireFleet},                   // wire_fleet.go: the shared services' follower mode
 	{"replicas", wireReplicas},             // wire_replicas.go: the replica controller and its service
+	{"metrics", wireMetrics},               // wire_metrics.go: the utilization samples that a node tells the leader
 	{"proxy", wireProxy},                   // wire_proxy.go: replica and balancer hosts, certificate mirror
 	{"failover", wireFailover},             // wire_failover.go: the orchestrator, the monitor, the readiness route
 	{"storagemigrate", wireStorageMigrate}, // wire_storagemigrate.go: the Storage migration service

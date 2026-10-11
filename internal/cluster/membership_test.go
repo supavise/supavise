@@ -1229,6 +1229,48 @@ func TestReporterSendsToTheLeaderAndKeepsTheLeadersOwn(t *testing.T) {
 	}
 }
 
+// The utilization samples a node adds to its report reach the leader in the same report, and the
+// leader's own report stores what its contributors add.
+func TestReporterCarriesUtilizationSamples(t *testing.T) {
+	reports := NewReports()
+	rpc := &recordingRPC{}
+	leader := false
+	rp := &Reporter{Self: func() string { return "n2" }, Epoch: func() int64 { return 4 }, Leader: func() (string, bool) { return "n1", true },
+		IsLeader: func() bool { return leader }, RPC: rpc, Reports: reports}
+	v := 42.0
+	rp.AddMetrics(func(context.Context) []peerapi.ProjectMetrics {
+		return []peerapi.ProjectMetrics{{Ref: "aaaaaaaaaaaaaaaaaaaa", At: time.Unix(1_700_000_000, 0).UTC(), V: []*float64{&v, nil}}}
+	})
+	if err := rp.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpc.body.Metrics) != 1 || rpc.body.Metrics[0].Ref != "aaaaaaaaaaaaaaaaaaaa" || rpc.body.Metrics[0].V[0] == nil || *rpc.body.Metrics[0].V[0] != 42 || rpc.body.Metrics[0].V[1] != nil {
+		t.Fatalf("body %+v", rpc.body)
+	}
+	b, err := json.Marshal(rpc.body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back peerapi.Report
+	if err := json.Unmarshal(b, &back); err != nil || len(back.Metrics) != 1 || back.Metrics[0].V[1] != nil {
+		t.Fatalf("%v: %s", err, b)
+	}
+	// A report without samples has no such field, so an older leader reads it as it always did.
+	rp2 := &Reporter{Self: func() string { return "n2" }, Epoch: func() int64 { return 4 }, Leader: func() (string, bool) { return "n1", true }, IsLeader: func() bool { return false }, RPC: rpc, Reports: reports}
+	if err := rp2.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal(rpc.body); strings.Contains(string(b), "metrics") {
+		t.Fatalf("an empty report carries the field: %s", b)
+	}
+	leader = true
+	var seen []peerapi.Report
+	reports.Subscribe(func(r peerapi.Report) { seen = append(seen, r) })
+	if err := rp.Once(context.Background()); err != nil || len(seen) != 1 || len(seen[0].Metrics) != 1 {
+		t.Fatalf("the leader's own report: %+v %v", seen, err)
+	}
+}
+
 func TestStatusFileRoundTrip(t *testing.T) {
 	cfg := config.Default()
 	cfg.StateDir = t.TempDir()

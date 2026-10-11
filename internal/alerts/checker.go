@@ -23,14 +23,25 @@ import (
 // While an upgrade runs or a maintenance window is open the checker raises and resolves no
 // project_unhealthy and no node_unhealthy below critical: the operator caused that downtime, and
 // the upgrade reports its own events. A critical node_unhealthy (the system cluster or the
-// registry down), a disk running out (an upgrade takes fresh backups first), a backup that fails
-// and a certificate that does not renew are still raised. The marker of a crashed upgrade and a
+// registry down), a disk running out (an upgrade takes fresh backups first), a backup that fails,
+// a certificate that does not renew, the node's memory running low and a project's disk quota nearly
+// spent are still raised. The marker of a crashed upgrade and a
 // window that was not extended stop counting after a short time (see internal/notice).
 type Checker struct {
 	Notifier *Notifier
 	// Report returns the current health of the node (health.Monitor.Fresh).
 	Report func(ctx context.Context) (*health.Report, error)
 	Cfg    *config.Config
+	// Pressure returns the resource conditions that hold now: the node's memory and the projects'
+	// disk quotas (metrics.Service.Pressure, adapted by the daemon). Nil turns them off. The checker
+	// debounces them like the others; what makes an alert end later than it began (the hysteresis of a
+	// value that sits on the line) is the source's.
+	Pressure func(ctx context.Context) []Pressure
+	// Unjudged says whether the source of Pressure has not measured yet what the condition with this
+	// key is about (metrics.Service.Unjudged: the daemon has just started, and the project's
+	// Postgres is not up to read its disk). An open alert for such a key is neither ended nor told as
+	// over. Nil judges every key.
+	Unjudged func(key string) bool
 	// CheckUpdate asks for the newest release and records it (health.CheckUpdate). Nil turns
 	// the update check off.
 	CheckUpdate func(ctx context.Context, now time.Time) (*health.UpdateRecord, error)
@@ -75,6 +86,13 @@ func (c *Checker) Run(ctx context.Context) {
 	}
 }
 
+// Pressure is a resource condition, in the shape the checker takes. Key identifies it for
+// de-duplication and recovery, and a worse state of the same matter has a key of its own, so that
+// going from the one to the other is told.
+type Pressure struct {
+	Key, Kind, Severity, Ref, Title, Detail string
+}
+
 // condition is one thing that is wrong now.
 type condition struct {
 	key, kind, severity, ref, title, detail string
@@ -92,7 +110,7 @@ const manyKey = KindProjectUnhealthy + "/many"
 // notifier's state belong to whoever raised them.
 func owned(kind string) bool {
 	switch kind {
-	case KindDiskLow, KindBackupFailed, KindProjectUnhealthy, KindCertificateExpiring, KindNodeUnhealthy:
+	case KindDiskLow, KindBackupFailed, KindProjectUnhealthy, KindCertificateExpiring, KindNodeUnhealthy, KindMemoryLow, KindProjectDiskHigh:
 		return true
 	}
 	return false
@@ -120,6 +138,11 @@ func (c *Checker) Once(ctx context.Context) {
 		return
 	}
 	conds := conditionsOf(rep)
+	if c.Pressure != nil {
+		for _, p := range c.Pressure(ctx) {
+			conds = append(conds, condition{key: p.Key, kind: p.Kind, severity: p.Severity, ref: p.Ref, title: p.Title, detail: p.Detail})
+		}
+	}
 	if quiet {
 		// What the window restarts is not judged, and its debounce starts over when it ends.
 		conds = slices.DeleteFunc(conds, func(cd condition) bool { return restartedByWindow(cd.kind, cd.severity) })
@@ -168,7 +191,7 @@ func (c *Checker) Once(ctx context.Context) {
 		return
 	}
 	for key, a := range active {
-		if !owned(a.Kind) || current[key] || (quiet && restartedByWindow(a.Kind, a.Severity)) {
+		if !owned(a.Kind) || current[key] || (quiet && restartedByWindow(a.Kind, a.Severity)) || (c.Unjudged != nil && c.Unjudged(key)) {
 			continue
 		}
 		if key == manyKey && anyProjectDown {
