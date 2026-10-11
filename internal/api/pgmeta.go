@@ -316,7 +316,7 @@ func (s *Server) pgmetaProxy(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		schemaChange, body = mayChangeSchema(b), bytes.NewReader(b)
+		schemaChange, body = mayChangeSchemaBody(b), bytes.NewReader(b)
 	}
 	resp, err := s.pgmetaDoOn(r.Context(), replica, ref, role, false, r.Method, rest, r.URL.RawQuery, body, r.Header)
 	if err != nil {

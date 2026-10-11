@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/supavise/supavise/internal/advisors"
 	v2 "github.com/supavise/supavise/internal/api/gen/v2"
@@ -250,5 +253,23 @@ func (s *Server) invalidateAdvisors(ref string) { s.advisorRunner.Invalidate(ref
 // and nothing else.
 var schemaChangeRe = regexp.MustCompile(`(?i)\b(create|alter|drop|grant|revoke|truncate|comment\s+on|security\s+label)\b`)
 
-// mayChangeSchema reports whether the SQL text (or a JSON body that carries it) may change the schema.
+// mayChangeSchema reports whether the SQL text may change the schema.
 func mayChangeSchema(sql []byte) bool { return schemaChangeRe.Match(sql) }
+
+// jsonWhitespace turns the escaped line breaks and tabs of a JSON string into spaces, for a body
+// that cannot be decoded: \n followed by a keyword has no word boundary before the keyword.
+var jsonWhitespace = strings.NewReplacer(`\n`, " ", `\r`, " ", `\t`, " ")
+
+// mayChangeSchemaBody is mayChangeSchema for the JSON body of a pg-meta /query request. It matches
+// the decoded query, because a line break in the SQL is the two characters \n in the body and
+// leaves the keyword after it without a word boundary; a body that is not the expected JSON is
+// matched as it came, with its escaped whitespace opened up.
+func mayChangeSchemaBody(body []byte) bool {
+	var in struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(body, &in); err == nil && in.Query != "" {
+		return mayChangeSchema([]byte(in.Query))
+	}
+	return mayChangeSchema(bytes.TrimSpace([]byte(jsonWhitespace.Replace(string(body)))))
+}
