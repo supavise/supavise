@@ -209,6 +209,14 @@ You move a project in five parts: the database (roles, schema, data and Auth use
 
 **1. Create the project with your keys**
 
+The commands in this step save credentials of the hosted project in files: its legacy JWT secret, its `anon` and `service_role` keys and, in `api-keys.json`, its `sb_secret_` keys too. Whoever reads them can act as `service_role` on the hosted project. Work in a directory that only you and the `supavise` user can read, and delete it after the create command. The directory is group `supavise` with the setgid bit, so the files in it get that group, and the umask leaves them readable by the group and by no one else:
+
+```bash
+KEYS_DIR=$(mktemp -d /tmp/migrate.XXXXXX)
+sudo chgrp supavise "$KEYS_DIR" && sudo chmod 2750 "$KEYS_DIR"
+cd "$KEYS_DIR" && umask 037
+```
+
 If you want your app to keep the `anon` and `service_role` keys it holds, create the project with the hosted project's legacy JWT secret. GoTrue, PostgREST, Realtime and Storage then accept those keys, and users keep their sessions. Copy the secret from **Project settings**, **JWT keys**, **Legacy JWT secret** in the hosted dashboard, or ask the Management API:
 
 <!-- migrate-smoke: jwt-secret -->
@@ -229,7 +237,7 @@ jq -r '.[] | select(.type == "legacy" and .name == "anon") | .api_key' api-keys.
 jq -r '.[] | select(.type == "legacy" and .name == "service_role") | .api_key' api-keys.json > service-role-key.txt
 ```
 
-Create the project on the node. The command runs as the `supavise` user, so that user must be able to read the files. Set `NEW_REF` to the hosted project's ref to give the project the same ref: the proxy then accepts the hosted keys because their `ref` claim names the project. With another ref, only the two key files make the node accept them. Set `NEW_SIZE` to a compute size (`supavise projects sizes` lists them).
+Create the project on the node. The command runs as the `supavise` user, which reads the files through the group of the directory. Set `NEW_REF` to the hosted project's ref to give the project the same ref: the proxy then accepts the hosted keys because their `ref` claim names the project. With another ref, only the two key files make the node accept them. Set `NEW_SIZE` to a compute size (`supavise projects sizes` lists them).
 
 <!-- migrate-smoke: create -->
 ```bash
@@ -238,6 +246,12 @@ sudo -u supavise supavise projects create --name "$NEW_NAME" --ref "$NEW_REF" --
 ```
 
 The command prints the new project's database password. The project also has its own publishable and secret keys (`sb_...`), because hosted keys of that kind can't be imported: if your app uses them, switch it to the new ones.
+
+Delete the files now, with the directory:
+
+```bash
+cd - && rm -rf "$KEYS_DIR"
+```
 
 **2. Set the connection strings**
 
@@ -271,7 +285,7 @@ psql --single-transaction --variable ON_ERROR_STOP=1 \
 
 The `sed` command comments out the lines of `roles.sql` that grant privileges on configuration parameters, such as `GRANT SET ON PARAMETER "log_min_messages" TO "supabase_realtime_admin"`. The dump lists them because Supabase's own roles hold them. The `postgres` role can't grant them, so without the command the restore stops with `permission denied for parameter log_min_messages`. Those roles exist on the new project with their grants, so the lines add nothing. The original file stays as `roles.sql.bak`.
 
-The three `alter default privileges` commands keep your access rules. A new table, function or sequence in `public` gets `ALL` for `anon`, `authenticated` and `service_role` from the project's default privileges, and the dump only adds grants: it never takes one away. Without the commands, a table that you locked down on hosted (`revoke all ... from anon`) is open again through the Data API. The commands run in the restore's transaction, so a failed restore leaves the default privileges as they were. The dump lists the grants of each object and sets the default privileges of your `postgres` role again at its end, so the project ends up with the grants it had on hosted. Step 8 compares them.
+The three `alter default privileges` commands keep your access rules. The dump only adds grants: it never takes one away, so the project must not hand out grants that hosted doesn't. A project created with `--expose-new-tables`, or rolled back with the SQL in [New tables need a grant](#new-tables-need-a-grant), gives a new table, function or sequence in `public` `ALL` for `anon`, `authenticated` and `service_role` from its default privileges. There, a table that you locked down on hosted (`revoke all ... from anon`) would be open again through the Data API without the commands. A project created as in step 1 has the `select`, `insert`, `update`, `delete` and `execute` defaults revoked already, and the commands clear what is left of them (`truncate`, `references`, `trigger` and `maintain` on tables, `update` on sequences), so that step 8 finds no grant that hosted doesn't have. The commands run in the restore's transaction, so a failed restore leaves the default privileges as they were. The dump lists the grants of each object and sets the default privileges of your `postgres` role again at its end, so the project ends up with the grants it had on hosted. Step 8 compares them.
 
 The restore runs in one transaction, so a failure leaves the project as it was. Fix the cause and run the restore again. If psql stops, look for the message:
 
@@ -421,7 +435,7 @@ Add an `[alerts]` section to `/etc/supavise/config.toml` to get a webhook or ema
 
 Studio's **Observability > Database** report, its overview cards and the **Compute and Disk** page show what each project uses: CPU, memory, connections, disk size, and the block reads and writes of Postgres. The server measures them once a minute and keeps the minutes of the last 3 days and the hours of the last 92. CPU is a share of the project's CPU quota, and memory is measured against its limit. When a project uses 80% of its disk quota or its CPU quota, or 85% of its memory limit, Studio shows its usual warning above the project; at 90% (95% for memory) the warning is critical. The charts of network traffic, the disk I/O budget, memory commitment, PgBouncer and Realtime have no source on a Supavise server and stay at zero. [`internal/metrics`](../internal/metrics/README.md) has the full list.
 
-A server can run out of memory while every project is under its own limit, because the limits add up to more than the memory (`[compute] overcommit`). You get a `memory_low` alert when under 10% of the memory is available, or when programs wait for memory while under 30% is available (`[health] memory_low_percent` sets the percentage; half of it is critical). When a project's disk quota is 80% used, and again at 90%, you get `project_disk_high`. Raise the disk size in Studio under **Settings > Compute and Disk**, or delete data. In a cluster, each server alerts for the projects it runs, so set `[alerts]` destinations on every server. After a restart of the daemon or a reboot, an alert that is open stays open for up to 10 minutes while the project starts and is measured again, instead of ending and being raised a second time. When the kernel kills a process of a project for lack of memory, Studio shows a critical memory warning for that project for 15 minutes. The server sees the kill in the project's counters or, when systemd restarted the service after it, in a restart that coincides with the kernel's count for all projects, so two projects that restart in the minute of a kill can both show it.
+A server can run out of memory while every project is under its own limit, because the limits add up to more than the memory (`[compute] overcommit`). You get a `memory_low` alert when under 10% of the memory is available, or when programs wait for memory while under 30% is available (`[health] memory_low_percent` sets the percentage; half of it is critical). When a project's disk quota is 80% used, and again at 90%, you get `project_disk_high`. Raise the disk size in Studio under **Settings > Compute and Disk**, or delete data. In a cluster, each server alerts for the projects it runs, so set `[alerts]` destinations on every server. After a restart of the daemon or a reboot, an alert that is open stays open for up to 10 minutes while the project starts and is measured again, instead of ending and being raised a second time. When the kernel kills a process of a project for lack of memory, Studio shows a critical memory warning for that project for 15 minutes. The server sees the kill in the project's counters or, when systemd restarted the service after it, in a restart that coincides with the kernel's count for all projects. The second case is an estimate: a project that restarts in the minute when another project lost a process shows the warning too. Anyone who can restart a project (Developers can) can therefore learn from its warning that some project on the server lost a process, but not which one.
 
 ## What the dashboard shows differently
 
