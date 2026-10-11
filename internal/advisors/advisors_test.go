@@ -30,14 +30,9 @@ func TestVendoredSQLMatchesTheStudioPin(t *testing.T) {
 	if err := yaml.Unmarshal(versions.VersionsYAML, &v); err != nil {
 		t.Fatal(err)
 	}
-	_, short, ok := strings.Cut(v.Studio.Tag, "-sha-")
-	if !ok || len(short) < 7 {
-		t.Fatalf("studio.tag %q does not end in -sha-<commit>", v.Studio.Tag)
-	}
 	src := Vendored()
-	if len(src.Commit) != 40 || !strings.HasPrefix(src.Commit, short) {
-		t.Fatalf("lints.sql was generated at commit %q but studio.tag is %q (commit %s...): run `go run ./internal/advisors/gen` again, as its README says",
-			src.Commit, v.Studio.Tag, short)
+	if err := src.CheckStudioTag(v.Studio.Tag); err != nil {
+		t.Fatal(err)
 	}
 	if src.Path != "packages/pg-meta/src/sql/studio/advisor/lints.ts" {
 		t.Errorf("source path %q", src.Path)
@@ -590,5 +585,21 @@ func TestIsTimeout(t *testing.T) {
 		if got := IsTimeout(c.err); got != c.want {
 			t.Errorf("IsTimeout(%v) = %v", c.err, got)
 		}
+	}
+}
+
+// The check above is only worth having if it fails when the tag moves.
+func TestCheckStudioTagFailsOnAnotherCommit(t *testing.T) {
+	src := Source{Commit: "94b8b06eb294cf6b217c68d30357566cc8f146d9"}
+	if err := src.CheckStudioTag("2026.10.05-sha-94b8b06"); err != nil {
+		t.Errorf("the commit of the tag: %v", err)
+	}
+	for _, tag := range []string{"2026.10.20-sha-1a2b3c4", "2026.10.05-sha-94b8b07", "2026.10.05", "2026.10.05-sha-94", ""} {
+		if err := src.CheckStudioTag(tag); err == nil {
+			t.Errorf("tag %q accepted", tag)
+		}
+	}
+	if err := (Source{Commit: "94b8b06"}).CheckStudioTag("2026.10.05-sha-94b8b06"); err == nil {
+		t.Error("a short commit in the header was accepted")
 	}
 }
