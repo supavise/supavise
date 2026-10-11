@@ -259,6 +259,7 @@ supabase db dump --db-url "$OLD_DB_URL" -f data.sql --use-copy --data-only -x "s
 
 <!-- migrate-smoke: restore -->
 ```bash
+sed -i.bak -E '/^(GRANT|REVOKE) .* ON PARAMETER /s/^/-- /' roles.sql
 psql --single-transaction --variable ON_ERROR_STOP=1 \
   --command 'alter default privileges in schema public revoke all on tables from anon, authenticated, service_role' \
   --command 'alter default privileges in schema public revoke all on functions from anon, authenticated, service_role' \
@@ -268,12 +269,15 @@ psql --single-transaction --variable ON_ERROR_STOP=1 \
   --file data.sql --dbname "$NEW_DB_URL"
 ```
 
-The first three commands keep your access rules. A new table, function or sequence in `public` gets `ALL` for `anon`, `authenticated` and `service_role` from the project's default privileges, and the dump only adds grants: it never takes one away. Without the commands, a table that you locked down on hosted (`revoke all ... from anon`) is open again through the Data API. The commands run in the restore's transaction, so a failed restore leaves the default privileges as they were. The dump lists the grants of each object and sets the default privileges of your `postgres` role again at its end, so the project ends up with the grants it had on hosted. Step 8 compares them.
+The `sed` command comments out the lines of `roles.sql` that grant privileges on configuration parameters, such as `GRANT SET ON PARAMETER "log_min_messages" TO "supabase_realtime_admin"`. The dump lists them because Supabase's own roles hold them. The `postgres` role can't grant them, so without the command the restore stops with `permission denied for parameter log_min_messages`. Those roles exist on the new project with their grants, so the lines add nothing. The original file stays as `roles.sql.bak`.
+
+The three `alter default privileges` commands keep your access rules. A new table, function or sequence in `public` gets `ALL` for `anon`, `authenticated` and `service_role` from the project's default privileges, and the dump only adds grants: it never takes one away. Without the commands, a table that you locked down on hosted (`revoke all ... from anon`) is open again through the Data API. The commands run in the restore's transaction, so a failed restore leaves the default privileges as they were. The dump lists the grants of each object and sets the default privileges of your `postgres` role again at its end, so the project ends up with the grants it had on hosted. Step 8 compares them.
 
 The restore runs in one transaction, so a failure leaves the project as it was. Fix the cause and run the restore again. If psql stops, look for the message:
 
 - **`relation "..." does not exist` or `column "..." of relation "..." does not exist`, in the `auth` or `storage` schema.** If you created the project a moment ago, wait until Auth and Storage have set up their schemas and run the restore again. Otherwise the hosted project runs a newer Auth or Storage than the node. Update the node first (`sudo supavise upgrade`), or delete that table's `COPY` block from `data.sql` (down to the `\.` line) and accept that its rows don't move. `sudo -u supavise supavise projects get <ref> --json | jq .versions` shows the node's versions.
 - **`permission denied`, on a line that sets an owner to `supabase_admin` or on a `GRANT` to `cli_login_postgres`.** Comment that line out.
+- **`permission denied for parameter ...`.** The line is a `GRANT` or `REVOKE` on a configuration parameter that the `sed` command did not match. Comment that line out.
 - **Any error in the `supabase_functions` schema.** The hosted project uses Database Webhooks. Turn them on for the new project (**Integrations**, **Database Webhooks**) and run the restore again.
 
 The dumps carry Auth users with their password hashes, identities, MFA factors and refresh tokens, so users sign in with the same passwords and refresh the sessions they have. Supabase's guide also lists optional dumps of the migration history (`--schema supabase_migrations`); they work against the node the same way.
