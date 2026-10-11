@@ -14,7 +14,11 @@ import (
 )
 
 // TestMemory runs the shared conformance checks against the in-memory registry.
-func TestMemory(t *testing.T) { testRegistry(t, NewMemory()) }
+func TestMemory(t *testing.T) {
+	m := NewMemory()
+	testRegistry(t, m)
+	testDataAPI(t, m)
+}
 
 // TestPostgres runs them against a real database when SUPAVISE_TEST_DATABASE_URL points
 // at an empty database (it creates schema supavise).
@@ -36,6 +40,7 @@ func TestPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	testRegistry(t, r)
+	testDataAPI(t, r)
 }
 
 func testRegistry(t *testing.T, r Registry) {
@@ -526,6 +531,56 @@ func TestComputeSizesMigrationRenamesClasses(t *testing.T) {
 		t.Fatalf("default class = %q, %v", class, err)
 	}
 	if err := Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// testDataAPI checks the Data API decision store (migration 1400) of either registry.
+func testDataAPI(t *testing.T, m Registry) {
+	t.Helper()
+	ctx := context.Background()
+	st := DataAPIOf(m)
+	if st == nil {
+		t.Fatalf("%T has no DataAPIStore", m)
+	}
+	if _, err := st.GetDataAPI(ctx, "aaaaaaaaaaaaaaaaaaaa"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an unknown project has no decision: %v", err)
+	}
+	if err := st.PutDataAPI(ctx, DataAPI{Ref: "aaaaaaaaaaaaaaaaaaaa", DefaultPrivileges: PrivilegesRevoked}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a decision for an unknown project: %v", err)
+	}
+	org, err := m.CreateOrganization(ctx, "dataapi-org", "Data API")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Project{Ref: "aaaaaaaaaaaaaaaaaaaa", OrgID: org.ID, Name: "a", Status: StatusActiveHealthy}
+	if err := m.CreateProject(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetDataAPI(ctx, p.Ref); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a project that nobody looked at has no decision: %v", err)
+	}
+	if err := st.PutDataAPI(ctx, DataAPI{Ref: p.Ref, DefaultPrivileges: PrivilegesRevoked, Source: DataAPIUpgrade}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetDataAPI(ctx, p.Ref)
+	if err != nil || got.DefaultPrivileges != PrivilegesRevoked || got.Source != DataAPIUpgrade || got.DecidedAt.IsZero() {
+		t.Fatalf("decision = %+v, %v", got, err)
+	}
+	// A reset branch is created again over its ref: the later decision replaces the earlier.
+	if err := st.PutDataAPI(ctx, DataAPI{Ref: p.Ref, DefaultPrivileges: PrivilegesGranted, Source: DataAPICreate}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetDataAPI(ctx, p.Ref); got.DefaultPrivileges != PrivilegesGranted {
+		t.Fatalf("decision after a replace = %+v", got)
+	}
+	if err := m.DeleteProject(ctx, p.Ref); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetDataAPI(ctx, p.Ref); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the decision outlived the project: %v", err)
+	}
+	if err := m.DeleteOrganization(ctx, org.ID); err != nil {
 		t.Fatal(err)
 	}
 }
