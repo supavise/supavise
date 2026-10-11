@@ -7,7 +7,8 @@ name: studio
 # touched Studio, its pin or this file, as the path filter this replaces did; mcp-e2e when the push touched Studio or
 # anything the endpoint depends on (the API server, the proxy, the fleet, the OAuth walk), and always on main, so that the
 # release gate (deploy/release-gate.sh) finds a run of both on the tagged commit. When the build did not run, mcp-e2e takes
-# the amd64 build of the newest successful run on main (tests/linux/crawl/fetch-studio.sh), which is the same code.
+# the amd64 build of the newest successful run of this branch or of main that pins the same Studio file
+# (tests/linux/crawl/fetch-studio.sh), which is the same code.
 on:
   push:
     branches: [main, "ws/**", "integrate/**"]
@@ -73,7 +74,7 @@ jobs:
           path: studio/.build-cache/spike/out
           if-no-files-found: ignore
 
-  # The remote MCP endpoint end to end, on the Studio build the `build` job just made (amd64), or on the newest one from main
+  # The remote MCP endpoint end to end, on the Studio build the `build` job just made (amd64), or on the newest matching one (this branch's or main's)
   # when this push did not build Studio: the same walk as the `oauth-smoke` job of linux.yml (tests/linux/oauth-smoke.sh) with
   # Studio running from the artifact, plus step L-09: MCP over Streamable HTTP at /mcp with two protocol revisions, a
   # project-scoped and an account-scoped URL, read_only, features, a personal access token as bearer, get_project_url and

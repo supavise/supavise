@@ -4,11 +4,15 @@
 #
 #   GH_TOKEN=... GITHUB_REPOSITORY=owner/name GITHUB_SHA=... tests/linux/crawl/fetch-studio.sh DEST [--fresh]
 #
-# Without --fresh it takes the artifact `studio-linux-amd64` of the newest successful run of studio.yml on main that has one,
-# which is the same code as this checkout when nothing under studio/ changed since. With --fresh (a push that changed Studio) it
-# waits for the studio.yml run of this very commit to finish and takes the artifact of that. Either way the file name
-# must be the one internal/versions/versions.yaml pins (supavise-studio-<tag>-p<patchset>-linux-amd64.tar.zst): the node
-# refuses any other build, and an older build on main would crawl the wrong pages.
+# Without --fresh it takes the artifact `studio-linux-amd64` of the newest successful run of studio.yml that built the file this
+# checkout pins, looking first at the runs of the current branch (GITHUB_REF_NAME: a branch that bumped the patch set has its own
+# build, and main has not) and then at main. That is the same code as this checkout when nothing under studio/ changed since. A
+# run is taken only when its commit pins the same file name as this checkout (read from versions.yaml at that commit), so an
+# older patch set is skipped before anything is downloaded. When no run qualifies (an artifact expires after 90 days, or the
+# branch has never built Studio) it fails and prints the command that builds it: `gh workflow run studio.yml --ref <branch>`.
+# With --fresh (a push that changed Studio) it waits for the studio.yml run of this very commit to finish and takes the
+# artifact of that. Either way the file name must be the one internal/versions/versions.yaml pins
+# (supavise-studio-<tag>-p<patchset>-linux-amd64.tar.zst): the node refuses any other build.
 #
 # STUDIO_WAIT_SECONDS (default 9000) bounds the wait for the run of the commit; STUDIO_GRACE_SECONDS (default 900) is how
 # long the run may take to appear after the push.
@@ -23,10 +27,17 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 
 fail() { echo "::error::fetch-studio: $*" >&2; exit 1; }
 
-tag=$(awk '/^studio:/{s=1;next} s&&/^[^ ]/{s=0} s&&/^[ ]+tag:/{print $2; exit}' "$root/internal/versions/versions.yaml")
-ps=$(awk '/^studio:/{s=1;next} s&&/^[^ ]/{s=0} s&&/^[ ]+patchset:/{print $2; exit}' "$root/internal/versions/versions.yaml")
-[[ -n $tag ]] || fail "studio.tag is not in internal/versions/versions.yaml"
-want="supavise-studio-${tag}${ps:+-p$ps}-linux-amd64.tar.zst"
+# pin_file: the file name the versions.yaml on stdin pins ("" when it has no studio.tag)
+pin_file() {
+  local y t p
+  y=$(cat)
+  t=$(awk '/^studio:/{s=1;next} s&&/^[^ ]/{s=0} s&&/^[ ]+tag:/{print $2; exit}' <<<"$y")
+  p=$(awk '/^studio:/{s=1;next} s&&/^[^ ]/{s=0} s&&/^[ ]+patchset:/{print $2; exit}' <<<"$y")
+  [[ -n $t ]] && echo "supavise-studio-${t}${p:+-p$p}-linux-amd64.tar.zst"
+  return 0
+}
+want=$(pin_file <"$root/internal/versions/versions.yaml")
+[[ -n $want ]] || fail "studio.tag is not in internal/versions/versions.yaml"
 mkdir -p "$dest"
 
 if [[ $fresh -eq 1 ]]; then
@@ -50,17 +61,26 @@ if [[ $fresh -eq 1 ]]; then
   gh run download "$id" --repo "$repo" --name studio-linux-amd64 --dir "$dest" \
     || fail "run $id has no studio-linux-amd64 artifact (the build failed, or the artifact expired)"
 else
-  # The newest successful run on main that has the artifact: a run of a push that did not touch Studio skips the build, so
-  # the newest run is not always the one to take.
-  got=0
-  for id in $(gh run list --repo "$repo" --workflow studio.yml --branch main --status success --limit 30 --json databaseId --jq '.[].databaseId'); do
-    if gh run download "$id" --repo "$repo" --name studio-linux-amd64 --dir "$dest" >/dev/null 2>&1; then
-      echo "Studio build from studio.yml run $id" >&2
-      got=1
-      break
-    fi
+  # The newest successful run, of this branch and then of main, whose commit pins this checkout's file and that has the artifact
+  # (a run of a push that did not touch Studio skips the build, so the newest run is not always the one to take).
+  branch=${GITHUB_REF_NAME:-}
+  branches=()
+  [[ -n $branch && $branch != main ]] && branches+=("$branch")
+  branches+=(main)
+  id=""
+  for b in "${branches[@]}"; do
+    while read -r rid sha; do
+      [[ -n $rid ]] || continue
+      pinned=$(gh api -H 'Accept: application/vnd.github.raw' "repos/$repo/contents/internal/versions/versions.yaml?ref=$sha" 2>/dev/null | pin_file || true)
+      [[ $pinned == "$want" ]] || continue
+      if gh run download "$rid" --repo "$repo" --name studio-linux-amd64 --dir "$dest" >/dev/null 2>&1; then
+        id=$rid
+        echo "Studio build from studio.yml run $id on $b" >&2
+        break 2
+      fi
+    done < <(gh run list --repo "$repo" --workflow studio.yml --branch "$b" --status success --limit 30 --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha)"')
   done
-  [[ $got -eq 1 ]] || fail "none of the last successful studio.yml runs on main has a studio-linux-amd64 artifact"
+  [[ -n $id ]] || fail "no successful studio.yml run on ${branch:-main}${branch:+ or main} has a studio-linux-amd64 artifact of $want (an artifact expires after 90 days, and a branch that changed the patch set has to build it): start one with 'gh workflow run studio.yml --ref ${branch:-main}' and run this again"
 fi
 
 f=$(ls "$dest"/*.tar.zst 2>/dev/null | head -1 || true)
