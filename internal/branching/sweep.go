@@ -67,15 +67,14 @@ func (s *Service) Sweep(ctx context.Context, dryRun bool) (*SweepResult, error) 
 		if _, running := s.running(p.Ref); running {
 			continue
 		}
-		if s.abandoned(ctx, b) {
-			res.Stale = append(res.Stale, p.Ref)
-			if !dryRun {
-				s.setState(ctx, p.Ref, registry.BranchMigrationsFailed, "interrupted: no process was working on this operation (the daemon stopped?)", nil)
+		if s.inFlight(ctx, b) {
+			if s.unattended(ctx, b) {
+				res.Stale = append(res.Stale, p.Ref)
+				if !dryRun {
+					s.setState(ctx, p.Ref, registry.BranchMigrationsFailed, "interrupted: no process was working on this operation (the daemon stopped?)", nil)
+				}
 			}
-			continue
-		}
-		if busy(b.State) {
-			continue // another process (the CLI) is working on it
+			continue // otherwise another process (the CLI) is working on it
 		}
 		lapsed := (!b.Persistent && b.ExpiresAt != nil && !b.ExpiresAt.After(now)) ||
 			(b.DeletionScheduledAt != nil && !b.DeletionScheduledAt.After(now))

@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/supavise/supavise/internal/registry"
+	"github.com/supavise/supavise/internal/secrets"
 )
 
 // stepStates returns the status of every step of the run, in the order of the DAG.
@@ -733,5 +734,56 @@ func TestDefaultBranchFailureEndsWithTheBranch(t *testing.T) {
 	}
 	if got := defState(); got != registry.BranchFunctionsDeployed {
 		t.Fatalf("default branch after the failed branch was deleted = %s", got)
+	}
+}
+
+// While a run deploys the functions the branch reads MIGRATIONS_PASSED, which alone is also how a
+// branch at rest looks: another process (the CLI, the sweeper of a second daemon) sees the run.
+func TestADeployingBranchIsBusyForOtherProcesses(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	b := h.create("feat", nil)
+	h.svc.setState(ctx, b.Ref, registry.BranchMigrationsPassed, "", nil)
+	cur, _ := h.svc.Resolve(ctx, b.Ref)
+	if h.svc.inFlight(ctx, cur) || h.svc.checkIdle(ctx, cur) != nil {
+		t.Fatal("a branch at MIGRATIONS_PASSED with no run is at rest")
+	}
+	// A run of another process, still going, and a lapsed expiry that the sweeper would act on.
+	host, _ := os.Hostname()
+	run := &registry.BranchRun{ID: secrets.NewUUID(), OwnerRef: b.Ref, BranchRef: b.Ref, ParentRef: parentRef, Op: "push",
+		Status: registry.RunRunning, RunnerHost: host, RunnerPID: os.Getppid(), RunnerInstance: "other"}
+	if err := h.reg.CreateBranchRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.event(ctx, b.Ref, "branch.push.started", map[string]any{"operation": "push", "owner": map[string]any{"host": host, "pid": os.Getppid(), "instance": "other"}})
+	p, _ := h.reg.GetProject(ctx, b.Ref)
+	past := h.clock().Add(-time.Hour)
+	p.Branch.ExpiresAt = &past
+	if err := h.reg.UpdateBranchSettings(ctx, b.Ref, p.Branch); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ = h.svc.Resolve(ctx, b.Ref)
+	if !h.svc.inFlight(ctx, cur) {
+		t.Fatal("a deploy step of another process is in flight")
+	}
+	if err := h.svc.checkIdle(ctx, cur); !errors.Is(err, ErrConflict) {
+		t.Fatalf("an operation on a deploying branch: %v", err)
+	}
+	res, err := h.svc.Sweep(ctx, false)
+	if err != nil || len(res.Expired) != 0 || len(res.Stale) != 0 {
+		t.Fatalf("sweep during the deploy: %+v %v", res, err)
+	}
+	if _, err := h.svc.Resolve(ctx, b.Ref); err != nil {
+		t.Fatalf("the sweeper deleted a deploying branch: %v", err)
+	}
+	// The run ends: the branch is free again (and now lapsed).
+	if err := h.reg.FinishBranchRun(ctx, run.ID, registry.RunSuccess, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.checkIdle(ctx, cur); err != nil {
+		t.Fatalf("after the run ended: %v", err)
+	}
+	if res, err = h.svc.Sweep(ctx, false); err != nil || len(res.Expired) != 1 {
+		t.Fatalf("sweep after the deploy: %+v %v", res, err)
 	}
 }
