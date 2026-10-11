@@ -152,4 +152,8 @@ type DeleteOptions struct {
 	// (and the sealed secrets), which ends INIT_FAILED: nothing runs and nothing is stored.
 	// CreateRequest.Recreate builds a new cluster over it; Delete removes it for good.
 	KeepRecord bool
+	// PurgeObjects also removes the project's Storage objects (the directory of the file backend,
+	// the <ref>/ prefix of the S3 backend) when KeepRecord keeps the row. A delete that does not
+	// keep the row always removes them. A branch reset sets it: the new cluster has no objects.
+	PurgeObjects bool
 }
