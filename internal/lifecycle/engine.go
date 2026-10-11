@@ -397,7 +397,7 @@ func (e *Engine) baseTenantSpec(p *registry.Project, keys *secrets.ProjectKeys) 
 
 // Create implements Manager.
 //
-// Order: registry row (COMING_UP), sealed secrets, data plane (cluster, roles, GoTrue,
+// Order: registry row (COMING_UP), sealed secrets, the settings of a new project, data plane (cluster, roles, GoTrue,
 // PostgREST, all health-checked), fleet tenants, host route, then ACTIVE_HEALTHY. A
 // failure after the row exists stops and removes the units and the data and leaves the
 // row INIT_FAILED with an event carrying the cause; the secrets stay so that the row
@@ -529,6 +529,11 @@ func (e *Engine) Create(ctx context.Context, req CreateRequest) (*registry.Proje
 	}
 	if err := e.storeKeys(ctx, ref, keys); err != nil {
 		return fail("store secrets", err)
+	}
+	if !req.Recreate {
+		if err := e.seedSettingsAtCreate(ctx, ref); err != nil {
+			return fail("settings", err)
+		}
 	}
 	if err := e.plane.Create(ctx, p, keys, req.Seed); err != nil {
 		return fail("data plane", err)

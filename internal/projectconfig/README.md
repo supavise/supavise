@@ -189,7 +189,12 @@ cluster when something needs it; without it the values are saved, rendered, and 
 - Settings written through the Management API are the only ones rendered: a unit's other
   environment (ports, database URLs, keys, mailer URL paths) is lifecycle's and cannot be
   overridden here.
-- A restored or cloned project starts with the default settings; they are not copied from the
-  source.
+- A restored or cloned project starts with the settings of a new project; they are not copied from
+  the source.
+- A new project starts at `mailer_otp_exp` 3600, as a new hosted project does, and the schema default
+  stays 86400, GoTrue's own. The lifecycle engine saves `NewProjectAuth` once, when it creates a
+  project; an existing project has no saved value and keeps running on 86400, and a `null` sent for
+  the setting returns it to 86400. Moving the schema default instead would shorten the OTP of every
+  existing project at its next restart.
 - Reads of Postgres settings query the running cluster with the `postgres` role; a paused
   project reports what was saved.

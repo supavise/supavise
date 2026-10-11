@@ -68,6 +68,51 @@ func TestAuthEnvNamesExist(t *testing.T) {
 	check("GOTRUE_DB_CONN_PERCENTAGE", "db pool percent")
 }
 
+// A new project starts at the hour a new hosted project starts at, and a project with no saved value
+// keeps what its GoTrue has always run on: the schema default and the unit's environment do not move.
+func TestNewProjectsStartAtAnHourAndExistingProjectsKeepADay(t *testing.T) {
+	ctx := context.Background()
+	m, _ := newManager(t)
+	const old, fresh = "abcdefghijklmnopqrsu", "abcdefghijklmnopqrsv"
+
+	// An existing project: no row. It reports GoTrue's own day and renders nothing for it.
+	st, err := m.Get(ctx, old, Auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.Effective.Int("mailer_otp_exp"); got != 86400 {
+		t.Fatalf("a project with no saved value reports %d, want 86400", got)
+	}
+	if env, _ := m.AuthEnv(ctx, old, ""); env["GOTRUE_MAILER_OTP_EXP"] != "" {
+		t.Fatalf("a project with no saved value renders %q", env["GOTRUE_MAILER_OTP_EXP"])
+	}
+
+	// A new project: the engine saves NewProjectAuth once, and the unit renders the hour.
+	for name := range NewProjectAuth() {
+		if _, ok := AuthSchema.Field(name); !ok {
+			t.Fatalf("NewProjectAuth names %s, which is not an Auth setting", name)
+		}
+	}
+	if _, err := m.Patch(ctx, fresh, Auth, NewProjectAuth(), CrossContext{}); err != nil {
+		t.Fatalf("the settings of a new project are refused: %v", err)
+	}
+	st, err = m.Get(ctx, fresh, Auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.Effective.Int("mailer_otp_exp"); got != 3600 {
+		t.Fatalf("a new project reports %d, want 3600", got)
+	}
+	if env, _ := m.AuthEnv(ctx, fresh, ""); env["GOTRUE_MAILER_OTP_EXP"] != "3600" {
+		t.Fatalf("a new project renders %q, want 3600", env["GOTRUE_MAILER_OTP_EXP"])
+	}
+
+	// Saving the settings of the new project does not touch the other one.
+	if got, _ := m.Get(ctx, old, Auth); got.Version != 0 {
+		t.Fatalf("the existing project was written: version %d", got.Version)
+	}
+}
+
 func TestDefaultsRenderNothing(t *testing.T) {
 	m, _ := newManager(t)
 	env, err := m.AuthEnv(context.Background(), ref, "https://x/auth/v1")
