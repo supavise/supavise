@@ -79,7 +79,7 @@ The certificate store (`GET /peer/v1/certs`) is not served here: the proxy owns 
 
 The report intake (`POST /peer/v1/report`) names the reporting node from the certificate of the connection and refuses a body that names another; a subscriber (`Reports.Subscribe`) is called in the goroutine that stored the report, with the node already set, and has no context of its own (it closes over the daemon's); it must not block.
 
-`Reports` is the leader's memory of what the nodes last reported (replica steps, lag, receiver state, project health). `Reporter` builds this node's report every 10 seconds from the contributors that other packages add with `Add`, and sends it to the leader, or stores it when this node leads.
+`Reports` is the leader's memory of what the nodes last reported (replica steps, lag, receiver state, project health, and the newest utilization sample of each project). `Reporter` builds this node's report every 10 seconds from the contributors that other packages add with `Add` (instances and project health) and `AddMetrics` (utilization samples, `internal/metrics`), and sends it to the leader, or stores it when this node leads.
 
 ## Leaving and rejoining
 

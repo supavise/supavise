@@ -14,7 +14,12 @@ const (
 	KindProjectUnhealthy    = "project_unhealthy"
 	KindCertificateExpiring = "certificate_expiring"
 	KindNodeUnhealthy       = "node_unhealthy" // a shared service, the system cluster or the registry
-	KindUpdateAvailable     = "update_available"
+	// KindMemoryLow and KindProjectDiskHigh come from the node's measurements (internal/metrics): the
+	// node has little memory left to give or its tasks wait for it, and a project has spent most of
+	// its disk quota.
+	KindMemoryLow       = "memory_low"
+	KindProjectDiskHigh = "project_disk_high"
+	KindUpdateAvailable = "update_available"
 
 	KindUpgradeStarted   = "upgrade_started"
 	KindUpgradeSucceeded = "upgrade_succeeded"
