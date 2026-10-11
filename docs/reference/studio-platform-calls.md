@@ -209,6 +209,24 @@ The Branches page, the merge page (`/project/{ref}/merge`) and "View Logs" read 
 | P1 | POST | `/v1/branches/{id}/merge`, `/push` | `201 {workflow_run_id}`; the page adds it to the query string, shows "Processing" while the run is running and offers "Close branch" when it succeeded. A refusal found while the run works (divergence) is a failed run, not an error status |
 | P1 | POST, PATCH | `/v1/projects/{ref}/branches`, `/v1/branches/{id}` of the default branch | the Production branch form (GitHub integration settings) creates the default branch with `is_default: true` and later patches `git_branch` and `branch_name`; both are accepted and the answer is the default branch with the Git branch stored |
 
+## GitHub integration
+
+The GitHub card of Settings > Integrations (project and organization), the Connections row of Account > Preferences, the GitHub status of the Branches side menu and the "Sync with a GitHub branch" block of the branch dialogs are shown only while the profile does not list `integrations:github` in `disabled_features`. The profile lists it while the server has no GitHub App (patch 0007, `docs/github-integration.md`). The install and authorize windows are built from `NEXT_PUBLIC_GITHUB_INTEGRATION_APP_NAME` and `..._CLIENT_ID`, which the unit sets from the server's App.
+
+| Prio | Method | Path | What Studio needs |
+|---|---|---|---|
+| P1 | GET | `/platform/integrations/github/authorization` | `{id, sender_id, user_id}` when the signed-in user authorized the server's App, an error (Studio reads it as "not connected") when not. A stub answered with zeros for everybody, which showed "Connected" and "You are authorized with the Supabase GitHub app". `404` here. |
+| P1 | POST | `/platform/integrations/github/authorization` | `201`. Body `{code}`: the authorize page (`/integrations/github/authorize`) compares the `state` with the one in the browser and posts only the code. |
+| P2 | DELETE | `/platform/integrations/github/authorization` | `200`; `404` when the user has none. Account > Preferences > Remove connection. |
+| P1 | GET | `/platform/integrations/github/connections?organization_id=` | `{connections: [...]}` of the organization, each with `project`, `repository` and `user`. The Branches page shows only an alert when this call fails, so a server without an App answers an empty list. Repository and installation ids are exact integers (they do not fit a `float32`). |
+| P1 | POST, PATCH, DELETE | `/platform/integrations/github/connections[/{id}]` | The connection form. `POST` body `{project_ref, installation_id, repository_id, workdir, supabase_changes_only, branch_limit, new_branch_per_pr}`, answer `201`; `PATCH` and `DELETE` answer `204`. The production branch of the same form is a create or patch of the default branch (`is_default`, `git_branch`), not a call of this family. |
+| P1 | GET | `/platform/integrations/github/repositories` | `{partial_response_due_to_sso, repositories: [{id, name, installation_id, default_branch}]}`: the repositories the user's own GitHub token reaches through the server's App. |
+| P2 | GET | `/platform/integrations/github/repositories/{id}/branches[/{name}]` | The branch check of the production branch field and the branch dialogs: `{name}`, `404` when the branch does not exist. |
+| P2 | GET | `/platform/integrations/github/connections/{id}/config?ref=` | The parsed `supabase/config.toml` for the configuration drift page: `{path, ref, sha, config}`; `404` without the file, `422` for a file that is not TOML. |
+| P2 | GET | `/v2/organizations/{slug}/integrations/github/connections` | The same list in the JSON:API shape. |
+
+Branches carry `pr_number` while they follow a pull request, which turns "Create pull request" off for them; the action needs a connection (patch 0007). With Deploy to production on, `mainBranch.git_branch` is set and a connection exists, so Studio disables the merge page's Merge button; `POST /v1/branches/{id}/push` on the production row (Resync) deploys the production branch.
+
 ## Advisors
 
 The Security Advisor, the Performance Advisor, the advisor panel and the project home widget, the table editor's RLS badge and Studio's "project needs securing" banner all read `GET /platform/projects/{ref}/run-lints` (`data/lint/lint-query.ts`). Studio filters the array itself: a page keeps the lints whose `categories` include `SECURITY` or `PERFORMANCE`, groups them by `level`, and picks the selected one by `cache_key`, so the answer carries every lint of both categories. Studio runs the same lints in its own self-hosted mode (`lib/api/self-hosted/lints.ts`, `getLintsSQL` of `packages/pg-meta`, as `supabase_admin`, with `PGRST_DB_SCHEMAS` as `pgrst.db_schemas`), which is where Supavise's SQL comes from (`internal/advisors/README.md`).
@@ -335,7 +353,7 @@ A node has no log store and no hosted platform behind it. A stub that answers "s
 
 The legacy JWT secret and the other signing-keys calls are in "Legacy JWT secret".
 
-Still answered by a stub and therefore empty or inert, unfixed: organization and profile audit logs (`GET /platform/organizations/{slug}/audit`, `/platform/profile/audit`: the pages list no events), email template spam validation (`POST /platform/auth/{ref}/validate/spam`: no rule ever matches), `daily-stats` (the Storage and Database report charts that read it), and the hosted integrations pages (GitHub, Vercel, AWS PrivateLink, replication, log drains, billing), most of which are hidden through `disabled_features`.
+Still answered by a stub and therefore empty or inert, unfixed: organization and profile audit logs (`GET /platform/organizations/{slug}/audit`, `/platform/profile/audit`: the pages list no events), email template spam validation (`POST /platform/auth/{ref}/validate/spam`: no rule ever matches), `daily-stats` (the Storage and Database report charts that read it), and the hosted integrations pages (Vercel, AWS PrivateLink, replication, log drains, billing), most of which are hidden through `disabled_features`.
 
 ## Where the spec and Studio disagree
 

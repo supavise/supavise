@@ -7,6 +7,7 @@ This guide picks up after the install in the [README](../README.md#get-started).
   - [New tables need a grant](#new-tables-need-a-grant)
 - [Use the Supabase CLI](#use-the-supabase-cli)
 - [Give an agent or a preview its own branch](#give-an-agent-or-a-preview-its-own-branch)
+- [Build a preview branch from every pull request](#build-a-preview-branch-from-every-pull-request)
 - [Connect an AI tool to a project](#connect-an-ai-tool-to-a-project)
 - [Check a project with the advisors](#check-a-project-with-the-advisors)
 - [Back up and restore](#back-up-and-restore)
@@ -142,6 +143,21 @@ Creating a branch, updating it from its parent, merging it into the parent and r
 - **On the node.** `supavise branches runs <branch>` lists the runs, `supavise branches logs <branch> [run-id]` prints a log, and `supavise branches get <branch>` prints why the last operation failed. Through the API the same data is `GET /v1/projects/<ref>/actions`, `.../actions/<run-id>` and `.../actions/<run-id>/logs`.
 - **A notification.** `supabase branches update <branch> --notify-url https://example.com/hook --project-ref <ref>` makes the node `POST` to that URL when a run ends. The body is the one Supabase documents (`type: "run.completed"`, `data.action_run` with the steps in lowercase and, after a failure, `failure`), plus a `supavise` object with the branch and the outcome. The call carries the [Standard Webhooks](https://www.standardwebhooks.com) headers `webhook-id`, `webhook-timestamp` and `webhook-signature`; verify them with the secret `supavise branches notify-secret` prints (`--rotate` replaces it). The node refuses to call private addresses unless `allow_private_notify_urls` is set in `[branching]`.
 - **Merge requests.** **Close merge request** in Studio clears the branch's review mark, and a successful merge clears it too, whether it came from Studio, the CLI or the MCP server.
+
+## Build a preview branch from every pull request
+
+A connected GitHub repository gets a preview branch for each pull request, built from the repository's `supabase` directory (migrations, seed, `config.toml`, Edge Functions) and deleted when the pull request closes. Until the server has a GitHub App of its own, the dashboard shows no GitHub buttons: Supabase's App cannot send webhooks to your server.
+
+1. Create the App once, on the leader, and open the link it prints in a browser that is signed in to GitHub:
+
+   ```bash
+   sudo -u supavise supavise github app create --owner my-org   # leave --owner out for your own account
+   ```
+
+2. Install the App on your repositories (the page that confirms the App has the link).
+3. In Studio, open the project's **Settings**, **Integrations**, **GitHub**, authorize, choose the repository and the working directory, and turn on **Automatic branching**. **Deploy to production** with a production branch makes a push to that branch apply the repository's migrations and Edge Functions to the project.
+
+`https://api.<domain>/hooks/github` must be reachable from GitHub. Open a pull request: the branch appears on the Branches page with its pull request number, the pull request gets a check named `Supabase Preview` and one comment that the server keeps up to date, and each new commit applies only the migrations the branch lacks. [github-integration.md](github-integration.md) has the options, what `config.toml` sections apply (and the `[remotes]` block that configures a persistent branch), the fork policy and an Actions workflow for a server GitHub cannot reach.
 
 ## Connect an AI tool to a project
 
@@ -465,6 +481,7 @@ Studio is the real hosted dashboard. Where a page depends on something a server 
 - **Logs and Reports.** The Logs Explorer and the log pages of each service show an error that points to `supavise logs <ref>`. The charts of the Auth, Edge Functions and some other reports have no way to show an error and stay empty.
 - **Requests on the project home.** The chart counts the requests that the server's proxy served to the project's REST, Auth, Storage and Realtime APIs, by minute, hour or day. The counts live in memory: they start at zero when `supavise` restarts, and on a two-server cluster they leave out the requests that the second server served.
 - **Database Webhooks.** Select **Enable webhooks** to create the `supabase_functions` schema and turn on `pg_net`. If you created a schema with that name yourself, the button fails with a message: drop or rename your schema first. Webhooks you create after that send an HTTP request when a row is inserted, updated or deleted, as you chose; the response is in `net._http_response`. A branch created with data cannot send those requests to the network unless it was created with `--allow-egress`.
+- **GitHub.** The GitHub card, the Connections row of your account preferences and "Sync with a GitHub branch" appear only when the server has a GitHub App (see [Build a preview branch from every pull request](#build-a-preview-branch-from-every-pull-request)).
 - **Features a server cannot offer.** Iceberg and vector buckets in Storage are hidden. SSL enforcement shows as unavailable. Adding a Third-party Auth provider, creating JWT signing keys and sending feedback are refused with a message. A project signs its tokens with the legacy JWT secret: change it under **Project settings**, **JWT keys**, **Legacy JWT secret**, or rotate it together with the API keys with `sudo -u supavise supavise projects rotate-keys <ref>`. The read replicas of the project take the new secret too (see "Do read replicas follow a change of the JWT secret?").
 
 ## Read replicas and failover

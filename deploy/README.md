@@ -128,6 +128,18 @@ sudo -u supavise supavise oauth grants revoke <id>                              
 - **Studio.** The MCP route runs inside Studio (`supavise-studio.service`), which calls the Management API on the node's loopback address, so `/mcp` needs Studio to run. A node without a Studio build answers `/mcp` requests that pass the gate with a gateway error. The route's `search_docs` tool calls `supabase.com` from the node, so a node that blocks outbound traffic loses that one tool.
 - **Registry.** The tokens, codes and client secrets are stored as SHA-256 hashes in five `oauth_*` tables (migration 1350), apart from `access_tokens`.
 
+### GitHub integration
+
+A connected repository gets a preview branch for every pull request. It needs a GitHub App that belongs to you, and GitHub must reach `https://api.<domain>/hooks/github`; the dashboard shows no GitHub buttons until the server has the App.
+
+```bash
+sudo -u supavise supavise github app create --owner my-org   # prints a link: open it in a browser that is signed in to GitHub
+sudo -u supavise supavise github app status                  # the App, the install link, the webhook and callback URLs
+sudo -u supavise supavise github app remove                  # forgets the App and the users' authorizations (it stays on GitHub)
+```
+
+Run these on the leader; the daemon must run, because it serves the page the link opens and GitHub's redirect. Studio restarts when the App appears or goes. An App you made yourself goes in `[github]` of `config.toml`, with its secrets in files (`docs/github-integration.md`). `[github] allow_forks` lets pull requests from forks build branches; leave it off unless every fork is trusted. Allow `api.<domain>` and `studio.<domain>` through to GitHub's servers and browsers as usual; nothing else is opened.
+
 ## Update
 
 You own the node, so Supavise tells you that a release exists and changes nothing until you ask, or until you opt in to automatic upgrades inside a maintenance window. A release is a tested bundle: the binary and the Supabase service versions it installs (`internal/versions/versions.yaml`). The [guide](../docs/guide.md#updates-and-maintenance) has the routine.
