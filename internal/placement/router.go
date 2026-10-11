@@ -341,6 +341,19 @@ func (r *Router) VerifyExtensions(ctx context.Context, p *registry.Project) erro
 	return l.VerifyExtensions(ctx, p)
 }
 
+// ApplyDataAPI implements lifecycle.DataAPIPlane. The statements run in the project's database on its
+// home node: here when the project is homed here, over the peer API otherwise.
+func (r *Router) ApplyDataAPI(ctx context.Context, p *registry.Project, s lifecycle.DataAPISetup) error {
+	pl, err := r.forProject(ctx, p)
+	if err != nil {
+		return err
+	}
+	if dp, ok := pl.(lifecycle.DataAPIPlane); ok {
+		return dp.ApplyDataAPI(ctx, p, s)
+	}
+	return fmt.Errorf("%w: the plane of %s cannot run the Data API statements", lifecycle.ErrNotSupported, p.Ref)
+}
+
 func (r *Router) PendingRestart(ctx context.Context, p *registry.Project, keys *secrets.ProjectKeys) (bool, error) {
 	l, err := r.local(ctx, p, "looking for a held-back restart")
 	if err != nil {

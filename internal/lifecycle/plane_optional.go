@@ -3,7 +3,7 @@ package lifecycle
 // FullPlane is a Plane with every optional capability the Engine looks for by type assertion:
 // reconfiguring one service, applying Postgres settings, resetting role passwords, recovering a
 // cluster that cannot start, checking a render, inspecting extensions, restarting what the daemon
-// held back. *PostgresPlane is one. A plane that wraps another (the router in internal/placement
+// held back, running the Data API statements. *PostgresPlane is one. A plane that wraps another (the router in internal/placement
 // puts one in front of the node's own plane) must be one too, or the Engine finds each capability
 // missing and quietly stops offering it; this interface is what the wrapper is compiled against.
 // An Engine feature that starts asserting a new interface adds it here.
@@ -15,6 +15,7 @@ type FullPlane interface {
 	RolePasswordPlane
 	ExtensionInspector
 	PendingRestarter
+	DataAPIPlane
 }
 
 // HomeRouter marks a Plane that sends each call for a project to the node the project is homed on

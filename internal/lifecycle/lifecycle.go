@@ -42,6 +42,9 @@ type CreateRequest struct {
 	// cluster. The row must be INIT_FAILED. A reset of a branch uses it, so that a failure
 	// leaves the branch registered instead of gone.
 	Recreate bool
+	// DataAPI are the Data API choices of the new project (default privileges, the dedicated api
+	// schema, the exposed schemas). The zero value is hosted's default for a new project.
+	DataAPI DataAPIOptions
 }
 
 type ServiceHealth struct {

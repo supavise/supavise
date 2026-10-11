@@ -141,3 +141,11 @@ func (r *RemotePlane) FinalCheckpoint(ctx context.Context, ref string) (lifecycl
 	err := r.call(ctx, ref, planeFinalCheckpoint, nil, &ci)
 	return ci, err
 }
+
+var _ lifecycle.DataAPIPlane = (*RemotePlane)(nil)
+
+// ApplyDataAPI implements lifecycle.DataAPIPlane: the statements run on the node, in the project's
+// database.
+func (r *RemotePlane) ApplyDataAPI(ctx context.Context, p *registry.Project, s lifecycle.DataAPISetup) error {
+	return r.call(ctx, p.Ref, planeApplyDataAPI, dataAPIArgs{Project: p, Setup: s}, nil)
+}
