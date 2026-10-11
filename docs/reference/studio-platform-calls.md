@@ -228,6 +228,44 @@ The Owner and Administrator rule of the existing `oauth_apps` permission covers 
 
 **The Connect > MCP panel.** It reads `NEXT_PUBLIC_MCP_URL` (patch 0004 adds the placeholder; `studio/placeholders.json`), which the fleet sets to `<api url>/mcp`, and shows `<url>?project_ref=<ref>` with the Claude Code, Cursor, VS Code and Codex snippets. The panel's own text, "OAuth 2.1 with dynamic client registration", describes what the node does.
 
+## Logs, request charts and hosted-only pages
+
+A node has no log store and no hosted platform behind it. A stub that answers "success" or "nothing" for such a call reads as "no errors" or "it worked", so these calls are answered by handlers (`internal/api/analytics.go`, `unsupported.go`, `webhooks.go`). The renderings below come from reading Studio at the pinned commit; `studio/spike.sh` does not visit these pages.
+
+**Log queries.** `GET` and `POST` `/platform/projects/{ref}/analytics/endpoints/logs.all`, `logs.all.otel` and `logs`, and `GET /v1/projects/{ref}/analytics/endpoints/logs` answer `200 {"result": [], "error": "<string>"}`. The string says that Supavise collects no logs for the dashboard and names ``supavise logs <ref>``. The spec's `error` is a string or an object whose `code`, `errors`, `message` and `status` are all required, so a string is the only valid short form. `GET /v1/projects/{ref}/analytics/endpoints/logs.all` answers `410`, as hosted does since 2026-09-23 (its spec lists nothing else).
+
+| Caller | What it does with the string |
+|---|---|
+| Logs explorer, per-product log pages (`useLogsQuery`, `useLogsPreview`) | Show it in the "Error fetching logs" block in place of the table. The event chart above the table stays empty. |
+| API report (`useApiReport`), Auth overview error cards (`OverviewErrors.constants.ts`) | Throw it: each chart or card shows the message. |
+| Unified logs (`unified-logs-infinite-query.ts`) | Throws it; the page shows its error state. |
+| Edge Functions list, last-hour stats | `handleError` on a string, which gives a generic error. |
+| API keys, "last used" (`api_keys.last_used.otel`) | Throws it; the page would say it cannot load the requests of the last 24 hours, but the flag that shows the column (`showApiKeysLastUsed`) is off here. |
+| MCP `get_logs`, `query_logs` | The tool returns the whole body wrapped as untrusted data, so the model reads the string. |
+| Auth report charts (`data/reports/v2/auth.config.ts`), Edge Function overview (`functions.combined-stats`, `functions.req-stats`, `functions.resource-usage`) | **Ignore it and draw zeros.** Studio reads `result` only. No answer from the server changes that short of a log store. |
+
+`auth.metrics` (the Auth overview's numbers) answers `400` with the same pointer: an empty answer shows zero sign-ups and zero active users, and Studio shows its own error alert for a refusal. `service-health` and `project.metrics` answer like the log queries; Studio's Observability overview, which reads them, is behind a feature flag that is off here.
+
+**Request charts.** `GET /platform/projects/{ref}/analytics/endpoints/usage.api-counts` (and the v1 twin) answers one row per bucket of the `interval` Studio sends: `1hr` is 61 minute buckets, `1day` 25 hour buckets, `7day` 8 UTC day buckets (the other values of the spec's enum, `15min`, `30min`, `3hr` and `3day`, work too). Each row holds `timestamp` and `total_rest_requests`, `total_auth_requests`, `total_storage_requests` and `total_realtime_requests`, counted by the edge proxy of the server that answers (`internal/reqstats`). Empty buckets are in the answer, so Studio draws a continuous chart and does not fill gaps itself. `total_rest_requests` counts `/rest/v1` only, as hosted's own query does (`/graphql/v1` and `/functions/v1` are counted but not charted). The counts start at zero when `supavise serve` starts and cover the requests this server's proxy served: on a two-server cluster the Management API runs on the leader, so the chart leaves out what the follower's proxy served. `usage.api-requests-count` answers the total of the current UTC hour and the 23 before it; Studio does not call it.
+
+**Database Webhooks.** "Enable webhooks" (`POST /platform/database/{ref}/hook-enable`, `POST /v1/projects/{ref}/database/webhooks/enable`) runs `internal/api/webhooks.sql` as `supabase_admin`: `pg_net`, the `supabase_functions` schema with `hooks` and `migrations`, and `supabase_functions.http_request()`, owned by `supabase_functions_admin`. It answers `201` with no body and can run again. Studio then finds the `supabase_functions` schema (that is how it knows hooks are enabled), and creates, edits and drops a webhook as a trigger through `POST /platform/pg-meta/{ref}/query` as the `postgres` role; there is no other webhook call. The file is upstream's `docker/volumes/db/webhooks.sql` with three changes, listed in its header: it can run twice, the pg_net grants that the postgres artifact's own migration removes for pg_net 0.12 and newer are not applied again, and the artifact's `grant_pg_net_access` event trigger is kept.
+
+**Hosted features this server refuses.** Each answer is a `4xx`, which Studio shows as the reason and does not retry. `disabled_features` in the profile also hides `storage:analytics`, `storage:vectors` (Storage runs without the Iceberg catalog and vector services) and `authentication:third_party_auth`. Logs and Reports stay in the menus.
+
+| Call | Answer | Studio shows |
+|---|---|---|
+| `GET`, `PUT /v1/projects/{ref}/ssl-enforcement` | `400` "This project is not allowed to configure SSL enforcements: ..." | The switch is disabled with "Your project does not have access to SSL enforcement". Studio matches this text. |
+| `PATCH /platform/projects/{ref}/config/secrets` | `400` naming ``supavise projects rotate-keys <ref>`` | "Failed to update JWT secret: ..." |
+| `GET /platform/projects/{ref}/config/secrets/update-status` | `200 {"update_status": null}` (a stub says status `0`, which is "updating": the legacy API keys tab showed "Updating JWT secret..." in place of the keys) | Nothing is updating. |
+| `GET .../config/auth/signing-keys/legacy` | `404` | "Start using JWT signing keys" (the project uses the legacy secret, which is true) |
+| `POST .../signing-keys`, `POST .../signing-keys/legacy` | `400` | The mutation's error toast |
+| `GET`, `PATCH`, `DELETE .../signing-keys/{id}`, `GET`, `DELETE .../third-party-auth/{tpa_id}` | `404` | |
+| `POST .../config/auth/third-party-auth` | `400` | The page is hidden; this is for API clients |
+| `POST /platform/feedback/send` | `400` pointing to the project's issue tracker | "Failed to submit feedback" (the widget would otherwise say the feedback was sent) |
+| `GET .../analytics/endpoints/auth.metrics` | `400` | The Auth overview's error alert |
+
+Still answered by a stub and therefore empty or inert, unfixed: organization and profile audit logs (`GET /platform/organizations/{slug}/audit`, `/platform/profile/audit`: the pages list no events), email template spam validation (`POST /platform/auth/{ref}/validate/spam`: no rule ever matches), `daily-stats` (the Storage and Database report charts that read it), Advisors and infrastructure monitoring (their own work), and the hosted integrations pages (GitHub, Vercel, AWS PrivateLink, replication, log drains, billing), most of which are hidden through `disabled_features`.
+
 ## Where the spec and Studio disagree
 
 - `GET /platform/projects/{ref}/status`: the spec documents a 200 without a body; Studio reads `{status}`.
@@ -265,7 +303,7 @@ These are not Management API calls. They need the project hosts (`<ref>.api.<dom
 `studio/spike.sh` runs this Studio build against the mock Management API with a real Postgres, GoTrue and postgres-meta, and drives it with headless Chrome. It visits sign-in, the project list, and for each of two projects the table editor, SQL editor, project home, Auth users, Storage files, Database tables and Settings. Other pages (Realtime, Edge Functions, Logs, Advisors, Integrations, Reports, organization and account pages) are readings of the code only. The findings:
 
 1. **Sign-in waits for the incident banner.** After the token call Studio waits for `GET /api/incident-banner`, which answers 500 without an incident.io key; react-query retries after 1, 4 and 16 s, and the sign-in form awaits the query cache reset, so sign-in took about 22 s. The Supavise proxy answers `GET studio.<domain>/api/incident-banner` with a static `{"incidents": []}` (`internal/proxy/studio.go`), which needs no patch to Studio. Sign-in then takes about 1 s.
-2. **`null` in an array field crashes a page.** `GET /v1/projects/{ref}/upgrade/eligibility` with `validation_errors: null` threw in Settings, General. Stubs return `[]` for array fields. The analytics endpoints (`usage.api-counts`) need `{"result": []}`: a bare `{}` shows "Failed to load project usage" on the project home.
+2. **`null` in an array field crashes a page.** `GET /v1/projects/{ref}/upgrade/eligibility` with `validation_errors: null` threw in Settings, General. Stubs return `[]` for array fields. The analytics endpoints (`usage.api-counts`) need `{"result": []}`: a bare `{}` shows "Failed to load project usage" on the project home. (`usage.api-counts` now answers real counts; see "Logs, request charts and hosted-only pages".)
 3. **Studio calls Usercentrics on every page load** (`https://api.usercentrics.eu/settings//latest/languages.json`, with an empty settings id) even though `NEXT_PUBLIC_USERCENTRICS_RULESET_ID` is unset. Studio's CSP allows the host by default, so the proxy removes every `usercentrics.eu` source from the `Content-Security-Policy` it forwards and the browser refuses the request. A patch that skips initialization when the ruleset id is unset would remove the cause; none exists.
 4. **Health status values.** `/v1/projects/{ref}/health` entries use `status: "ACTIVE_HEALTHY"` (enum `COMING_UP | ACTIVE_HEALTHY | UNHEALTHY`). Any other value shows an alert icon and the raw text per service and re-polls every 5 s.
 5. **Other values the P0 handlers must get right.** `GET /platform/projects/{ref}/databases` must list the primary database (an empty list makes the SQL editor offer a "Read Replica" source), and one more entry for each replica. The project `region` must be a real AWS region code (an unknown one requests `/img/regions/undefined.svg`). The project database needs GoTrue's migrated `auth` schema, or the Users page reports `column users.banned_until does not exist`.

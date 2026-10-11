@@ -126,7 +126,27 @@ sudo -u supavise supavise status   # one verdict for the node and every project
 curl https://api.<domain>/healthz  # for an uptime monitor; reveals nothing else
 ```
 
+To read a project's logs, run `supavise logs` on the server:
+
+```bash
+sudo supavise logs <ref>                                  # the last 100 lines of everything the project writes
+sudo supavise logs <ref> --service postgres -n 500        # one service: postgres, auth, rest, realtime, storage, pooler, functions
+sudo supavise logs <ref> --since 1h                       # an age (30m, 2h, 1d) or a time (2026-10-10T12:00:00Z)
+sudo supavise logs <ref> -f                               # keep printing new lines
+```
+
+It reads the systemd journal, so run it with `sudo`. A project's Postgres, Auth and REST units log under their own names. Realtime, Storage, the pooler and the Edge Runtime serve every project, so the command shows only their lines that mention the project's ref. The dashboard has no log store: its Logs pages, the Reports that read logs and the MCP server's log tools answer with an error that names this command, instead of an empty list. Use `supavise logs system` for the dashboard's own Postgres and Auth.
+
 Add an `[alerts]` section to `/etc/supavise/config.toml` to get a webhook or email when a backup fails, disk runs low, a project turns unhealthy, a certificate nears expiry, an update is available, or an upgrade starts, succeeds or fails. With a second server you also get one when a replica is unhealthy or lags, a server stops answering, a failover starts, ends or fails, or a server is fenced. Before planned work, `supavise maintenance announce` shows a notice in the dashboard. The deploy guide's [health and alerts](../deploy/README.md#health-alerts-and-maintenance-notices) section has the details.
+
+## What the dashboard shows differently
+
+Studio is the real hosted dashboard. Where a page depends on something a server does not have, it says so instead of showing an empty list or a success that did nothing.
+
+- **Logs and Reports.** The Logs Explorer and the log pages of each service show an error that points to `supavise logs <ref>`. The charts of the Auth, Edge Functions and some other reports have no way to show an error and stay empty.
+- **Requests on the project home.** The chart counts the requests that the server's proxy served to the project's REST, Auth, Storage and Realtime APIs, by minute, hour or day. The counts live in memory: they start at zero when `supavise` restarts, and on a two-server cluster they leave out the requests that the second server served.
+- **Database Webhooks.** Select **Enable webhooks** to create the `supabase_functions` schema and turn on `pg_net`. Webhooks you create after that run on every insert, update or delete and send an HTTP request; the response is in `net._http_response`. A branch created with data cannot send those requests to the network unless it was created with `--allow-egress`.
+- **Features a server cannot offer.** Iceberg and vector buckets in Storage and Third-party Auth are hidden. SSL enforcement shows as unavailable. Changing the JWT secret from the dashboard, creating JWT signing keys and sending feedback are refused with a message; to rotate a project's JWT secret and API keys, run `sudo -u supavise supavise projects rotate-keys <ref>`.
 
 ## Read replicas and failover
 
@@ -176,6 +196,7 @@ By default every move is yours to start. `[failover] mode = "project"` or `"serv
 | Dashboard | Studio for a single project | Supabase Studio in its hosted, multi-project mode | Supabase Studio |
 | Management API and `supabase link` | Not available | Yes: the parts that Studio, the Supabase CLI and the MCP server call | Yes |
 | Remote MCP server with OAuth sign-in | Not available | Yes, at `api.<domain>/mcp`, one organization per sign-in | Yes |
+| Logs pages | Logflare and Vector, with an override file | No log store. `supavise logs <ref>` on the server reads the journal; the dashboard says so | Yes |
 | Branching | Not available | Yes, schema-only or with data | Yes |
 | Point-in-time restore | Not included; you set up backups yourself | Yes, in the dashboard (in place) or with `supavise backups restore` on the server | Yes |
 | Edge Functions | Yes | Yes, on by default | Yes |
