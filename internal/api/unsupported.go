@@ -43,9 +43,10 @@ func (s *Server) routesUnsupported(add func(string, handlerFunc)) {
 		add(m+" /v1/projects/{ref}/config/auth/signing-keys/{id}", s.refuse(http.StatusNotFound, "Signing key not found."))
 	}
 
-	// Third-party auth integrations (Clerk, Auth0, Firebase and others) are configured by the hosted platform's
-	// gateway; the services of a node accept the project's own JWTs only. Studio's page is hidden through
-	// disabledFeatures; these answers are for the API and the CLI.
+	// Third-party auth integrations (Clerk, Auth0, Firebase and others): the services of a node accept the
+	// project's own JWTs only, and Supavise has no code that hands a JWKS to them. The page is not hidden
+	// (it could be built, and hosted offers it to every project): the list is empty, which is true, and an
+	// add is refused with the reason, which Studio shows in the mutation's error toast.
 	add("POST /v1/projects/{ref}/config/auth/third-party-auth", s.refuse(http.StatusBadRequest, "Supavise does not support third-party auth integrations: the project accepts tokens signed with its own JWT secret only."))
 	for _, m := range []string{"GET", "DELETE"} {
 		add(m+" /v1/projects/{ref}/config/auth/third-party-auth/{tpa_id}", s.refuse(http.StatusNotFound, "Third-party auth integration not found."))
@@ -59,7 +60,7 @@ func (s *Server) routesUnsupported(add func(string, handlerFunc)) {
 			return err
 		}
 		return errf(http.StatusBadRequest, "Supavise does not collect the Auth usage metrics, because it has no log store. "+
-			"On the server, run `supavise logs %s --service auth` to read the Auth log.", p.Ref)
+			"%s, run `supavise logs %s --service auth` to read the Auth log.", s.logsHost(r.Context(), p), p.Ref)
 	})
 
 	// The dashboard's Feedback button posts here; the message would go nowhere.
