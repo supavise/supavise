@@ -1,11 +1,12 @@
-From e67f2a58113528c62363d7cd80def9bf751938b9 Mon Sep 17 00:00:00 2001
+From 29337d57939aae564d6f3ea5e6ef6ffc518412e8 Mon Sep 17 00:00:00 2001
 From: supavise <supavise@users.noreply.invalid>
 Date: Sun, 11 Oct 2026 13:33:32 -0700
 Subject: [PATCH 5/5] feat(studio): branching dialog and menu stop offering
  what the deployment has no way to do
 
 A deployment that runs its own control plane has no billing and clones the
-parent database itself, so three things in the branching UI are wrong for it.
+parent database itself, so four things in the branching and backup UI are wrong
+for it.
 
 Create branch printed hosted prices for compute and disk and a tax notice
 whatever the deployment: print them only when billing is enabled
@@ -20,10 +21,16 @@ The Create pull request item of a branch menu linked to github.com for any
 branch that had a git branch, connected repository or not. It appears only
 when the project has a GitHub connection, whose repository the row already
 receives.
+
+Restore to new project (Database > Backups) ended its confirmation and its
+create dialog with the same kind of block: hosted's compute and disk prices and
+the claim that the disk will be 1.5 times larger. AdditionalMonthlySpend, which
+both dialogs render, shows nothing unless billing is enabled.
 ---
  .../BranchManagement/CreateBranchModal.tsx    | 66 +++++++++++--------
  .../interfaces/BranchManagement/Overview.tsx  |  5 +-
- 2 files changed, 40 insertions(+), 31 deletions(-)
+ .../AdditionalMonthlySpend.tsx                |  6 ++
+ 3 files changed, 46 insertions(+), 31 deletions(-)
 
 diff --git a/apps/studio/components/interfaces/BranchManagement/CreateBranchModal.tsx b/apps/studio/components/interfaces/BranchManagement/CreateBranchModal.tsx
 index 4d61aa41..3ef9ffba 100644
@@ -169,6 +176,27 @@ index 6b797f75..e31d49ed 100644
              <DropdownMenuItem asChild className="gap-x-2">
                <a
                  target="_blank"
+diff --git a/apps/studio/components/interfaces/Database/Backups/RestoreToNewProject/AdditionalMonthlySpend.tsx b/apps/studio/components/interfaces/Database/Backups/RestoreToNewProject/AdditionalMonthlySpend.tsx
+index 71ec8011..2ff916f7 100644
+--- a/apps/studio/components/interfaces/Database/Backups/RestoreToNewProject/AdditionalMonthlySpend.tsx
++++ b/apps/studio/components/interfaces/Database/Backups/RestoreToNewProject/AdditionalMonthlySpend.tsx
+@@ -1,10 +1,16 @@
+ import { NewProjectPrice } from './RestoreToNewProject.utils'
++import { useIsFeatureEnabled } from '@/hooks/misc/useIsFeatureEnabled'
+ 
+ export const AdditionalMonthlySpend = ({
+   additionalMonthlySpend,
+ }: {
+   additionalMonthlySpend: NewProjectPrice
+ }) => {
++  // The block prints hosted's compute and disk prices and says the disk will be 1.5x larger. A deployment
++  // that has no billing sizes the new project itself, so none of it applies.
++  const { billingAll: showPrices } = useIsFeatureEnabled(['billing:all'])
++  if (!showPrices) return null
++
+   return (
+     <div className="text-sm text-foreground-lighter border-t p-5">
+       <p>
 -- 
 2.50.1 (Apple Git-155)
 
