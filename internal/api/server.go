@@ -481,6 +481,7 @@ func (s *Server) implemented() map[string]route {
 		m[key] = route{auth: authFor(path), h: h}
 	}
 	s.routesProfile(add)
+	s.routesTelemetry(add)
 	s.routesOrganizations(add)
 	s.routesMembers(add)
 	s.routesProjects(add)
