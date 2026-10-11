@@ -115,7 +115,7 @@ Hosted Supabase gives every branch its own Postgres instance, which is what AI a
 | Separate TCP edge for Postgres | Supavisor on 5432/6543 | Supavisor already routes every project on the username; hosted does the same |
 | wal-g or pgBackRest | `archive_command` = `supavise wal push`, nightly `pg_basebackup` | Postgres built-ins plus a Go S3 client |
 | Docker runner | none | Native artifacts work as a real runtime |
-| Logflare and Vector in v1 | journald, `supavise logs`, optional later | Heaviest service; Studio's logs pages tolerate empty answers |
+| Logflare and Vector in v1 | journald and `supavise logs <ref>`, which reads a project's units from the journal; optional later | Heaviest service. The Management API answers a log query with an empty result and an `error` that names the command, and counts requests in the proxy for the project home's chart (`internal/reqstats`) |
 | Path-based routing mode | wildcard DNS required; sslip.io for trials | Realtime and Storage resolve tenants from the host |
 | Local-CA laptop mode | Supabase's own dockerless CLI | It already exists and uses the same artifacts |
 | Separate control-plane database | registry in the system Postgres | One cluster, one backup path, same unit shape as a project |
