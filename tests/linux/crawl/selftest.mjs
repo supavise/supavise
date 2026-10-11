@@ -149,6 +149,7 @@ test('the mutation guard', () => {
   assert.equal(guardVerdict('POST', '/platform/telemetry/page', '{}'), 'allow')
   assert.equal(guardVerdict('POST', '/platform/storage/x/buckets/b/objects/list', '{}'), 'allow')
   assert.equal(guardVerdict('POST', '/platform/storage/x/buckets/b/objects/move', '{}'), 'abort')
+  assert.equal(guardVerdict('POST', '/platform/profile/audit-login', '{}'), 'allow')
   assert.equal(guardVerdict('POST', '/v1/projects/x/branches', '{}'), 'abort')
 })
 
