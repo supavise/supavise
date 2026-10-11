@@ -288,6 +288,13 @@ func (s *Service) restoreAsNew(ctx context.Context, plan *RestorePlan, src *secr
 	if mp := plan.Manifest.Project; mp != nil {
 		req.Name = mp.Name + " (restored)"
 		req.OrgSlug, req.Region, req.Class = mp.OrgSlug, mp.Region, mp.Class
+		// The restored cluster holds the default privileges the backup held, so the backup decides, never
+		// the source's row as it is now: the node may have revoked the source after the backup was taken,
+		// and a restored database that still has the old grants must stay unrecorded so that the first
+		// pass revokes them (lifecycle.DataAPIOptions.CopyFrom stays empty on purpose). A backup that
+		// recorded nothing, or has no project block at all, leaves the new project to that pass. A PITR
+		// target after a later revoke is revoked a second time, which changes nothing.
+		req.DataAPI.CopyChoice = registry.DefaultPrivileges(mp.DefaultPrivileges)
 		if !lifecycle.StandardLimits(mp.Class, mp.Limits) {
 			// Hand-set limits stay; the standard ones follow the size, which an earlier version's
 			// manifest may name differently from what its limits were.

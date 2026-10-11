@@ -273,6 +273,24 @@ func (h *handlers) planeCall(method peerapi.PlaneMethod) (planeCall, bool) {
 			}
 			return nil, h.d.Timers.StopTimer(ctx, ref)
 		}, true
+	case planeApplyDataAPI:
+		return func(ctx context.Context, l lifecycle.Plane, ref string, args json.RawMessage) (any, error) {
+			if len(args) == 0 {
+				return nil, errors.New("the call needs the project and the setup")
+			}
+			var a dataAPIArgs
+			if err := json.Unmarshal(args, &a); err != nil {
+				return nil, fmt.Errorf("decode the arguments: %w", err)
+			}
+			if a.Project == nil || a.Project.Ref != ref {
+				return nil, fmt.Errorf("the project in the arguments is not %s", ref)
+			}
+			dp, ok := l.(lifecycle.DataAPIPlane)
+			if !ok {
+				return nil, fmt.Errorf("%w: this node's plane cannot run the Data API statements", lifecycle.ErrNotSupported)
+			}
+			return nil, dp.ApplyDataAPI(ctx, a.Project, a.Setup)
+		}, true
 	case planeNodeResources:
 		return func(context.Context, lifecycle.Plane, string, json.RawMessage) (any, error) {
 			if h.d.Resources == nil {

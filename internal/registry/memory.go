@@ -26,8 +26,10 @@ type Memory struct {
 	backups   []Backup
 	events    []Event
 	upgrades  []Upgrade
-	nextID    int64
-	subs      map[chan Change]struct{}
+	// dataAPI is the Data API decision by project ref (dataapi.go).
+	dataAPI map[string]DataAPI
+	nextID  int64
+	subs    map[chan Change]struct{}
 	// The cluster store (cluster_mem.go).
 	nodes      map[string]Node
 	cluster    Cluster
@@ -338,6 +340,7 @@ func (m *Memory) DeleteProject(_ context.Context, ref string) error {
 	delete(m.hostnames, ref)
 	delete(m.advisorRules, ref)
 	delete(m.vanity, ref)
+	delete(m.dataAPI, ref)
 	for h, r := range m.routes {
 		if r.Ref == ref {
 			delete(m.routes, h)

@@ -113,6 +113,9 @@ type Engine struct {
 	log   *slog.Logger
 
 	locks sync.Map // ref -> *sync.Mutex
+	// dataAPIFailures is the last failure recorded as an event per ref (dataAPIFailure), so that a
+	// project that keeps failing the Data API step does not write an event every pass.
+	dataAPIFailures sync.Map
 	// restoring holds the refs whose in-place restore is running in this process (restore.go).
 	restoring sync.Map
 	// upgrading holds the refs whose upgrade is running in this process (upgrade.go).
@@ -152,9 +155,36 @@ type advisoryPool interface{ Pool() *pgxpool.Pool }
 // starve registry queries, and it is released when that connection closes, even if the
 // process dies. The returned function releases both.
 func (e *Engine) lock(ctx context.Context, ref string) (func(), error) {
-	m, _ := e.locks.LoadOrStore(ref, &sync.Mutex{})
-	mu := m.(*sync.Mutex)
+	mu := e.mutex(ref)
 	mu.Lock()
+	return e.lockAdvisory(ctx, ref, mu)
+}
+
+func (e *Engine) mutex(ref string) *sync.Mutex {
+	m, _ := e.locks.LoadOrStore(ref, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
+// lockWithin is lock for a caller that must not wait longer than its context: it gives up when ctx
+// ends while another operation holds the project (sync.Mutex.Lock has no context to honor).
+func (e *Engine) lockWithin(ctx context.Context, ref string) (func(), error) {
+	mu := e.mutex(ref)
+	if !mu.TryLock() {
+		t := time.NewTicker(25 * time.Millisecond)
+		defer t.Stop()
+		for !mu.TryLock() {
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("lifecycle: lock %s: %w", ref, ctx.Err())
+			case <-t.C:
+			}
+		}
+	}
+	return e.lockAdvisory(ctx, ref, mu)
+}
+
+// lockAdvisory is the rest of lock, once mu is held: it adds the advisory lock when there is one.
+func (e *Engine) lockAdvisory(ctx context.Context, ref string, mu *sync.Mutex) (func(), error) {
 	ap, ok := e.reg.(advisoryPool)
 	if !ok || ap.Pool() == nil || e.opts.ReadOnly {
 		return mu.Unlock, nil
@@ -503,6 +533,9 @@ func (e *Engine) Create(ctx context.Context, req CreateRequest) (*registry.Proje
 	if err := e.plane.Create(ctx, p, keys, req.Seed); err != nil {
 		return fail("data plane", err)
 	}
+	if err := e.dataAPIAtCreate(ctx, p, keys, req); err != nil {
+		return fail("data api", err)
+	}
 	if len(e.opts.Fleet) > 0 {
 		spec, err := e.tenantSpec(ctx, p, keys)
 		if err != nil {
@@ -643,6 +676,11 @@ func (e *Engine) resume(ctx context.Context, ref string, checkNode bool) error {
 		return fmt.Errorf("lifecycle: resume %s: %w", ref, err)
 	}
 	e.applySavedSettings(ctx, p, keys)
+	// A project that was paused when the node moved to the release that revokes the default
+	// privileges is converged here, the first time its database answers again.
+	if err := e.convergeLocked(ctx, p); err != nil {
+		e.log.Warn("resume: could not revoke the default privileges; the next pass tries again", "ref", ref, "error", err)
+	}
 	if err := e.reg.PutRoute(ctx, registry.Route{Host: e.cfg.ProjectHost(ref), Ref: ref, Kind: "api"}); err != nil {
 		e.log.Warn("resume: route", "ref", ref, "error", err)
 	}

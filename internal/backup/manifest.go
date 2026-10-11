@@ -73,6 +73,10 @@ type ManifestProject struct {
 	Engine   string            `json:"engine,omitempty"`
 	Versions map[string]string `json:"versions,omitempty"`
 	Limits   config.Limits     `json:"limits"`
+	// DefaultPrivileges is the Data API decision recorded for the project ("granted" or "revoked", see
+	// registry.DataAPI) when the backup was taken; empty when none was. A restore as new uses it when the
+	// registry no longer has the source's row.
+	DefaultPrivileges string `json:"default_privileges,omitempty"`
 }
 
 // Dir is the backup's key prefix, without trailing slash.

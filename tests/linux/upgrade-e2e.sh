@@ -242,6 +242,37 @@ intact() { # REF: rows, the user (same id), REST, a healthy project
   project_keys "$r"
   [[ $(curl -s -o /dev/null -w '%{http_code}' -m 30 -H "Host: $r.api.$BASE" -H "apikey: $SEC" "http://127.0.0.1/storage/v1/bucket") == 200 ]] || fail "$r: Storage does not serve the project"
 }
+# The Data API (hosted Supabase stopped granting new tables to anon, authenticated and service_role by
+# default, and applies that to its existing projects): dbq runs SQL as postgres through the Management API,
+# the role the SQL editor and migrations create tables as; rest_code reads a table through the proxy;
+# default_grants counts the default privileges of public for role postgres that still give the three roles
+# access to new tables, sequences and functions.
+dbq() { # REF SQL: the answer's body on stdout; returns 1, with the answer in the log, unless the API says 201
+  local code
+  code=$(papi POST "/v1/projects/$1/database/query" -H 'Content-Type: application/json' -o "$WORK/dbq.body" -w '%{http_code}' \
+    -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$2")") || { log "database/query on $1: no answer"; return 1; }
+  cat "$WORK/dbq.body"
+  [[ $code == 201 ]] || { log "database/query on $1 answered $code: $(head -c 500 "$WORK/dbq.body")"; return 1; }
+}
+rest_code() { # REF KEY TABLE: the status of a read through the proxy; the body is left in $WORK/rest.body
+  curl -s -o "$WORK/rest.body" -w '%{http_code}' -m 30 -H "Host: $1.api.$BASE" -H "apikey: $2" "http://127.0.0.1/rest/v1/$3?select=id" || true
+}
+default_grants() { # REF
+  pg_sock "$1" "select count(*) from pg_default_acl d join pg_namespace n on n.oid = d.defaclnamespace join pg_roles r on r.oid = d.defaclrole cross join lateral aclexplode(d.defaclacl) a join pg_roles g on g.oid = a.grantee where n.nspname = 'public' and r.rolname = 'postgres' and g.rolname in ('anon', 'authenticated', 'service_role') and ((d.defaclobjtype = 'r' and a.privilege_type in ('SELECT', 'INSERT', 'UPDATE', 'DELETE')) or (d.defaclobjtype = 'S' and a.privilege_type in ('USAGE', 'SELECT')) or (d.defaclobjtype = 'f' and a.privilege_type = 'EXECUTE'))"
+}
+decision() { reg "select coalesce(default_privileges || ':' || source, 'none') from supavise.project_data_api where ref = '$1'" 2>/dev/null || echo none; }
+# open_table REF TABLE: a table created as postgres with no grant, on the release that auto-grants.
+open_table() { dbq "$1" "create table public.$2 (id int primary key); insert into public.$2 values (1); notify pgrst, 'reload schema';" >/dev/null || fail "$1: create public.$2"; }
+# wait_rest REF KEY TABLE WANT: until a read answers WANT (a status), up to 60 s.
+wait_rest() {
+  local i
+  for ((i = 0; i < 30; i++)); do
+    [[ $(rest_code "$1" "$2" "$3") == "$4" ]] && return 0
+    sleep 2
+  done
+  fail "$1: public.$3 answered $(rest_code "$1" "$2" "$3") $(cat "$WORK/rest.body" 2>/dev/null), want $4"
+}
+
 EXPECT_VERSION=v0.0.1
 PG_PID=$(pg_pid "$REF") PG_PID2=$(pg_pid "$REF2")
 [[ $(versions_of "$REF") == "$OLD_AUTH $OLD_REST "* ]] || fail "the project does not record the previous release's pins: $(versions_of "$REF")"
@@ -250,6 +281,13 @@ runs supavise-pgmeta.service "$OLD_META"
 runs supavise-storage.service "$OLD_STORAGE"
 runs supavise-gotrue@system.service "$OLD_AUTH"
 intact "$REF"; intact "$REF2"
+# The previous release grants new tables by default: a table with no grant answers.
+for r in "$REF" "$REF2"; do
+  project_keys "$r"
+  open_table "$r" old_open
+  wait_rest "$r" "$PUB" old_open 200
+  [[ $(default_grants "$r") -gt 0 ]] || fail "$r: the previous release has no default grants on tables of public"
+done
 
 # ---- 1. --check and --plan change nothing ----------------------------------------------------
 make_release v0.0.2 "$B/v2" "$BINS/v2.versions.yaml" latest
@@ -365,6 +403,48 @@ grep -q 'projects registered with the shared services' <<<"$JOURNAL" || fail "th
 run upgrade "$B/v2" --yes --version v0.0.2
 [[ $RC -eq 0 && $OUT == *"nothing to change"* ]] || fail "a second upgrade should have nothing to do: $RC $OUT"
 unchanged "second upgrade"
+
+# The Data API of the projects that existed before this release: the daemon revokes the default privileges
+# of public once, after the upgrade has ended (it does not change a node an upgrade might still roll back),
+# and every table that exists keeps its grants.
+log "data api: the upgrade revokes the default privileges of the existing projects once and leaves their tables alone"
+for r in "$REF" "$REF2"; do
+  for ((i = 0; i < 60; i++)); do
+    [[ $(decision "$r") == revoked:upgrade ]] && break
+    sleep 5
+  done
+  [[ $(decision "$r") == revoked:upgrade ]] || { journalctl --no-pager -u supavise.service | tail -40 >&2; fail "$r: no revoked:upgrade decision in the registry: $(decision "$r")"; }
+  [[ $(default_grants "$r") == 0 ]] || fail "$r: the default privileges of public still give the Data API roles access to new tables"
+  project_keys "$r"
+  [[ $(rest_code "$r" "$PUB" old_open) == 200 ]] || fail "$r: a table that existed before the upgrade stopped answering: $(cat "$WORK/rest.body")"
+  [[ $(rest_code "$r" "$PUB" smoke_items) == 200 ]] || fail "$r: the smoke table stopped answering"
+  dbq "$r" "create table public.new_closed (id int primary key); insert into public.new_closed values (1); notify pgrst, 'reload schema';" >/dev/null || fail "$r: create public.new_closed"
+done
+project_keys "$REF"
+for ((i = 0; i < 30; i++)); do
+  [[ $(rest_code "$REF" "$PUB" new_closed) != 404 ]] && break
+  sleep 2
+done
+[[ $(rest_code "$REF" "$PUB" new_closed) == 401 && $(cat "$WORK/rest.body") == *42501* ]] || fail "a table created after the upgrade without a grant answered $(rest_code "$REF" "$PUB" new_closed) $(cat "$WORK/rest.body"), want 401 with 42501 (hosted's default)"
+[[ $(reg "select count(*) from supavise.events where ref = '$REF' and kind = 'project.data_api_defaults_revoked'") == 1 ]] || fail "$REF: the upgrade recorded no project.data_api_defaults_revoked event, or more than one"
+
+# A user who rolls the change back with the SQL hosted publishes keeps the rollback: the decision is
+# recorded, so a restart of the daemon does not revoke again.
+log "data api: the rollback SQL survives a restart of the daemon"
+dbq "$REF" "alter default privileges for role postgres in schema public grant select, insert, update, delete on tables to anon, authenticated, service_role; alter default privileges for role postgres in schema public grant usage, select on sequences to anon, authenticated, service_role; grant select, insert, update, delete on all tables in schema public to anon, authenticated, service_role; grant usage, select on all sequences in schema public to anon, authenticated, service_role; notify pgrst, 'reload schema';" >/dev/null || fail "$REF: the rollback SQL"
+[[ $(default_grants "$REF") -gt 0 ]] || fail "$REF: the rollback SQL did not restore the default privileges"
+DECIDED=$(reg "select decided_at from supavise.project_data_api where ref = '$REF'")
+systemctl restart supavise.service
+wait_daemon
+wait_status "$REF" ACTIVE_HEALTHY 180
+sleep 30 # the pass runs as soon as the projects are up
+[[ $(default_grants "$REF") -gt 0 ]] || fail "$REF: the daemon revoked the default privileges again after the user rolled them back"
+[[ $(reg "select decided_at from supavise.project_data_api where ref = '$REF'") == "$DECIDED" ]] || fail "$REF: the decision was written again"
+project_keys "$REF"
+open_table "$REF" after_rollback
+wait_rest "$REF" "$PUB" after_rollback 200
+[[ $(reg "select count(*) from supavise.events where ref = '$REF' and kind = 'project.data_api_defaults_revoked'") == 1 ]] || fail "$REF: a second revoke was recorded"
+[[ $(pg_pid "$REF") == "$PG_PID" && $(pg_pid "$REF2") == "$PG_PID2" ]] || fail "a project's PostgreSQL was restarted by the daemon's restart"
 
 # ---- 4. a daemon that dies --------------------------------------------------------------------
 log "a release whose daemon exits: exit status 3 and the node back on v0.0.2"

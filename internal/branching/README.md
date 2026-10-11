@@ -112,6 +112,7 @@ schema-only branch: use `with_data`.
 | Edge Functions | none | none |
 | Function secrets | none | none |
 | API keys, JWT secret, database password | the branch's own | the branch's own (the parent's are replaced everywhere Supavise finds them) |
+| Default privileges of `public` for the Data API roles | the parent's recorded choice, applied before the migrations replay (revoked unless the parent keeps the grants) | the parent's, in the copied database; a clone copies the parent's recorded choice, a branch made from a base backup takes the choice the backup recorded (none: the first pass revokes) |
 
 Hosted Supabase copies neither Storage objects nor Edge Functions into a branch, and neither does Supavise: a branch has its own Storage tenant and functions, so nothing is shared and nothing is copied half way.
 

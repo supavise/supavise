@@ -87,7 +87,11 @@ func projectCmd(use, short string, args cobra.PositionalArgs, run func(cmd *cobr
 func init() {
 	create := projectCmd("create", "Create a project and wait until it is healthy", cobra.NoArgs,
 		func(cmd *cobra.Command, n *lifecycle.Node, _ []string) error {
-			p, err := n.Engine.Create(cmd.Context(), lifecycle.CreateRequest{Name: pName, OrgSlug: pOrg, Class: pClass, Ref: pRef, Region: pRegion})
+			dataAPI, err := dataAPIFromFlags(cmd)
+			if err != nil {
+				return err
+			}
+			p, err := n.Engine.Create(cmd.Context(), lifecycle.CreateRequest{Name: pName, OrgSlug: pOrg, Class: pClass, Ref: pRef, Region: pRegion, DataAPI: dataAPI})
 			if err != nil {
 				return err
 			}
@@ -112,6 +116,7 @@ func init() {
 	_ = create.Flags().MarkHidden("class")
 	create.Flags().StringVar(&pRef, "ref", "", "force the ref (20 lowercase letters); default random")
 	create.Flags().StringVar(&pRegion, "region", "", "AWS region code shown for the project (default: region in the config, us-east-1)")
+	addDataAPIFlags(create)
 	create.Flags().BoolVar(&pShowKeys, "show-keys", false, "print the project's keys and database password")
 	create.Flags().BoolVar(&pJSON, "json", false, "print JSON")
 
