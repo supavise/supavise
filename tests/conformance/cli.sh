@@ -93,6 +93,9 @@ else
   cat >"$MIG" <<SQL
 create table public.conf_widgets (id int primary key, name text not null);
 insert into public.conf_widgets values (1, 'sprocket'), (2, 'gear');
+-- The Data API may read it. The security advisor reports a table without RLS only when anon or
+-- authenticated can read it, and a project does not have to grant that to tables by default.
+grant select on public.conf_widgets to anon;
 SQL
   step migration-list-before migration list --linked
   line=$(grep -F "$VERSION" "$LAST" | head -1)
