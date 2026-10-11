@@ -131,11 +131,13 @@ SQL
   # The endpoint's own shape, which the CLI and the MCP server read: the table's finding is an
   # ERROR in the SECURITY category with its schema and table in metadata, and the other
   # category's list does not hold it.
-  sec=$(mapi GET "/v1/projects/$REF/advisors/security")
-  perf=$(mapi GET "/v1/projects/$REF/advisors/performance")
-  python3 - "$sec" "$perf" <<'PY' || bad "GET /v1/projects/{ref}/advisors/{security,performance} do not answer as hosted does"
+  # The answers go through files: a project with many findings outgrows the 128 KiB that Linux
+  # allows for one command-line argument.
+  mapi GET "/v1/projects/$REF/advisors/security" >"$OUT/advisors-security.json"
+  mapi GET "/v1/projects/$REF/advisors/performance" >"$OUT/advisors-performance.json"
+  python3 - "$OUT/advisors-security.json" "$OUT/advisors-performance.json" <<'PY' || bad "GET /v1/projects/{ref}/advisors/{security,performance} do not answer as hosted does (see $OUT/advisors-*.json)"
 import json, sys
-sec, perf = (json.loads(a)["lints"] for a in sys.argv[1:3])
+sec, perf = (json.load(open(a))["lints"] for a in sys.argv[1:3])
 hits = [l for l in sec if l["name"] == "rls_disabled_in_public" and l.get("metadata", {}).get("name") == "conf_widgets"]
 assert len(hits) == 1, "no rls_disabled_in_public for public.conf_widgets: %r" % [l["name"] for l in sec]
 l = hits[0]
