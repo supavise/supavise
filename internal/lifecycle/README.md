@@ -127,11 +127,23 @@ new function stays callable through `rpc`, on hosted too. Objects that exist kee
   reverses it and stops what started if it fails. Once the cluster answers, `Resume` also applies what
   was saved while paused and no unit renders: Postgres settings (`ALTER SYSTEM`) and Storage and
   Realtime tenant settings. A failure there is recorded as `project.config_apply_failed` and does not
-  undo the resume.
+  undo the resume. `PauseWith(ctx, ref, PauseOptions{Reason})` is `Pause` with a reason: `Pause` is the
+  owner's (reason empty), and the branching service pauses a branch nobody uses with `registry.PauseIdle`.
+  The reason is written to `supavise.project_pause` (`registry.LifecycleStore`, migration 1520) **before** the
+  status leaves `ACTIVE_*`, so whoever sees `INACTIVE` finds it; an idle pause is refused when the registry
+  cannot record it (the branch would never wake), an owner's pause goes ahead and only logs. `Resume` removes
+  the record once the project runs again (a failed resume keeps it, so the next request tries again), and a
+  `KeepRecord` delete removes it. Before `Resume` starts Postgres it waits at most three seconds for nothing to
+  listen on the project's database port (`awaitDatabasePort`): a branch asleep for idleness has the branching
+  service's wake gate there, which closes the moment the status leaves `INACTIVE`. The final backup of a paused
+  project waits the same way.
 - `Delete`/`DeleteWith`: final base backup through `BaseBackuper` (skipped for `INIT_FAILED` projects and
   with `SkipFinalBackup`; a paused project's database is started just for it), then tenants, route,
   units, data, the project's Storage objects (`<state>/system/storage/objects/stub/<ref>`) and the
-  registry row. A failed backup keeps the project, except `ErrNoRestorableState` (a restore-as-new
+  registry row; with the S3 Storage backend (`[fleet] storage_backend = "s3"`) it also empties the project's
+  `<ref>/` prefix in the bucket through `Engine.SetObjectRemover` (`storagemigrate.ObjectRemover`, set by
+  `LifecycleOptions.Objects`), and a failure there is recorded as `project.storage_cleanup_failed` without
+  keeping the project. A failed backup keeps the project, except `ErrNoRestorableState` (a restore-as-new
   clone with no base backup): the delete records `project.final_backup_skipped` and goes on. A failure
   after the backup leaves `GOING_DOWN`, and a repeated delete resumes from the recorded step
   (`project.delete_started`, `project.delete_backup_done`) without a second backup.
@@ -365,7 +377,12 @@ exists (`internal/branching` builds on that). `DeleteWith` refuses (`ErrInvalidS
 has branches. `DeleteOptions.KeepRecord` removes the fleet tenants, route, units and data but keeps the
 registry row and its sealed secrets, which ends `INIT_FAILED`; `CreateRequest.Recreate` builds a new
 cluster over such a row. A branch reset uses the pair so that a failure after the old cluster is gone
-leaves the branch registered instead of gone.
+leaves the branch registered instead of gone; it also sets `DeleteOptions.PurgeObjects`, which removes the
+old cluster's Storage objects (the directory of the file backend, the `<ref>/` prefix of the S3 backend)
+because the new cluster has none. A restore uses `KeepRecord` without it: it puts its own copy of the
+objects back. A branch is created **homed on its parent's node** (`homeOfParent`; a project that is not a
+branch starts where the leader is), so that the two databases are on one machine
+(`internal/branching/README.md`, "Placement").
 
 ## Saved settings
 

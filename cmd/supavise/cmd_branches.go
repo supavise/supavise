@@ -176,8 +176,9 @@ func init() {
 		Use:   "branches",
 		Short: "Branches for agents: a branch is a project with its own cluster",
 		Long: `A branch is a project with a parent. It has its own Postgres, GoTrue, PostgREST, keys and
-host. Create one per agent or per task, merge what worked, delete the rest; a branch that is
-not persistent is deleted when its lifetime ends ([branching] default_ttl).
+host. Create one per agent or per task, merge what worked, delete the rest. A branch has no
+lifetime unless you give it one (--ttl, or [branching] default_ttl); one that nobody uses is paused
+after [branching] idle_pause_after and starts again on the next request or connection.
 
 These commands call the branching library in this process and need the system cluster to be
 running, like "supavise projects". The Management API serves the same operations to the Supabase
