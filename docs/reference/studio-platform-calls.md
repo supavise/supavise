@@ -175,8 +175,9 @@ These are the documented routes for which an empty stub is not enough: the page 
 | P1 | DELETE | `/v1/projects/{ref}/config/auth/third-party-auth/{tpa_id}` | 200 `ThirdPartyAuth_Output` |
 | P1 | GET | `/v1/projects/{ref}/config/database/postgres` | 200 `PostgresConfigResponse_Output` |
 | P1 | PUT | `/v1/projects/{ref}/config/database/postgres` | 200 `PostgresConfigResponse_Output` |
-| P1 | PUT | `/v1/projects/{ref}/database/migrations` | 200 no body |
-| P1 | GET | `/v1/projects/{ref}/functions` | 200 array of `FunctionResponse_Output` |
+| P1 | PUT | `/v1/projects/{ref}/database/migrations` | 200 no body. Not a stub: it records the migration in `supabase_migrations.schema_migrations` **without running it**, once per `Idempotency-Key` and once per name plus statements (whitespace and a final `;` aside). Studio's merge page calls it on the branch with the diff it just read (`branch_merge_<time>`) and then merges; the merge runs that migration on the parent (`internal/api/database.go`, `internal/branching/merge.go`) |
+| P1 | GET | `/v1/branches/{branch_id_or_ref}/diff` | 200 `text/plain`: the SQL of what the branch changed in its schema since it was made or last updated, **empty** when nothing changed (the merge page then says "No changes detected" and does not call `PUT .../database/migrations`). `included_schemas` and `pgdelta` are accepted; both `pgdelta` values give one answer |
+| P1 | GET | `/v1/projects/{ref}/functions` | 200 array of `FunctionResponse_Output`; each carries `ezbr_sha256`, the content digest Studio's merge page compares (a function with none counts as modified), and `updated_at` in epoch milliseconds |
 | P1 | POST | `/v1/projects/{ref}/functions/deploy` | 201 `DeployFunctionResponse_Output` |
 | P1 | GET | `/v1/projects/{ref}/functions/{function_slug}` | 200 `FunctionSlugResponse_Output` |
 | P1 | PATCH | `/v1/projects/{ref}/functions/{function_slug}` | 200 `FunctionSlugResponse_Output` |
