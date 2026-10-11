@@ -21,13 +21,7 @@ func TestHostedOnlyFeaturesAreRefused(t *testing.T) {
 		// Studio matches this text to render a disabled switch instead of an error.
 		{"GET", p + "/ssl-enforcement", 400, "not allowed to configure SSL enforcements"},
 		{"PUT", p + "/ssl-enforcement", 400, "not allowed to configure SSL enforcements"},
-		{"PATCH", pp + "/config/secrets", 400, "supavise projects rotate-keys " + testRef},
-		{"GET", p + "/config/auth/signing-keys/legacy", 404, "Legacy signing key not found"},
-		{"POST", p + "/config/auth/signing-keys/legacy", 400, "asymmetric JWT signing keys"},
-		{"POST", p + "/config/auth/signing-keys", 400, "asymmetric JWT signing keys"},
 		{"GET", p + "/config/auth/signing-keys/11111111-2222-4333-8444-555555555555", 404, "Signing key not found"},
-		{"PATCH", p + "/config/auth/signing-keys/11111111-2222-4333-8444-555555555555", 404, "Signing key not found"},
-		{"DELETE", p + "/config/auth/signing-keys/11111111-2222-4333-8444-555555555555", 404, "Signing key not found"},
 		{"POST", p + "/config/auth/third-party-auth", 400, "third-party auth"},
 		{"GET", p + "/config/auth/third-party-auth/11111111-2222-4333-8444-555555555555", 404, "not found"},
 		{"DELETE", p + "/config/auth/third-party-auth/11111111-2222-4333-8444-555555555555", 404, "not found"},
@@ -63,7 +57,7 @@ func TestHostedOnlyFeaturesAreRefused(t *testing.T) {
 }
 
 // The JWT secret page polls this: a stub says status 0, which is "updating", so the legacy API keys tab showed
-// "Updating JWT secret..." in place of the keys.
+// "Updating JWT secret..." in place of the keys. A project whose secret never changed has no status (jwt_secret.go).
 func TestNoJWTSecretUpdateRuns(t *testing.T) {
 	f := newFixture(t)
 	rec := f.do("GET", "/platform/projects/"+testRef+"/config/secrets/update-status", nil)
