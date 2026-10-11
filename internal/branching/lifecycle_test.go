@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/supavise/supavise/internal/backup"
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/lifecycle"
 	"github.com/supavise/supavise/internal/registry"
@@ -290,4 +291,92 @@ func hasEvent(evs []registry.Event, kind string) bool {
 		}
 	}
 	return false
+}
+
+// ---- the archive ------------------------------------------------------------------------------
+
+// archiveHarness is a harness whose service has a backup store (a directory) with WAL under the refs of
+// the branches it makes.
+func archiveHarness(t *testing.T) (*harness, backup.Store) {
+	t.Helper()
+	h := newHarness(t, nil)
+	store, err := backup.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bk, err := backup.New(backup.Options{Config: h.cfg, Registry: h.reg, Store: store, Secrets: h.svc.sec, Log: slogDiscard()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.svc.bk = bk
+	return h, store
+}
+
+func putArchive(t *testing.T, store backup.Store, ref string) {
+	t.Helper()
+	for _, k := range []string{ref + "/wal/000000010000000000000001.zst", ref + "/base/20260101T000000Z/data.tar.zst"} {
+		if err := store.Put(context.Background(), k, strings.NewReader("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func archiveOf(t *testing.T, store backup.Store, ref string) int {
+	t.Helper()
+	objs, err := store.List(context.Background(), ref+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(objs)
+}
+
+// Deleting an ephemeral branch removes its WAL and base backups whichever way it is asked for, and a
+// persistent branch keeps its archive (it also takes the final backup, which the lifecycle does).
+func TestDeleteOfABranchPurgesTheArchiveOfAnEphemeralOne(t *testing.T) {
+	h, store := archiveHarness(t)
+	ctx := context.Background()
+	eph, keep := h.create("eph", nil), h.create("keep", func(in *CreateInput) { in.Persistent = true })
+	putArchive(t, store, eph.Ref)
+	putArchive(t, store, keep.Ref)
+	putArchive(t, store, parentRef)
+
+	if _, err := h.svc.Delete(ctx, eph.Ref, DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if n := archiveOf(t, store, eph.Ref); n != 0 {
+		t.Fatalf("%d archive objects of the deleted ephemeral branch are left", n)
+	}
+	if _, err := h.svc.Delete(ctx, keep.Ref, DeleteOptions{SkipFinalBackup: true}); err != nil {
+		t.Fatal(err)
+	}
+	if n := archiveOf(t, store, keep.Ref); n == 0 {
+		t.Fatal("the archive of a persistent branch was purged")
+	}
+	if n := archiveOf(t, store, parentRef); n != 2 {
+		t.Fatalf("the parent's archive has %d objects, want 2", n)
+	}
+	if !h.eng.skipped[eph.Ref] || !h.eng.skipped[keep.Ref] {
+		t.Fatalf("final backups: ephemeral skipped %v, persistent asked to skip %v", h.eng.skipped[eph.Ref], h.eng.skipped[keep.Ref])
+	}
+	evs, _ := h.reg.ListEvents(ctx, parentRef, 20)
+	if !hasEvent(evs, "branch.deleted") {
+		t.Fatal("the parent has no branch.deleted event")
+	}
+}
+
+// A persistent branch takes the final backup unless the caller says otherwise.
+func TestPersistentBranchKeepsItsFinalBackupUnlessSkipped(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	a := h.create("a", func(in *CreateInput) { in.Persistent = true })
+	b := h.create("b", func(in *CreateInput) { in.Persistent = true })
+	if _, err := h.svc.Delete(ctx, a.Ref, DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Delete(ctx, b.Ref, DeleteOptions{SkipFinalBackup: true}); err != nil {
+		t.Fatal(err)
+	}
+	if h.eng.skipped[a.Ref] || !h.eng.skipped[b.Ref] {
+		t.Fatalf("SkipFinalBackup: default %v, requested %v", h.eng.skipped[a.Ref], h.eng.skipped[b.Ref])
+	}
 }
