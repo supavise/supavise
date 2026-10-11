@@ -25,6 +25,11 @@ and the MCP server's log tools say so and point here.
 A project runs its own Postgres, Auth and REST units. Realtime, Storage, the pooler and the Edge
 Runtime serve every project; their lines are shown when they mention the project's ref. Without
 --service the command merges all of them. The ref ` + "`system`" + ` shows the dashboard's own Postgres and Auth.
+Auth, REST, Realtime and Storage are set to log warnings and errors only, so a healthy project
+prints little from them.
+
+On a cluster, run the command on the server that hosts the project: a server's journal holds the
+units that run on it.
 
 --service takes ` + strings.Join(svclog.Names(), ", ") + `.
 --since takes an age (30m, 2h, 1d) or a time (2026-10-10T12:00:00Z, in UTC).

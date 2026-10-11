@@ -311,16 +311,21 @@ func noLines(o Options) {
 		fmt.Fprintf(o.Err, " since %s", o.Since)
 	}
 	fmt.Fprintln(o.Err, ". Check the ref with `supavise projects list`; a paused project writes nothing.")
+	fmt.Fprintln(o.Err, "On a cluster, a node's journal holds the units that run on it: run the command on the server that hosts the project.")
 	if !o.Root {
 		fmt.Fprintln(o.Err, "This user may not read the system journal: run the command with sudo.")
 	}
 }
 
-// journalArgs are the arguments of one journalctl for source s: the unit, JSON output, at most
-// lines entries (0 with follow starts after the end), the lines from since on, and, for a shared
-// unit, only the lines that mention the ref.
+// journalArgs are the arguments of one journalctl for source s: the unit, JSON output with every
+// field in full, at most lines entries (0 with follow starts after the end), the lines from since on,
+// and, for a shared unit, only the lines that mention the ref.
+//
+// --all matters: without it, journalctl -o json prints a field of 4096 bytes or more as null (systemd's
+// JSON_THRESHOLD in logs-show.c), so a long statement or JSON log line would show as an empty message,
+// and a shared unit's long line would not match the ref.
 func journalArgs(ref string, s Source, lines int, since string, follow bool) []string {
-	args := []string{"-u", s.Unit, "--no-pager", "-o", "json", "-n", strconv.Itoa(lines)}
+	args := []string{"-u", s.Unit, "--no-pager", "--all", "-o", "json", "-n", strconv.Itoa(lines)}
 	if since != "" {
 		args = append(args, "--since", since)
 	}

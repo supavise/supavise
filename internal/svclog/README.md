@@ -18,7 +18,7 @@ Without `--service` the command merges all of them. Realtime, Storage, Supavisor
 
 ## How it reads
 
-One `journalctl -u <unit> -o json -n N` per log (with `--grep <ref>` for a shared unit, and `--since` when given), merged by time, the last `-n` lines printed. The default is 100 lines. A line is `<UTC time> <service> <message>`. A message with control characters (a statement in the Postgres log can hold an escape sequence) is printed with them as `\xNN`.
+One `journalctl -u <unit> --all -o json -n N` per log (with `--grep <ref>` for a shared unit, and `--since` when given), merged by time, the last `-n` lines printed. The default is 100 lines. `--all` is needed because `journalctl -o json` prints any field of 4096 bytes or more as `null`: without it a long statement or JSON line would come out as an empty message, and a long line of a shared unit would not match the ref. A line is `<UTC time> <service> <message>`. A message with control characters (a statement in the Postgres log can hold an escape sequence) is printed with them as `\xNN`.
 
 With `--follow` the command starts one `journalctl -f -n 0` per log first, prints the history, then the new lines; a line that is in both is printed once, by its journal cursor. Ctrl-C ends it.
 
@@ -31,7 +31,8 @@ With `supervisor = "exec"` (development and the tests that start real services) 
 ## Limits
 
 - Postgres logs only what its settings log; `log_statement` is `ddl` by default, so a query that is not DDL is not in the log.
-- The journal is a node's: a project that moved to another node (failover) has its earlier lines on the old one.
+- The journal is a node's. On a cluster the command reads the journal of the server it runs on, which holds the units that run there: run it on the node that hosts the project (the dashboard's log message names the node once a second node exists). A project that moved to another node (failover) has its earlier lines on the old one.
+- Auth, REST, Realtime and Storage are started with a warning log level (`internal/lifecycle/env.go`, `internal/fleet/services.go`), so they print lines only for problems; a quiet service is not a missing log. `tests/linux/roles-smoke.sh` provokes a warning from Realtime, Storage and the pooler and requires only that every line shown mentions the ref: whether each service's warning carries the tenant is not verified.
 - A journal that is not persistent (`Storage=volatile`) loses its lines at reboot.
 
 ## Tests
