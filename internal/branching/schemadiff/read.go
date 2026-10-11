@@ -950,6 +950,21 @@ func (r *reader) readDefaultACLs() error {
 	return nil
 }
 
+// stockUnmodeled reports whether an object the engine does not model is one every Supabase project has,
+// so that it is neither a change nor a user's schema: the event triggers of PostgREST (pgrst_*), of
+// pg_graphql (graphql_watch_*, issue_graphql_placeholder) and of the pg_net and pg_cron grants (issue_*),
+// and the publications of Realtime (supabase_realtime*). The artifact creates them, and they are the same
+// on a branch and its parent.
+func stockUnmodeled(kind, name string) bool {
+	switch kind {
+	case "event trigger":
+		return strings.HasPrefix(name, "pgrst_") || strings.HasPrefix(name, "issue_") || strings.HasPrefix(name, "graphql_watch_") || name == "grant_pg_net_access"
+	case "publication":
+		return strings.HasPrefix(name, "supabase_realtime")
+	}
+	return false
+}
+
 // ---- what the engine does not model -------------------------------------------------------
 
 func (r *reader) readUnmodeled() error {
@@ -958,6 +973,9 @@ func (r *reader) readUnmodeled() error {
 			var n string
 			if err := x.Scan(&n); err != nil {
 				return err
+			}
+			if stockUnmodeled(kind, n) {
+				return nil
 			}
 			r.unmodeled = append(r.unmodeled, kind+" "+n)
 			return nil
