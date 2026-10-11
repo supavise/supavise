@@ -10,7 +10,9 @@
 #    supavise restores the parent's latest base backup plus WAL (internal/backup) and says so.
 #
 # After them, tests/linux/branching/runs.sh drives the Management API of a node on real clusters:
-# the action runs of branch operations, the notify_url envelope and its signature.
+# the action runs of branch operations, the notify_url envelope and its signature; and
+# tests/linux/branching/content.sh the same way: what a branch carries from its parent and what a
+# merge brings back (schema, Edge Functions, settings).
 #
 # Both runs also run the full branching scenario (schema-only and with_data branches,
 # isolation in both directions, merge, push, reset, delete, expiry), a clone of a parent under
@@ -103,4 +105,11 @@ run "ext4 on the runner root" "$ext4" base-backup
 # shellcheck source=branching/runs.sh
 source tests/linux/branching/runs.sh
 branching_runs_check
+
+# 4. What a branch carries (tests/linux/branching/content.sh): the schema of a parent built with
+#    execute_sql, reset from the branch's own history, Studio's merge flow next to the CLI's, Edge
+#    Functions, saved settings, and the sizing of a branch with data, on the XFS of step 1.
+# shellcheck source=branching/content.sh
+source tests/linux/branching/content.sh
+branching_content_check
 echo "branching-xfs: done"
