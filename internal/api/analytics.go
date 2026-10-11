@@ -49,6 +49,69 @@ func (s *Server) routesAnalytics(add func(string, handlerFunc)) {
 		add("GET "+base+"usage.api-counts", s.usageAPICounts)
 		add("GET "+base+"usage.api-requests-count", s.usageAPIRequestsCount)
 	}
+	// The chart blocks of Reports that pick a daily metric (ChartBlock.tsx).
+	add("GET /platform/projects/{ref}/daily-stats", s.dailyStats)
+}
+
+// dailyStatsAttributes are the daily metrics a node counts, with the service counts that make each: the requests
+// the edge proxy served (internal/reqstats). The spec lists twenty attributes; egress, MAU, log-drain bytes and
+// the rest need counters or logs that a node does not keep.
+var dailyStatsAttributes = map[string][]reqstats.Service{
+	"total_requests":          {reqstats.Rest, reqstats.GraphQL, reqstats.Auth, reqstats.Storage, reqstats.Realtime, reqstats.Functions},
+	"total_rest_requests":     {reqstats.Rest},
+	"total_auth_requests":     {reqstats.Auth},
+	"total_storage_requests":  {reqstats.Storage},
+	"total_realtime_requests": {reqstats.Realtime},
+	"total_func_invocations":  {reqstats.Functions},
+}
+
+// dailyStats answers GET /platform/projects/{ref}/daily-stats for the attributes a node counts, one point
+// for each UTC day of the range that the counter still holds (eight days, counted from the daemon's start). For
+// any other attribute it says there is no data (hasNoData), which Studio draws as an empty chart and not as a
+// row of zeros.
+func (s *Server) dailyStats(w http.ResponseWriter, r *http.Request) error {
+	p, err := s.loadProject(r.Context(), r.PathValue("ref"))
+	if err != nil {
+		return err
+	}
+	q := r.URL.Query()
+	attr := q.Get("attribute")
+	if attr == "" {
+		return errf(http.StatusBadRequest, "attribute is required")
+	}
+	parse := func(name string) (time.Time, error) {
+		t, err := time.Parse(time.RFC3339Nano, q.Get(name))
+		if err != nil {
+			return time.Time{}, errf(http.StatusBadRequest, "%s must be an ISO 8601 timestamp", name)
+		}
+		return t.UTC(), nil
+	}
+	from, err := parse("startDate")
+	if err != nil {
+		return err
+	}
+	to, err := parse("endDate")
+	if err != nil {
+		return err
+	}
+	services, counted := dailyStatsAttributes[attr]
+	if !counted || s.requests == nil || to.Before(from) {
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{}, "format": "", "total": 0, "yAxisLimit": 0, "hasNoData": true})
+		return nil
+	}
+	rows := make([]any, 0, 8)
+	var total, peak uint64
+	for _, b := range s.requests.Series(p.Ref, from, to, reqstats.Day) {
+		var n uint64
+		for _, svc := range services {
+			n += b.Counts.Of(svc)
+		}
+		total += n
+		peak = max(peak, n)
+		rows = append(rows, map[string]any{"period_start": ts(b.Start), attr: n})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": rows, "format": "", "total": total, "yAxisLimit": peak})
+	return nil
 }
 
 // logsUnavailable is the answer of an endpoint that needs logs. The text names the command that
