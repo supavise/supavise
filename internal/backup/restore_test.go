@@ -307,9 +307,10 @@ func TestRestoreAsNewProjectKeysAndRequest(t *testing.T) {
 	if req.Ref != testRef2 || req.Seed == nil || req.Keys == nil || req.DBPassword != src.DBPassword {
 		t.Fatalf("CreateRequest = %+v", req)
 	}
-	// The restored cluster holds the source's default privileges; the new project takes the source's recorded decision.
-	if req.DataAPI.CopyFrom != testRef {
-		t.Errorf("DataAPI.CopyFrom = %q, want the source %s", req.DataAPI.CopyFrom, testRef)
+	// The restored cluster holds the default privileges the backup held, so the backup's manifest decides
+	// and the source's row as it is now does not.
+	if req.DataAPI.CopyFrom != "" {
+		t.Errorf("DataAPI.CopyFrom = %q, want none", req.DataAPI.CopyFrom)
 	}
 	k := req.Keys
 	// What lives inside the restored cluster is reused.
@@ -539,7 +540,33 @@ func TestRestoreAsNewTakesTheDecisionOfTheManifest(t *testing.T) {
 	if _, err := e.svc.RestoreWith(ctx, testRef, e.now.Add(-time.Minute), testRef2, RestoreOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if got := fm.created[0].DataAPI; got.CopyFrom != testRef || got.CopyChoice != registry.PrivilegesGranted {
+	if got := fm.created[0].DataAPI; got.CopyFrom != "" || got.CopyChoice != registry.PrivilegesGranted {
 		t.Fatalf("DataAPI = %+v", got)
+	}
+}
+
+// A backup taken before the node recorded a decision holds the old grants. If the source has been revoked
+// since, the restored project must not copy that: it stays unrecorded so that its first pass revokes.
+func TestRestoreAsNewIgnoresTheSourceRowWhenTheBackupPredatesIt(t *testing.T) {
+	for _, manifest := range []string{"", "granted"} {
+		t.Run("manifest "+manifest, func(t *testing.T) {
+			e := newTestEnv(t)
+			ctx := context.Background()
+			src := e.addProject(t, testRef)
+			if err := e.reg.PutDataAPI(ctx, registry.DataAPI{Ref: testRef, DefaultPrivileges: registry.PrivilegesRevoked, Source: registry.DataAPIUpgrade}); err != nil {
+				t.Fatal(err)
+			}
+			e.defaultPrivileges = manifest
+			e.storeBase(t, testRef, fakeDataDir(t), e.now.Add(-time.Hour), src)
+			fm := &fakeManager{e: e, dataDir: filepath.Join(t.TempDir(), "restored")}
+			e.svc.opt.Manager = fm
+			if _, err := e.svc.RestoreWith(ctx, testRef, e.now.Add(-time.Minute), testRef2, RestoreOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			got := fm.created[0].DataAPI
+			if got.CopyFrom != "" || got.CopyChoice != registry.DefaultPrivileges(manifest) {
+				t.Fatalf("DataAPI = %+v, want only the manifest's %q", got, manifest)
+			}
+		})
 	}
 }
