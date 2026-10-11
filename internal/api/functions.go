@@ -66,12 +66,26 @@ func (s *Server) listFunctions(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	digests, err := digestsOf(r.Context(), s.store, p.Ref, fns)
+	if err != nil {
+		return err
+	}
 	out := make([]map[string]any, 0, len(fns))
 	for i := range fns {
-		out = append(out, fnJSON(&fns[i]))
+		out = append(out, withDigest(fnJSON(&fns[i]), digests[fns[i].Slug]))
 	}
 	writeJSON(w, http.StatusOK, out)
 	return nil
+}
+
+// fnResponse is the JSON of one function with its digest (ezbr_sha256, which Studio's merge page
+// compares to tell a changed function from an unchanged one).
+func (s *Server) fnResponse(ctx context.Context, f *Function) (map[string]any, error) {
+	d, err := digestsOf(ctx, s.store, f.Ref, []Function{*f})
+	if err != nil {
+		return nil, err
+	}
+	return withDigest(fnJSON(f), d[f.Slug]), nil
 }
 
 func (s *Server) loadFunction(r *http.Request) (*registry.Project, *Function, error) {
@@ -91,7 +105,11 @@ func (s *Server) getFunction(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, fnJSON(f))
+	out, err := s.fnResponse(r.Context(), f)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, out)
 	return nil
 }
 
@@ -155,7 +173,11 @@ func (s *Server) updateFunction(w http.ResponseWriter, r *http.Request) error {
 	if err := s.functionsChanged(r.Context(), p.Ref); err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, fnJSON(f))
+	out, err := s.fnResponse(r.Context(), f)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, out)
 	return nil
 }
 
@@ -204,7 +226,11 @@ func (s *Server) createFunction(w http.ResponseWriter, r *http.Request) error {
 	if err := s.functionsChanged(r.Context(), p.Ref); err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusCreated, fnJSON(f))
+	out, err := s.fnResponse(r.Context(), f)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusCreated, out)
 	return nil
 }
 
@@ -319,7 +345,11 @@ func (s *Server) deployFunction(w http.ResponseWriter, r *http.Request) error {
 	if err := s.functionsChanged(r.Context(), p.Ref); err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusCreated, fnJSON(f))
+	out, err := s.fnResponse(r.Context(), f)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusCreated, out)
 	return nil
 }
 

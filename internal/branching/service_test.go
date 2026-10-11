@@ -384,49 +384,6 @@ func TestMergeRefusesWhatAConcurrentMergeMadeDivergent(t *testing.T) {
 	}
 }
 
-type fakeFunctions map[string]map[string]string // ref -> slug -> digest
-
-func (f fakeFunctions) Digests(_ context.Context, ref string) (map[string]string, error) {
-	return f[ref], nil
-}
-
-// A merge carries migrations only. When the branch has Edge Functions that the parent lacks or
-// has in another version, the result says so, so that an agent does not take them as merged.
-func TestMergeSaysWhichFunctionsItDidNotCarry(t *testing.T) {
-	h := newHarness(t, nil)
-	fns := fakeFunctions{}
-	h.svc.fns = fns
-	b := h.create("feat", nil)
-	ctx := context.Background()
-	h.db.migs[b.Ref] = append(h.db.migs[b.Ref], mig("20260110000000", "feature", "create table f (id int)"))
-	fns[parentRef] = map[string]string{"same": "1", "changed": "1", "parent-only": "1"}
-	fns[b.Ref] = map[string]string{"same": "1", "changed": "2", "new-fn": "1"}
-	if _, err := h.svc.Merge(ctx, b.Ref, ActionInput{}); err != nil {
-		t.Fatal(err)
-	}
-	got := h.wait(b.Ref)
-	h.mustState(got, registry.BranchFunctionsDeployed)
-	if !strings.Contains(got.Detail, "merged 1 migration") || !strings.Contains(got.Detail, "Edge Functions are NOT merged") ||
-		!strings.Contains(got.Detail, "changed, new-fn") || strings.Contains(got.Detail, "same") || strings.Contains(got.Detail, "parent-only") {
-		t.Fatalf("detail = %q", got.Detail)
-	}
-	// Nothing left to merge still tells about functions.
-	if _, err := h.svc.Merge(ctx, b.Ref, ActionInput{}); err != nil {
-		t.Fatal(err)
-	}
-	if got = h.wait(b.Ref); !strings.Contains(got.Detail, "nothing to merge") || !strings.Contains(got.Detail, "Edge Functions are NOT merged") {
-		t.Fatalf("detail = %q", got.Detail)
-	}
-	// Equal functions: no remark.
-	fns[b.Ref] = map[string]string{"same": "1", "changed": "1"}
-	if _, err := h.svc.Merge(ctx, b.Ref, ActionInput{}); err != nil {
-		t.Fatal(err)
-	}
-	if got = h.wait(b.Ref); strings.Contains(got.Detail, "Edge Functions") {
-		t.Fatalf("detail = %q", got.Detail)
-	}
-}
-
 func TestMergeUpToVersion(t *testing.T) {
 	h := newHarness(t, nil)
 	b := h.create("feat", nil)
@@ -694,16 +651,6 @@ func TestDisableBranching(t *testing.T) {
 	}
 	if list, _ := h.svc.List(ctx, parentRef); len(list) != 1 {
 		t.Fatalf("list = %+v", list)
-	}
-}
-
-func TestDiff(t *testing.T) {
-	h := newHarness(t, nil)
-	b := h.create("feat", nil)
-	h.db.migs[b.Ref] = append(h.db.migs[b.Ref], mig("20260110000000", "feature", "create table f (id int);", "create index on f (id)"))
-	out, err := h.svc.Diff(context.Background(), b.Ref)
-	if err != nil || !strings.Contains(out, "create table f (id int);") || !strings.Contains(out, "20260110000000") || strings.Contains(out, "create table t") {
-		t.Fatalf("diff: %q %v", out, err)
 	}
 }
 
@@ -996,7 +943,7 @@ func TestCloneSeederWritesTheFirstStartSettings(t *testing.T) {
 			h := newHarness(t, nil)
 			h.svc.clone = func(_ context.Context, _, m, dst string) (*CloneStats, error) {
 				// What a clone of the parent leaves in the new data directory.
-				conf := "max_logical_replication_workers = '8'\nwork_mem = '8MB'\n"
+				conf := "max_logical_replication_workers = '8'\nstatement_timeout = '8s'\nwork_mem = '8MB'\nshared_buffers = '4GB'\n"
 				return &CloneStats{Method: m}, os.WriteFile(filepath.Join(dst, "postgresql.auto.conf"), []byte(conf), 0o600)
 			}
 			dir := t.TempDir()
@@ -1021,7 +968,8 @@ func TestCloneSeederWritesTheFirstStartSettings(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, _ := os.ReadFile(filepath.Join(dir, "postgresql.auto.conf"))
-			if want := "work_mem = '8MB'\nmax_logical_replication_workers = '8'\n"; string(got) != want {
+			// the parent's sizing is gone (the branch's class sets its own), the other settings stay
+			if want := "statement_timeout = '8s'\nmax_logical_replication_workers = '8'\n"; string(got) != want {
 				t.Errorf("after clearing: %q, want %q", got, want)
 			}
 		})

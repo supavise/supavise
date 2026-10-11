@@ -20,6 +20,7 @@ func (s *Server) routesDatabase(add func(string, handlerFunc)) {
 	add("POST /v1/projects/{ref}/database/query/read-only", s.dbQuery(true))
 	add("GET /v1/projects/{ref}/database/migrations", s.listMigrations)
 	add("POST /v1/projects/{ref}/database/migrations", s.applyMigration)
+	add("PUT /v1/projects/{ref}/database/migrations", s.upsertMigration)
 	add("GET /v1/projects/{ref}/types/typescript", s.typescriptTypes)
 	add("POST /v1/projects/{ref}/cli/login-role", s.createLoginRole)
 	add("DELETE /v1/projects/{ref}/cli/login-role", s.deleteLoginRoles)
@@ -194,6 +195,63 @@ select greatest(to_char(now() at time zone 'utc', 'YYYYMMDDHH24MISS')::bigint,
 		return err
 	}
 	s.invalidateAdvisors(p.Ref)
+	w.WriteHeader(http.StatusOK)
+	return nil
+}
+
+// migrationSQL is the history table of migrations and the statements that make sure it has the
+// columns this API writes. POST (applyMigration) and PUT (upsertMigration) share it.
+const migrationsTable = "supabase_migrations.schema_migrations"
+
+const ensureMigrations = `select pg_advisory_xact_lock(hashtext('supavise.apply_migration'));
+create schema if not exists supabase_migrations;
+create table if not exists ` + migrationsTable + ` (version text not null primary key, statements text[], name text);
+alter table ` + migrationsTable + ` add column if not exists created_by text;
+alter table ` + migrationsTable + ` add column if not exists idempotency_key text unique;
+alter table ` + migrationsTable + ` add column if not exists rollback text[];
+`
+
+// upsertMigration records a migration in the history without running it (PUT, "Upsert a database
+// migration without applying"). Studio's merge page uses it to record the schema diff of a branch:
+// the branch already has those changes, so running them would fail, and the merge applies the
+// recorded migration to the parent. It is idempotent: a repeated Idempotency-Key, or a migration
+// with the same name and the same statements (whitespace and a final semicolon aside), is
+// recorded once and answers 200 again. The statements are never executed here.
+func (s *Server) upsertMigration(w http.ResponseWriter, r *http.Request) error {
+	var body v1.V1UpsertMigrationBody
+	if err := decode(r, &body); err != nil {
+		return err
+	}
+	in := struct{ Query, Name, Rollback string }{Query: body.Query}
+	if body.Name != nil {
+		in.Name = *body.Name
+	}
+	if body.Rollback != nil {
+		in.Rollback = *body.Rollback
+	}
+	if strings.TrimSpace(in.Query) == "" {
+		return errf(http.StatusBadRequest, "query is required")
+	}
+	p, err := s.running(r.Context(), r.PathValue("ref"))
+	if err != nil {
+		return err
+	}
+	key := r.Header.Get("Idempotency-Key")
+	norm := sqlLiteral(strings.Join(strings.Fields(strings.TrimRight(strings.TrimSpace(in.Query), ";")), " "))
+	// The same text as branching's normalizeSQL, made in SQL so that the check and the insert are
+	// one statement under the advisory lock.
+	stored := `regexp_replace(btrim(array_to_string(t.statements, E';\n'), E' \n\t\r;'), '\s+', ' ', 'g')`
+	var b strings.Builder
+	b.WriteString(ensureMigrations)
+	b.WriteString(`insert into ` + migrationsTable + ` (version, name, statements, rollback, idempotency_key)
+select greatest(to_char(now() at time zone 'utc', 'YYYYMMDDHH24MISS')::bigint,
+                coalesce(max(case when version ~ '^[0-9]{1,18}$' then version::bigint end), 0) + 1)::text, ` +
+		nullable(in.Name) + `, array[` + sqlLiteral(in.Query) + `], ` + nullableArray(in.Rollback) + `, ` + nullable(key) + ` from ` + migrationsTable + `
+having not exists (select 1 from ` + migrationsTable + ` where ` + nullable(key) + ` is not null and idempotency_key = ` + nullable(key) + `)
+   and not exists (select 1 from ` + migrationsTable + ` t where t.name is not distinct from ` + nullable(in.Name) + ` and ` + stored + ` = ` + norm + `);`)
+	if _, err := s.sqlRows(r.Context(), p.Ref, "postgres", false, b.String()); err != nil {
+		return err
+	}
 	w.WriteHeader(http.StatusOK)
 	return nil
 }

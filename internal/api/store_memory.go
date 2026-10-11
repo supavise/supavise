@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
 	"strings"
 	"sync"
@@ -404,4 +406,26 @@ func (m *MemoryStore) DeleteFolders(_ context.Context, ref string, ids []string)
 		}
 	}
 	return nil
+}
+
+// FunctionFileHashes implements Store.
+func (m *MemoryStore) FunctionFileHashes(_ context.Context, ref string, slugs []string) (map[string][]FunctionFileHash, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	want := map[string]bool{}
+	for _, s := range slugs {
+		want[s] = true
+	}
+	out := map[string][]FunctionFileHash{}
+	for k, files := range m.files {
+		f := m.functions[k]
+		if f == nil || f.Ref != ref || (slugs != nil && !want[f.Slug]) {
+			continue
+		}
+		for _, file := range files {
+			sum := sha256.Sum256(file.Content)
+			out[f.Slug] = append(out[f.Slug], FunctionFileHash{Path: file.Path, SHA256: hex.EncodeToString(sum[:])})
+		}
+	}
+	return out, nil
 }

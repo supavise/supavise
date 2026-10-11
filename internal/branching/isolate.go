@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/supavise/supavise/internal/config"
+	"github.com/supavise/supavise/internal/projectconfig"
 	"github.com/supavise/supavise/internal/registry"
 )
 
@@ -110,6 +111,40 @@ func writeQuarantine(dataDir string) error {
 		cur = append(cur, '\n')
 	}
 	return writeFileSync(p, append(cur, quarantineLines()...), 0o600)
+}
+
+// dropSizing removes from a copied data directory's postgresql.auto.conf the settings that size the
+// parent's cluster (projectconfig.SizingSettings: shared_buffers, work_mem, max_connections and the
+// like). The branch has a compute class of its own, which puts its sizing on the postmaster's command
+// line; a line inherited from a larger parent would otherwise stay in the file, would beat a reload,
+// and would come back the moment the class stops setting that key. Every other line stays (the
+// non-sizing settings are the ones a branch inherits). A missing file is not an error.
+func dropSizing(dataDir string) error {
+	p := filepath.Join(dataDir, "postgresql.auto.conf")
+	cur, err := os.ReadFile(p)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	sizing := map[string]bool{}
+	for _, k := range projectconfig.SizingSettings {
+		sizing[k] = true
+	}
+	var keep []string
+	changed := false
+	for _, l := range strings.SplitAfter(string(cur), "\n") {
+		if sizing[confKey(l)] {
+			changed = true
+			continue
+		}
+		keep = append(keep, l)
+	}
+	if !changed {
+		return nil
+	}
+	return writeFileSync(p, []byte(strings.Join(keep, "")), 0o600)
 }
 
 // clearQuarantine removes the quarantine settings from postgresql.auto.conf, however the file

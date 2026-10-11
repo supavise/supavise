@@ -45,6 +45,9 @@ type CreateRequest struct {
 	// DataAPI are the Data API choices of the new project (default privileges, the dedicated api
 	// schema, the exposed schemas). The zero value is hosted's default for a new project.
 	DataAPI DataAPIOptions
+	// SettingsFrom is the project whose saved settings the new one starts with (a branch takes its
+	// parent's; see copyInitialSettings). Empty: the defaults. Ignored when Recreate is set.
+	SettingsFrom string
 }
 
 type ServiceHealth struct {
