@@ -29,7 +29,8 @@ const (
 	// DataAPIUpgrade: the project existed before this release and got the revoke when the node first
 	// ran it.
 	DataAPIUpgrade = "upgrade"
-	// DataAPICopy: a restore as new or a data branch took the row of its source.
+	// DataAPICopy: a restore as new or a data branch took the row of its source, or an in-place restore
+	// took the decision its backup recorded.
 	DataAPICopy = "copy"
 )
 
@@ -52,6 +53,10 @@ type DataAPIStore interface {
 	// PutDataAPI records d for d.Ref, replacing an earlier row (a reset branch is created again over
 	// its ref). ErrNotFound for an unknown project.
 	PutDataAPI(ctx context.Context, d DataAPI) error
+	// DeleteDataAPI forgets the decision for ref, so that the project is looked at again by the next
+	// pass of the Data API step (an in-place restore to a backup that recorded none). A ref with no
+	// decision is not an error.
+	DeleteDataAPI(ctx context.Context, ref string) error
 }
 
 // DataAPIOf returns reg's DataAPIStore, or nil when it has none.
@@ -89,6 +94,13 @@ func (m *Memory) PutDataAPI(_ context.Context, d DataAPI) error {
 	return nil
 }
 
+func (m *Memory) DeleteDataAPI(_ context.Context, ref string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.dataAPI, ref)
+	return nil
+}
+
 func (r *Postgres) GetDataAPI(ctx context.Context, ref string) (*DataAPI, error) {
 	var d DataAPI
 	var dp string
@@ -114,5 +126,10 @@ func (r *Postgres) PutDataAPI(ctx context.Context, d DataAPI) error {
 		on conflict (ref) do update set default_privileges = excluded.default_privileges,
 		  source = excluded.source, decided_at = excluded.decided_at`,
 		d.Ref, string(d.DefaultPrivileges), d.Source, d.DecidedAt)
+	return mapWriteErr(err)
+}
+
+func (r *Postgres) DeleteDataAPI(ctx context.Context, ref string) error {
+	_, err := r.pool.Exec(ctx, `delete from supavise.project_data_api where ref = $1`, ref)
 	return mapWriteErr(err)
 }

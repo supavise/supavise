@@ -718,3 +718,142 @@ func TestCreateOnANodeBehindWaitsForTheRevokeOnly(t *testing.T) {
 		t.Fatalf("choice = %+v", d)
 	}
 }
+
+// The restored cluster holds the default privileges of its backup and the row lives in the registry, so an
+// in-place restore sets the row from the backup, whatever it says now: no SQL runs, because the database
+// already holds what the backup held.
+func TestRestoredDataAPIRecordsTheDecisionOfTheBackup(t *testing.T) {
+	for _, tc := range []struct{ now, backup registry.DefaultPrivileges }{
+		{registry.PrivilegesRevoked, registry.PrivilegesGranted},
+		{registry.PrivilegesGranted, registry.PrivilegesRevoked},
+		{registry.PrivilegesRevoked, registry.PrivilegesRevoked},
+	} {
+		t.Run(string(tc.now)+" now, "+string(tc.backup)+" in the backup", func(t *testing.T) {
+			h := newDataAPIHarness(t)
+			ctx := context.Background()
+			p := h.existing(t, "restored")
+			if err := registry.DataAPIOf(h.reg).PutDataAPI(ctx, registry.DataAPI{Ref: p.Ref, DefaultPrivileges: tc.now, Source: registry.DataAPIUpgrade}); err != nil {
+				t.Fatal(err)
+			}
+			// The Management API restores with the project held RESTORING.
+			if err := h.reg.SetProjectStatus(ctx, p.Ref, registry.StatusRestoring); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.e.RestoredDataAPI(withRestoring(ctx), p.Ref, tc.backup); err != nil {
+				t.Fatal(err)
+			}
+			if d := choiceOf(t, h.reg, p.Ref); d.DefaultPrivileges != tc.backup || d.Source != registry.DataAPICopy {
+				t.Fatalf("choice = %+v, want %q from the backup", d, tc.backup)
+			}
+			if got := h.dp.ran(); len(got) != 0 {
+				t.Fatalf("the plane ran %v", got)
+			}
+		})
+	}
+}
+
+// A backup that recorded nothing (it predates the step) holds the old grants, whatever the row says now:
+// the row is forgotten and the project converged at once, the way an existing project is. The revoke runs
+// once on the restored database; from then on the project has a row again, so a user who rolls the revoke
+// back after the restore keeps the rollback across passes, pauses and resumes.
+func TestRestoredDataAPIConvergesAProjectWhoseBackupRecordedNothing(t *testing.T) {
+	h := newDataAPIHarness(t)
+	ctx := context.Background()
+	p, err := h.e.Create(ctx, CreateRequest{Name: "restored"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(h.dp.ran()) // the create's own revoke
+	if err := h.reg.SetProjectStatus(ctx, p.Ref, registry.StatusRestoring); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.e.RestoredDataAPI(withRestoring(ctx), p.Ref, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := h.dp.ran()
+	if len(got) != before+1 || !strings.HasPrefix(got[before], p.Ref+": alter default privileges for role postgres in schema public revoke select") {
+		t.Fatalf("the plane ran %v after the create's %d", got, before)
+	}
+	if d := choiceOf(t, h.reg, p.Ref); d.DefaultPrivileges != registry.PrivilegesRevoked || d.Source != registry.DataAPIUpgrade {
+		t.Fatalf("choice = %+v", d)
+	}
+	if !h.hasEvent(t, p.Ref, EventDataAPIRevoked) {
+		t.Fatal("no project.data_api_defaults_revoked event")
+	}
+	// The restore ends, then the user rolls the revoke back with SQL (the row stays): nothing revokes again.
+	if err := h.reg.SetProjectStatus(ctx, p.Ref, registry.StatusActiveHealthy); err != nil {
+		t.Fatal(err)
+	}
+	if failed := h.e.ConvergeDataAPI(ctx); len(failed) != 0 {
+		t.Fatalf("failed: %v", failed)
+	}
+	if err := h.e.Pause(ctx, p.Ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.e.Resume(ctx, p.Ref); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.dp.ran(); len(got) != before+1 {
+		t.Fatalf("a later pass or resume ran %v", got)
+	}
+}
+
+// A restored cluster that is still replaying WAL, and one that does not answer, are converged by the
+// passes that follow; the restore itself reports no failure, and only a real failure leaves an event.
+func TestRestoredDataAPIIsRetriedWhenTheClusterIsNotReady(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		wantEvent bool
+	}{
+		{"in recovery", ErrNotPrimary, false},
+		{"home node behind", ErrPeerBehind, false},
+		{"connection refused", errors.New("connection refused"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newDataAPIHarness(t)
+			ctx := context.Background()
+			p := h.existing(t, "restored")
+			if err := registry.DataAPIOf(h.reg).PutDataAPI(ctx, registry.DataAPI{Ref: p.Ref, DefaultPrivileges: registry.PrivilegesRevoked, Source: registry.DataAPIUpgrade}); err != nil {
+				t.Fatal(err)
+			}
+			h.dp.err = tc.err
+			if err := h.e.RestoredDataAPI(ctx, p.Ref, ""); err != nil {
+				t.Fatalf("the restore was failed over a revoke that is waiting: %v", err)
+			}
+			if _, err := registry.DataAPIOf(h.reg).GetDataAPI(ctx, p.Ref); !errors.Is(err, registry.ErrNotFound) {
+				t.Fatalf("a revoke that did not happen was recorded: %v", err)
+			}
+			if got := h.hasEvent(t, p.Ref, EventDataAPIFailed); got != tc.wantEvent {
+				t.Fatalf("failure event = %v, want %v", got, tc.wantEvent)
+			}
+			h.dp.err = nil
+			if failed := h.e.ConvergeDataAPI(ctx); len(failed) != 0 {
+				t.Fatalf("the next pass failed: %v", failed)
+			}
+			if d := choiceOf(t, h.reg, p.Ref); d.DefaultPrivileges != registry.PrivilegesRevoked || d.Source != registry.DataAPIUpgrade {
+				t.Fatalf("choice after the next pass = %+v", d)
+			}
+		})
+	}
+}
+
+// A follower's registry is read-only and the system project has no decision: the step does nothing.
+func TestRestoredDataAPIDoesNothingOnAFollowerOrForTheSystemProject(t *testing.T) {
+	h := newDataAPIHarness(t)
+	ctx := context.Background()
+	p := h.existing(t, "follower")
+	f := NewEngine(h.cfg, h.reg, h.sec, fakeArts{}, h.dp, Options{ReadOnly: true})
+	if err := f.RestoredDataAPI(ctx, p.Ref, registry.PrivilegesGranted); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.e.RestoredDataAPI(ctx, config.SystemRef, registry.PrivilegesGranted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.DataAPIOf(h.reg).GetDataAPI(ctx, p.Ref); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("a follower recorded a decision: %v", err)
+	}
+	if got := h.dp.ran(); len(got) != 0 {
+		t.Fatalf("the plane ran %v", got)
+	}
+}
