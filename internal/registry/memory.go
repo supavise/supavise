@@ -257,6 +257,15 @@ func (m *Memory) UpdateProject(_ context.Context, p *Project) error {
 
 // UpdateBranch implements Registry.
 func (m *Memory) UpdateBranch(_ context.Context, ref string, b *BranchInfo) error {
+	return m.updateBranch(ref, b, true)
+}
+
+// UpdateBranchSettings implements Registry.
+func (m *Memory) UpdateBranchSettings(_ context.Context, ref string, b *BranchInfo) error {
+	return m.updateBranch(ref, b, false)
+}
+
+func (m *Memory) updateBranch(ref string, b *BranchInfo, withState bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.projects[ref]
@@ -270,7 +279,10 @@ func (m *Memory) UpdateBranch(_ context.Context, ref string, b *BranchInfo) erro
 	}
 	nb := *cur.Branch
 	nb.Name, nb.GitBranch, nb.Persistent, nb.WithData, nb.ExpiresAt, nb.DeletionScheduledAt = b.Name, b.GitBranch, b.Persistent, b.WithData, b.ExpiresAt, b.DeletionScheduledAt
-	nb.NotifyURL, nb.State, nb.Detail, nb.CloneMethod, nb.ReviewRequestedAt = b.NotifyURL, b.State, b.Detail, b.CloneMethod, b.ReviewRequestedAt
+	nb.NotifyURL, nb.CloneMethod, nb.ReviewRequestedAt = b.NotifyURL, b.CloneMethod, b.ReviewRequestedAt
+	if withState {
+		nb.State, nb.Detail = b.State, b.Detail
+	}
 	cur.Branch, cur.UpdatedAt = &nb, time.Now()
 	m.projects[ref] = cloneProject(cur)
 	m.notify("projects", "update", ref)

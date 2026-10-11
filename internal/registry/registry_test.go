@@ -269,6 +269,26 @@ func testBranches(t *testing.T, r Registry, orgID int64) {
 	if later, _ := r.GetProject(ctx, kid); later.Branch.Egress != EgressDenied || later.Branch.Detail != "stale write" {
 		t.Fatalf("a stale UpdateBranch changed the policy or lost its own field: %+v", later.Branch)
 	}
+	// UpdateBranchSettings writes the settings and leaves the state and its detail to the operation
+	// that owns them: a PATCH that read the branch before the operation ended cannot put the old
+	// state back.
+	done := *again.Branch
+	done.State, done.Detail = BranchFunctionsDeployed, "done"
+	if err := r.UpdateBranch(ctx, kid, &done); err != nil {
+		t.Fatal(err)
+	}
+	stale = *again.Branch // still MIGRATIONS_PASSED
+	stale.GitBranch, stale.NotifyURL, stale.Egress = "feat/y", "", EgressAllowed
+	if err := r.UpdateBranchSettings(ctx, kid, &stale); err != nil {
+		t.Fatal(err)
+	}
+	if later, _ := r.GetProject(ctx, kid); later.Branch.State != BranchFunctionsDeployed || later.Branch.Detail != "done" ||
+		later.Branch.GitBranch != "feat/y" || later.Branch.NotifyURL != "" || later.Branch.Egress != EgressDenied {
+		t.Fatalf("UpdateBranchSettings wrote the state or the policy, or lost a setting: %+v", later.Branch)
+	}
+	if err := r.UpdateBranchSettings(ctx, parent, &stale); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateBranchSettings on an ordinary project: %v", err)
+	}
 	if err := r.SetBranchEgress(ctx, parent, "", EgressDenied); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetBranchEgress on an ordinary project: %v", err)
 	}
