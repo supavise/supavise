@@ -167,6 +167,21 @@ whole is checked against the project's memory limit (`shared_buffers` at most 40
 (`max_connections` at least 20, `max_wal_senders` at least 3, `max_replication_slots` at least 2,
 `max_worker_processes` at least 10: pg_cron runs up to 8 jobs in background workers and its launcher and pg_net's
 worker take two more).
+Four settings of the autovacuum and the preloaded extensions came with a later re-pin of the specs (a test in
+`internal/api` fails when a pinned spec lists a Postgres setting the schema lacks):
+
+| Setting | Accepted | Takes effect |
+|---|---|---|
+| `autovacuum_max_workers` | 1 to 256 (the spec allows 262143; each worker holds a backend slot, so it counts in the shared-memory estimate below) | restart (postmaster setting of PostgreSQL 17) |
+| `autovacuum_work_mem` | a size of 1MB or more, or `-1` for `maintenance_work_mem`; at most 25 percent of the memory limit, like the other `*_work_mem` | reload |
+| `pg_net.batch_size` | 0 to 32767 | reload (pg_net's background worker re-reads its settings on `SIGHUP`) |
+| `pg_stat_statements.max` | 100 to 45000 | restart (postmaster setting) |
+
+All four are applied with `ALTER SYSTEM`; both extensions are in the artifact's `shared_preload_libraries`, so the
+names exist. A restart-only value is flagged "pending restart" through `pg_settings.pending_restart` until the cluster
+restarts. The GET reads each from the running cluster when nothing is saved (`-1` for an unset `autovacuum_work_mem`),
+and the v2 config spells the dotted names `pg_net_batch_size` and `pg_stat_statements_max`.
+
 Rendering: settings that overlap the size's command-line sizing (`shared_buffers`,
 `effective_cache_size`, `work_mem`, `maintenance_work_mem`, `max_wal_size`, `max_connections`,
 `max_worker_processes`, `max_wal_senders`, `max_replication_slots`) become server arguments after the size's and take

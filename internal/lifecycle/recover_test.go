@@ -21,6 +21,9 @@ func TestStripManagedSettings(t *testing.T) {
 		"max_locks_per_transaction = '2147483640'\n" +
 		"  Statement_Timeout = '5s'\n" +
 		"cron.log_statement = 'off'\n" +
+		"autovacuum_max_workers = '12'\n" +
+		"pg_net.batch_size = '500'\n" +
+		"PG_STAT_STATEMENTS.max = '40000'\n" +
 		"unmanaged_extension.setting = 'x'\n" +
 		"work_mem = '8MB'\n"
 	got, changed := stripManagedSettings(body)

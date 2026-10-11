@@ -262,28 +262,21 @@ func (e CreateBackendParamsOpenapiConfig0Http) Valid() bool {
 
 // Defines values for CreateBackendParamsOpenapiType.
 const (
-	CreateBackendParamsOpenapiTypeAxiom      CreateBackendParamsOpenapiType = "axiom"
-	CreateBackendParamsOpenapiTypeBigquery   CreateBackendParamsOpenapiType = "bigquery"
-	CreateBackendParamsOpenapiTypeClickhouse CreateBackendParamsOpenapiType = "clickhouse"
-	CreateBackendParamsOpenapiTypeDatadog    CreateBackendParamsOpenapiType = "datadog"
-	CreateBackendParamsOpenapiTypeLast9      CreateBackendParamsOpenapiType = "last9"
-	CreateBackendParamsOpenapiTypeLoki       CreateBackendParamsOpenapiType = "loki"
-	CreateBackendParamsOpenapiTypeOtlp       CreateBackendParamsOpenapiType = "otlp"
-	CreateBackendParamsOpenapiTypePostgres   CreateBackendParamsOpenapiType = "postgres"
-	CreateBackendParamsOpenapiTypeS3         CreateBackendParamsOpenapiType = "s3"
-	CreateBackendParamsOpenapiTypeSentry     CreateBackendParamsOpenapiType = "sentry"
-	CreateBackendParamsOpenapiTypeSyslog     CreateBackendParamsOpenapiType = "syslog"
-	CreateBackendParamsOpenapiTypeWebhook    CreateBackendParamsOpenapiType = "webhook"
+	CreateBackendParamsOpenapiTypeAxiom   CreateBackendParamsOpenapiType = "axiom"
+	CreateBackendParamsOpenapiTypeDatadog CreateBackendParamsOpenapiType = "datadog"
+	CreateBackendParamsOpenapiTypeLast9   CreateBackendParamsOpenapiType = "last9"
+	CreateBackendParamsOpenapiTypeLoki    CreateBackendParamsOpenapiType = "loki"
+	CreateBackendParamsOpenapiTypeOtlp    CreateBackendParamsOpenapiType = "otlp"
+	CreateBackendParamsOpenapiTypeS3      CreateBackendParamsOpenapiType = "s3"
+	CreateBackendParamsOpenapiTypeSentry  CreateBackendParamsOpenapiType = "sentry"
+	CreateBackendParamsOpenapiTypeSyslog  CreateBackendParamsOpenapiType = "syslog"
+	CreateBackendParamsOpenapiTypeWebhook CreateBackendParamsOpenapiType = "webhook"
 )
 
 // Valid indicates whether the value is a known member of the CreateBackendParamsOpenapiType enum.
 func (e CreateBackendParamsOpenapiType) Valid() bool {
 	switch e {
 	case CreateBackendParamsOpenapiTypeAxiom:
-		return true
-	case CreateBackendParamsOpenapiTypeBigquery:
-		return true
-	case CreateBackendParamsOpenapiTypeClickhouse:
 		return true
 	case CreateBackendParamsOpenapiTypeDatadog:
 		return true
@@ -292,8 +285,6 @@ func (e CreateBackendParamsOpenapiType) Valid() bool {
 	case CreateBackendParamsOpenapiTypeLoki:
 		return true
 	case CreateBackendParamsOpenapiTypeOtlp:
-		return true
-	case CreateBackendParamsOpenapiTypePostgres:
 		return true
 	case CreateBackendParamsOpenapiTypeS3:
 		return true
@@ -1121,8 +1112,12 @@ const (
 	CreatePlatformAppBodyPermissionsAuditLogsRead                     CreatePlatformAppBodyPermissions = "audit_logs_read"
 	CreatePlatformAppBodyPermissionsAuthConfigRead                    CreatePlatformAppBodyPermissions = "auth_config_read"
 	CreatePlatformAppBodyPermissionsAuthConfigWrite                   CreatePlatformAppBodyPermissions = "auth_config_write"
+	CreatePlatformAppBodyPermissionsAuthHooksRead                     CreatePlatformAppBodyPermissions = "auth_hooks_read"
+	CreatePlatformAppBodyPermissionsAuthHooksWrite                    CreatePlatformAppBodyPermissions = "auth_hooks_write"
 	CreatePlatformAppBodyPermissionsAuthSigningKeysRead               CreatePlatformAppBodyPermissions = "auth_signing_keys_read"
 	CreatePlatformAppBodyPermissionsAuthSigningKeysWrite              CreatePlatformAppBodyPermissions = "auth_signing_keys_write"
+	CreatePlatformAppBodyPermissionsAuthUsersRead                     CreatePlatformAppBodyPermissions = "auth_users_read"
+	CreatePlatformAppBodyPermissionsAuthUsersWrite                    CreatePlatformAppBodyPermissions = "auth_users_write"
 	CreatePlatformAppBodyPermissionsBackupsRead                       CreatePlatformAppBodyPermissions = "backups_read"
 	CreatePlatformAppBodyPermissionsBackupsWrite                      CreatePlatformAppBodyPermissions = "backups_write"
 	CreatePlatformAppBodyPermissionsBillingRead                       CreatePlatformAppBodyPermissions = "billing_read"
@@ -1174,6 +1169,8 @@ const (
 	CreatePlatformAppBodyPermissionsMembersWrite                      CreatePlatformAppBodyPermissions = "members_write"
 	CreatePlatformAppBodyPermissionsOrganizationAdminRead             CreatePlatformAppBodyPermissions = "organization_admin_read"
 	CreatePlatformAppBodyPermissionsOrganizationAdminWrite            CreatePlatformAppBodyPermissions = "organization_admin_write"
+	CreatePlatformAppBodyPermissionsOrganizationConfigRead            CreatePlatformAppBodyPermissions = "organization_config_read"
+	CreatePlatformAppBodyPermissionsOrganizationConfigWrite           CreatePlatformAppBodyPermissions = "organization_config_write"
 	CreatePlatformAppBodyPermissionsOrganizationProjectsCreate        CreatePlatformAppBodyPermissions = "organization_projects_create"
 	CreatePlatformAppBodyPermissionsOrganizationProjectsRead          CreatePlatformAppBodyPermissions = "organization_projects_read"
 	CreatePlatformAppBodyPermissionsOrganizationsCreate               CreatePlatformAppBodyPermissions = "organizations_create"
@@ -1232,9 +1229,17 @@ func (e CreatePlatformAppBodyPermissions) Valid() bool {
 		return true
 	case CreatePlatformAppBodyPermissionsAuthConfigWrite:
 		return true
+	case CreatePlatformAppBodyPermissionsAuthHooksRead:
+		return true
+	case CreatePlatformAppBodyPermissionsAuthHooksWrite:
+		return true
 	case CreatePlatformAppBodyPermissionsAuthSigningKeysRead:
 		return true
 	case CreatePlatformAppBodyPermissionsAuthSigningKeysWrite:
+		return true
+	case CreatePlatformAppBodyPermissionsAuthUsersRead:
+		return true
+	case CreatePlatformAppBodyPermissionsAuthUsersWrite:
 		return true
 	case CreatePlatformAppBodyPermissionsBackupsRead:
 		return true
@@ -1337,6 +1342,10 @@ func (e CreatePlatformAppBodyPermissions) Valid() bool {
 	case CreatePlatformAppBodyPermissionsOrganizationAdminRead:
 		return true
 	case CreatePlatformAppBodyPermissionsOrganizationAdminWrite:
+		return true
+	case CreatePlatformAppBodyPermissionsOrganizationConfigRead:
+		return true
+	case CreatePlatformAppBodyPermissionsOrganizationConfigWrite:
 		return true
 	case CreatePlatformAppBodyPermissionsOrganizationProjectsCreate:
 		return true
@@ -2462,8 +2471,12 @@ const (
 	CreateScopedAccessTokenBodyPermissionsAuditLogsRead                     CreateScopedAccessTokenBodyPermissions = "audit_logs_read"
 	CreateScopedAccessTokenBodyPermissionsAuthConfigRead                    CreateScopedAccessTokenBodyPermissions = "auth_config_read"
 	CreateScopedAccessTokenBodyPermissionsAuthConfigWrite                   CreateScopedAccessTokenBodyPermissions = "auth_config_write"
+	CreateScopedAccessTokenBodyPermissionsAuthHooksRead                     CreateScopedAccessTokenBodyPermissions = "auth_hooks_read"
+	CreateScopedAccessTokenBodyPermissionsAuthHooksWrite                    CreateScopedAccessTokenBodyPermissions = "auth_hooks_write"
 	CreateScopedAccessTokenBodyPermissionsAuthSigningKeysRead               CreateScopedAccessTokenBodyPermissions = "auth_signing_keys_read"
 	CreateScopedAccessTokenBodyPermissionsAuthSigningKeysWrite              CreateScopedAccessTokenBodyPermissions = "auth_signing_keys_write"
+	CreateScopedAccessTokenBodyPermissionsAuthUsersRead                     CreateScopedAccessTokenBodyPermissions = "auth_users_read"
+	CreateScopedAccessTokenBodyPermissionsAuthUsersWrite                    CreateScopedAccessTokenBodyPermissions = "auth_users_write"
 	CreateScopedAccessTokenBodyPermissionsBackupsRead                       CreateScopedAccessTokenBodyPermissions = "backups_read"
 	CreateScopedAccessTokenBodyPermissionsBackupsWrite                      CreateScopedAccessTokenBodyPermissions = "backups_write"
 	CreateScopedAccessTokenBodyPermissionsBillingRead                       CreateScopedAccessTokenBodyPermissions = "billing_read"
@@ -2515,6 +2528,8 @@ const (
 	CreateScopedAccessTokenBodyPermissionsMembersWrite                      CreateScopedAccessTokenBodyPermissions = "members_write"
 	CreateScopedAccessTokenBodyPermissionsOrganizationAdminRead             CreateScopedAccessTokenBodyPermissions = "organization_admin_read"
 	CreateScopedAccessTokenBodyPermissionsOrganizationAdminWrite            CreateScopedAccessTokenBodyPermissions = "organization_admin_write"
+	CreateScopedAccessTokenBodyPermissionsOrganizationConfigRead            CreateScopedAccessTokenBodyPermissions = "organization_config_read"
+	CreateScopedAccessTokenBodyPermissionsOrganizationConfigWrite           CreateScopedAccessTokenBodyPermissions = "organization_config_write"
 	CreateScopedAccessTokenBodyPermissionsOrganizationProjectsCreate        CreateScopedAccessTokenBodyPermissions = "organization_projects_create"
 	CreateScopedAccessTokenBodyPermissionsOrganizationProjectsRead          CreateScopedAccessTokenBodyPermissions = "organization_projects_read"
 	CreateScopedAccessTokenBodyPermissionsOrganizationsCreate               CreateScopedAccessTokenBodyPermissions = "organizations_create"
@@ -2573,9 +2588,17 @@ func (e CreateScopedAccessTokenBodyPermissions) Valid() bool {
 		return true
 	case CreateScopedAccessTokenBodyPermissionsAuthConfigWrite:
 		return true
+	case CreateScopedAccessTokenBodyPermissionsAuthHooksRead:
+		return true
+	case CreateScopedAccessTokenBodyPermissionsAuthHooksWrite:
+		return true
 	case CreateScopedAccessTokenBodyPermissionsAuthSigningKeysRead:
 		return true
 	case CreateScopedAccessTokenBodyPermissionsAuthSigningKeysWrite:
+		return true
+	case CreateScopedAccessTokenBodyPermissionsAuthUsersRead:
+		return true
+	case CreateScopedAccessTokenBodyPermissionsAuthUsersWrite:
 		return true
 	case CreateScopedAccessTokenBodyPermissionsBackupsRead:
 		return true
@@ -2678,6 +2701,10 @@ func (e CreateScopedAccessTokenBodyPermissions) Valid() bool {
 	case CreateScopedAccessTokenBodyPermissionsOrganizationAdminRead:
 		return true
 	case CreateScopedAccessTokenBodyPermissionsOrganizationAdminWrite:
+		return true
+	case CreateScopedAccessTokenBodyPermissionsOrganizationConfigRead:
+		return true
+	case CreateScopedAccessTokenBodyPermissionsOrganizationConfigWrite:
 		return true
 	case CreateScopedAccessTokenBodyPermissionsOrganizationProjectsCreate:
 		return true
@@ -9919,28 +9946,21 @@ func (e UpdateBackendParamsOpenapiConfig0Http) Valid() bool {
 
 // Defines values for UpdateBackendParamsOpenapiType.
 const (
-	UpdateBackendParamsOpenapiTypeAxiom      UpdateBackendParamsOpenapiType = "axiom"
-	UpdateBackendParamsOpenapiTypeBigquery   UpdateBackendParamsOpenapiType = "bigquery"
-	UpdateBackendParamsOpenapiTypeClickhouse UpdateBackendParamsOpenapiType = "clickhouse"
-	UpdateBackendParamsOpenapiTypeDatadog    UpdateBackendParamsOpenapiType = "datadog"
-	UpdateBackendParamsOpenapiTypeLast9      UpdateBackendParamsOpenapiType = "last9"
-	UpdateBackendParamsOpenapiTypeLoki       UpdateBackendParamsOpenapiType = "loki"
-	UpdateBackendParamsOpenapiTypeOtlp       UpdateBackendParamsOpenapiType = "otlp"
-	UpdateBackendParamsOpenapiTypePostgres   UpdateBackendParamsOpenapiType = "postgres"
-	UpdateBackendParamsOpenapiTypeS3         UpdateBackendParamsOpenapiType = "s3"
-	UpdateBackendParamsOpenapiTypeSentry     UpdateBackendParamsOpenapiType = "sentry"
-	UpdateBackendParamsOpenapiTypeSyslog     UpdateBackendParamsOpenapiType = "syslog"
-	UpdateBackendParamsOpenapiTypeWebhook    UpdateBackendParamsOpenapiType = "webhook"
+	UpdateBackendParamsOpenapiTypeAxiom   UpdateBackendParamsOpenapiType = "axiom"
+	UpdateBackendParamsOpenapiTypeDatadog UpdateBackendParamsOpenapiType = "datadog"
+	UpdateBackendParamsOpenapiTypeLast9   UpdateBackendParamsOpenapiType = "last9"
+	UpdateBackendParamsOpenapiTypeLoki    UpdateBackendParamsOpenapiType = "loki"
+	UpdateBackendParamsOpenapiTypeOtlp    UpdateBackendParamsOpenapiType = "otlp"
+	UpdateBackendParamsOpenapiTypeS3      UpdateBackendParamsOpenapiType = "s3"
+	UpdateBackendParamsOpenapiTypeSentry  UpdateBackendParamsOpenapiType = "sentry"
+	UpdateBackendParamsOpenapiTypeSyslog  UpdateBackendParamsOpenapiType = "syslog"
+	UpdateBackendParamsOpenapiTypeWebhook UpdateBackendParamsOpenapiType = "webhook"
 )
 
 // Valid indicates whether the value is a known member of the UpdateBackendParamsOpenapiType enum.
 func (e UpdateBackendParamsOpenapiType) Valid() bool {
 	switch e {
 	case UpdateBackendParamsOpenapiTypeAxiom:
-		return true
-	case UpdateBackendParamsOpenapiTypeBigquery:
-		return true
-	case UpdateBackendParamsOpenapiTypeClickhouse:
 		return true
 	case UpdateBackendParamsOpenapiTypeDatadog:
 		return true
@@ -9949,8 +9969,6 @@ func (e UpdateBackendParamsOpenapiType) Valid() bool {
 	case UpdateBackendParamsOpenapiTypeLoki:
 		return true
 	case UpdateBackendParamsOpenapiTypeOtlp:
-		return true
-	case UpdateBackendParamsOpenapiTypePostgres:
 		return true
 	case UpdateBackendParamsOpenapiTypeS3:
 		return true
@@ -10679,8 +10697,12 @@ const (
 	UpdatePlatformAppBodyPermissionsAuditLogsRead                     UpdatePlatformAppBodyPermissions = "audit_logs_read"
 	UpdatePlatformAppBodyPermissionsAuthConfigRead                    UpdatePlatformAppBodyPermissions = "auth_config_read"
 	UpdatePlatformAppBodyPermissionsAuthConfigWrite                   UpdatePlatformAppBodyPermissions = "auth_config_write"
+	UpdatePlatformAppBodyPermissionsAuthHooksRead                     UpdatePlatformAppBodyPermissions = "auth_hooks_read"
+	UpdatePlatformAppBodyPermissionsAuthHooksWrite                    UpdatePlatformAppBodyPermissions = "auth_hooks_write"
 	UpdatePlatformAppBodyPermissionsAuthSigningKeysRead               UpdatePlatformAppBodyPermissions = "auth_signing_keys_read"
 	UpdatePlatformAppBodyPermissionsAuthSigningKeysWrite              UpdatePlatformAppBodyPermissions = "auth_signing_keys_write"
+	UpdatePlatformAppBodyPermissionsAuthUsersRead                     UpdatePlatformAppBodyPermissions = "auth_users_read"
+	UpdatePlatformAppBodyPermissionsAuthUsersWrite                    UpdatePlatformAppBodyPermissions = "auth_users_write"
 	UpdatePlatformAppBodyPermissionsBackupsRead                       UpdatePlatformAppBodyPermissions = "backups_read"
 	UpdatePlatformAppBodyPermissionsBackupsWrite                      UpdatePlatformAppBodyPermissions = "backups_write"
 	UpdatePlatformAppBodyPermissionsBillingRead                       UpdatePlatformAppBodyPermissions = "billing_read"
@@ -10732,6 +10754,8 @@ const (
 	UpdatePlatformAppBodyPermissionsMembersWrite                      UpdatePlatformAppBodyPermissions = "members_write"
 	UpdatePlatformAppBodyPermissionsOrganizationAdminRead             UpdatePlatformAppBodyPermissions = "organization_admin_read"
 	UpdatePlatformAppBodyPermissionsOrganizationAdminWrite            UpdatePlatformAppBodyPermissions = "organization_admin_write"
+	UpdatePlatformAppBodyPermissionsOrganizationConfigRead            UpdatePlatformAppBodyPermissions = "organization_config_read"
+	UpdatePlatformAppBodyPermissionsOrganizationConfigWrite           UpdatePlatformAppBodyPermissions = "organization_config_write"
 	UpdatePlatformAppBodyPermissionsOrganizationProjectsCreate        UpdatePlatformAppBodyPermissions = "organization_projects_create"
 	UpdatePlatformAppBodyPermissionsOrganizationProjectsRead          UpdatePlatformAppBodyPermissions = "organization_projects_read"
 	UpdatePlatformAppBodyPermissionsOrganizationsCreate               UpdatePlatformAppBodyPermissions = "organizations_create"
@@ -10790,9 +10814,17 @@ func (e UpdatePlatformAppBodyPermissions) Valid() bool {
 		return true
 	case UpdatePlatformAppBodyPermissionsAuthConfigWrite:
 		return true
+	case UpdatePlatformAppBodyPermissionsAuthHooksRead:
+		return true
+	case UpdatePlatformAppBodyPermissionsAuthHooksWrite:
+		return true
 	case UpdatePlatformAppBodyPermissionsAuthSigningKeysRead:
 		return true
 	case UpdatePlatformAppBodyPermissionsAuthSigningKeysWrite:
+		return true
+	case UpdatePlatformAppBodyPermissionsAuthUsersRead:
+		return true
+	case UpdatePlatformAppBodyPermissionsAuthUsersWrite:
 		return true
 	case UpdatePlatformAppBodyPermissionsBackupsRead:
 		return true
@@ -10895,6 +10927,10 @@ func (e UpdatePlatformAppBodyPermissions) Valid() bool {
 	case UpdatePlatformAppBodyPermissionsOrganizationAdminRead:
 		return true
 	case UpdatePlatformAppBodyPermissionsOrganizationAdminWrite:
+		return true
+	case UpdatePlatformAppBodyPermissionsOrganizationConfigRead:
+		return true
+	case UpdatePlatformAppBodyPermissionsOrganizationConfigWrite:
 		return true
 	case UpdatePlatformAppBodyPermissionsOrganizationProjectsCreate:
 		return true
