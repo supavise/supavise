@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,8 +105,10 @@ func (s *Server) routesJWTSecret(add func(string, handlerFunc)) {
 // updateJWTSecret changes the project's legacy JWT secret. The body is
 // {jwt_secret, change_tracking_id}: jwt_secret is a secret of at least 32 characters or ROLL.
 // The anon and service_role keys are signed again with it and the project's GoTrue, PostgREST,
-// Realtime and Storage tenants, its Edge Functions and the proxy follow; users' refresh tokens
-// stay valid, their access tokens (signed with the old secret) do not.
+// Realtime and Storage tenants, the PostgREST of its read replicas, its Edge Functions and the
+// proxy follow; users' refresh tokens stay valid, their access tokens (signed with the old
+// secret) do not. A read replica that cannot be updated does not undo the change: update-status
+// reports a failed restart of the API services and the answer names the replicas.
 func (s *Server) updateJWTSecret(w http.ResponseWriter, r *http.Request) error {
 	p, err := s.loadProject(r.Context(), r.PathValue("ref"))
 	if err != nil {
@@ -146,6 +149,13 @@ func (s *Server) updateJWTSecret(w http.ResponseWriter, r *http.Request) error {
 	prev, hadPrev := s.jwtUpdates.get(p.Ref)
 	s.jwtUpdates.put(p.Ref, jwtUpdate{trackingID: tracking, status: jwtStatusUpdating, progress: jwtProgressStarted, at: s.now()})
 	_, err = setter.SetJWTSecret(ctx, p.Ref, secret)
+	// A read replica that could not be updated leaves the new secret in force (see
+	// lifecycle.ReplicaKeysError): the rest of the change is done, and the answer says which replicas
+	// are still on the previous secret.
+	var replicaErr *lifecycle.ReplicaKeysError
+	if errors.As(err, &replicaErr) {
+		err = nil
+	}
 	if err != nil {
 		var je *lifecycle.JWTSecretError
 		if !errors.As(err, &je) {
@@ -176,16 +186,44 @@ func (s *Server) updateJWTSecret(w http.ResponseWriter, r *http.Request) error {
 		}
 		return errf(http.StatusInternalServerError, "Failed to update the JWT secret; the previous secret is back in use")
 	}
-	s.jwtUpdates.put(p.Ref, jwtUpdate{trackingID: tracking, status: jwtStatusUpdated, progress: jwtProgressGatewayConfigUpdated, at: s.now()})
+	if replicaErr == nil {
+		s.jwtUpdates.put(p.Ref, jwtUpdate{trackingID: tracking, status: jwtStatusUpdated, progress: jwtProgressGatewayConfigUpdated, at: s.now()})
+	} else {
+		// Everything on the primary is done (progress is the last step) and the services of the read
+		// replicas did not restart: Studio's "API services restart failed".
+		code := jwtErrorServicesRestart
+		s.jwtUpdates.put(p.Ref, jwtUpdate{trackingID: tracking, status: jwtStatusFailed, progress: jwtProgressGatewayConfigUpdated, errCode: &code, at: s.now()})
+	}
 	// The Edge Functions read the secret from a file: write it now instead of at the next
 	// reconcile. A failure is logged and repeated by the reconcile; the change itself is done.
 	s.functionsGone(ctx, p.Ref)
+	if replicaErr != nil {
+		s.log.Error("JWT secret changed, but read replicas still run the previous secret", "ref", p.Ref, "err", replicaErr)
+		return errf(http.StatusInternalServerError, "%s", replicaKeysMessage(replicaErr))
+	}
 	s.log.Info("JWT secret changed", "ref", p.Ref)
 
 	resp := base("PATCH /platform/projects/{ref}/config/secrets")
 	set(resp, "message", "Successfully updated JWT secret")
 	writeJSON(w, http.StatusOK, resp)
 	return nil
+}
+
+// replicaKeysMessage is the answer to a change of the secret that left read replicas on the previous
+// one. The causes are in the log; the replicas are named, because those are what a person restarts.
+func replicaKeysMessage(e *lifecycle.ReplicaKeysError) string {
+	const fix = "Restart each from Database, Read Replicas, or save the same secret again to retry. Until then it refuses the new keys and still accepts tokens signed with the previous secret."
+	if len(e.Failed) == 0 {
+		return "The JWT secret was changed, but the project's read replicas could not be listed, so they may still use the previous secret. Restart them from Database, Read Replicas, or save the same secret again to retry."
+	}
+	ids := make([]string, len(e.Failed))
+	for i, f := range e.Failed {
+		ids[i] = f.Identifier
+	}
+	if len(ids) == 1 {
+		return "The JWT secret was changed, but the read replica " + ids[0] + " could not be updated and still uses the previous secret. " + fix
+	}
+	return "The JWT secret was changed, but these read replicas could not be updated and still use the previous secret: " + strings.Join(ids, ", ") + ". " + fix
 }
 
 // jwtSecretUpdateStatus reports the last change of the project's JWT secret, or null.

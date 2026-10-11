@@ -120,7 +120,8 @@ new function stays callable through `rpc`, on hosted too. Objects that exist kee
   after the backup leaves `GOING_DOWN`, and a repeated delete resumes from the recorded step
   (`project.delete_started`, `project.delete_backup_done`) without a second backup.
 - `RotateKeys`: new JWT secret, legacy and opaque keys; database passwords unchanged; GoTrue and
-  PostgREST restart, fleet tenants update; previous keys are restored on error.
+  PostgREST restart, fleet tenants update, then the PostgREST of the project's read replicas restarts
+  on its nodes (see Replicas); previous keys are restored on error.
 - `SetJWTSecret` (`JWTSecretSetter`): the project's JWT secret becomes the one given, the legacy `anon` and
   `service_role` keys are signed with it again, everything else stays (the publishable and secret keys, the
   passwords). `RotateKeys` and `SetJWTSecret` share `applyKeys`: the keys are sealed, GoTrue and PostgREST
@@ -128,10 +129,13 @@ new function stays callable through `rpc`, on hosted too. Objects that exist kee
   `*JWTSecretError` names the step: store, restart or tenants). When putting the previous keys back fails
   too, `applyKeys` reports it (each failure is logged with the ref) and the error says the previous keys
   could not be restored (`JWTSecretError.NotRestored`; the text of `RotateKeys` changes the same way): the
-  registry, a unit or a tenant may then hold the new keys. A paused project only stores the keys.
-  The secret the project already has changes nothing. Not done here, because the engine does not own it: the Edge
-  Functions environment (the API writes it through `Deps.Functions`, `rotate-keys` through
-  `syncFunctions`) and the PostgREST of read replicas on other nodes.
+  registry, a unit or a tenant may then hold the new keys. A paused project only stores the keys (its
+  replicas that run still get them, see Replicas). The secret the project already has changes nothing on
+  the primary and updates the replicas again. After `applyKeys` has succeeded both end with
+  `updateReplicaKeys`, which restarts the PostgREST of the read replicas; a replica that cannot be updated
+  comes back as a `*ReplicaKeysError`, with the keys, and does not undo the change (see Replicas). Not done
+  here, because the engine does not own it: the Edge Functions environment (the API writes it through
+  `Deps.Functions`, `rotate-keys` through `syncFunctions`).
 - `Health`: unit state plus SQL ping, GoTrue `/health`, PostgREST `/`; moves `ACTIVE_HEALTHY` and
   `ACTIVE_UNHEALTHY` to match.
 - `StartActive`: starts every active project (after a reboot or `supavise system stop`), one at a
@@ -685,6 +689,29 @@ fenced primary instead of the error: it does not run here, so no restart is owed
   `ReplicaFleet.Failed`; it does not stop the primary. A caller that gives up (a stopped daemon) leaves
   the replica's status as it was and raises nothing. A grow whose primary fails puts the replicas back on
   the old size.
+- Keys: `RotateKeys` and `SetJWTSecret` restart the PostgREST of every running replica after the primary
+  and the fleet tenants took the keys (`updateReplicaKeys`, `ReplicaFleet.RestartAPI`, the peer action
+  `restart_api`). A replica's PostgREST holds the JWT secret it was rendered with, so without this the replica
+  endpoint and the load balancer (`<ref>-lb` sends reads to the replicas) refuse the new keys and keep
+  accepting JWTs signed with the previous secret. Each node renders the unit again from its copy of the
+  registry and restarts it when the rendering changed; the standby's Postgres keeps running. The leader sends
+  `secrets.ProjectKeys.JWTDigest`, and a node whose copy still holds other keys (the copy is a hot standby
+  of the leader's system cluster) reads again for `AgentOptions.KeysWait` (20 seconds) and then refuses with
+  `placement.ErrKeysBehind`, so a lagging copy never renders the previous secret as if it were the new one.
+  The replicas update together, four at a time, each under a deadline (`Options.ReplicaRestartTimeout`, two
+  minutes for this call when it is zero). The primary goes first, so a change that is taken back never reached
+  a replica. A replica that does not answer, or whose PostgREST does not come back, is named in a
+  `*ReplicaKeysError` after the others finished, leaves the event `replica.keys_failed`, and does not take
+  the change back: that would restore the replaced secret, often a leaked one, on the primary and on every
+  replica that took the new one. A replica that is being set up or removed is skipped, because it reads the
+  keys when it starts. The replicas of a paused project that run are updated too: they keep running, and
+  `Resume` renders only the primary. The retry is `SetJWTSecret` with the secret the project has (Studio's
+  form with the same secret): it restarts nothing on the primary and renders each replica's unit again, which
+  restarts only the ones that were behind. A process with no `ReplicaFleet` (the command line) cannot reach
+  the nodes: `rotate-keys` prints the keys and then names the running replicas it could not update. Realtime
+  and Storage have one tenant per project on the leader and none per replica, and Supavisor's replica
+  tenants carry no JWT secret, so there is nothing else to update. The proxy on each node drops its cached
+  keys when the registry says they changed (a follower's registry polls once a second).
 - Restarting a project restarts its primary only: the Management API restarts with a pause and a
   resume, and neither touches the replicas, which keep their rows, their units and their stream from
   the archive while the primary is down (a test pins it).

@@ -89,6 +89,10 @@ type AgentOptions struct {
 	// fails (default 15 minutes). Poll is how often the setup looks at it (default 2 seconds).
 	StallTimeout time.Duration
 	Poll         time.Duration
+	// KeysWait is how long a restart of a replica's PostgREST (peerapi.ActionRestartAPI) waits for this
+	// node's copy of the registry to hold the keys the leader names, polling every Poll (default 20
+	// seconds). The copy is the standby of the leader's system cluster and trails it by a moment.
+	KeysWait time.Duration
 	// Concurrency is how many replicas StartLocal starts and ObserveAll observes at once (default 4).
 	Concurrency int
 	Log         *slog.Logger
@@ -143,6 +147,9 @@ func NewNodeAgent(o AgentOptions) *NodeAgent {
 	}
 	if o.Poll <= 0 {
 		o.Poll = 2 * time.Second
+	}
+	if o.KeysWait <= 0 {
+		o.KeysWait = defaultKeysWait
 	}
 	if o.Concurrency <= 0 {
 		o.Concurrency = DefaultConcurrency
@@ -296,6 +303,36 @@ func (a *NodeAgent) target(ctx context.Context, identifier, class string, withKe
 		}
 	}
 	return t, nil
+}
+
+// defaultKeysWait is AgentOptions.KeysWait when it is not set.
+const defaultKeysWait = 20 * time.Second
+
+// ErrKeysBehind is the refusal of a restart of a replica's PostgREST when this node's copy of the
+// registry still holds other keys than the ones the leader names: the leader changed them a moment
+// ago and the copy has not caught up. Rendering the unit now would run it on the previous secret and
+// report success.
+var ErrKeysBehind = errors.New("placement: this node's copy of the registry does not hold the keys the leader names yet")
+
+// targetAtKeys is target with keys for a restart that follows a change of the project's keys: when
+// digest (secrets.ProjectKeys.JWTDigest) is set and the keys in this node's copy of the registry have
+// another one, it reads the keys again every Poll until they match or KeysWait is over (ErrKeysBehind).
+func (a *NodeAgent) targetAtKeys(ctx context.Context, identifier, class, digest string) (lifecycle.ReplicaTarget, error) {
+	deadline := time.Now().Add(a.o.KeysWait)
+	for {
+		t, err := a.target(ctx, identifier, class, true)
+		if err != nil || digest == "" || t.Keys.JWTDigest() == digest {
+			return t, err
+		}
+		if !time.Now().Before(deadline) {
+			return t, fmt.Errorf("%w (waited %s for %s)", ErrKeysBehind, a.o.KeysWait, identifier)
+		}
+		select {
+		case <-ctx.Done():
+			return t, ctx.Err()
+		case <-time.After(a.o.Poll):
+		}
+	}
 }
 
 // backupBytes is the size of the base backup a replica of spec would be seeded from, 0 when unknown.
@@ -770,6 +807,21 @@ func (a *NodeAgent) Do(ctx context.Context, identifier string, act peerapi.Actio
 			}
 		}
 		err = a.o.Plane.StartReplica(ctx, t)
+	case peerapi.ActionRestartAPI:
+		// Only PostgREST: a change of the project's keys needs the unit rendered again, and the standby's
+		// Postgres, which can take minutes to replay, has nothing to do with it. StartReplicaAPI renders the
+		// unit and restarts it when the rendering changed, so a repeated action restarts nothing.
+		if err = a.notHome(ctx, ref, act); err != nil {
+			break
+		}
+		if err = a.checkStandbyData(ref, identifier); err != nil {
+			break
+		}
+		var t lifecycle.ReplicaTarget
+		if t, err = a.targetAtKeys(ctx, identifier, req.Class, req.KeysDigest); err != nil {
+			break
+		}
+		err = a.o.Plane.StartReplicaAPI(ctx, t)
 	case peerapi.ActionPromote:
 		var t lifecycle.ReplicaTarget
 		if t, err = a.target(ctx, identifier, "", true); err != nil {
