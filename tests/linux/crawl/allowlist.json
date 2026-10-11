@@ -1012,6 +1012,18 @@
    "reason": "Studio asks for the feature flags before the session exists, on the sign-in page; the call is repeated once the session is there."
   },
   {
+   "op": "GET /v1/projects/{ref}/actions/{run_id}",
+   "status": 404,
+   "reach": "static",
+   "reason": "A run is owned by one ref: the branch for a create, a push and a reset, the parent for a merge. Studio polls a run under both refs and stops on the 404 of the one that does not own it, as it does on hosted."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/actions/{run_id}/logs",
+   "status": 404,
+   "reach": "static",
+   "reason": "The log of a run answers under the ref that owns the run only; Studio asks both refs, as on hosted."
+  },
+  {
    "op": "POST /v1/projects/{ref}/config/auth/signing-keys",
    "status": 501,
    "reach": "static",
@@ -1078,5 +1090,30 @@
    "reason": "The switch is disabled, so Studio never sends the update; the refusal is for API clients."
   }
  ],
- "dom": []
+ "dom": [
+  {
+   "route": "/project/[ref]/logs/*",
+   "text": "Error fetching",
+   "reach": "static",
+   "reason": "A node keeps no log store, so a log page shows the explicit error that points to `supavise logs`, which reads the journal; a stub that answered with an empty table would read as \"no errors\"."
+  },
+  {
+   "route": "/project/[ref]/functions/[functionSlug]/logs",
+   "text": "Error fetching",
+   "reach": "static",
+   "reason": "The function's log page is a log query, which a node answers with the explicit error that points to `supavise logs`."
+  },
+  {
+   "route": "/project/[ref]/functions/[functionSlug]/invocations",
+   "text": "Error fetching",
+   "reach": "static",
+   "reason": "The invocations list is a log query, which a node answers with the explicit error that points to `supavise logs`."
+  },
+  {
+   "route": "/project/[ref]/auth/audit-logs",
+   "text": "Error fetching",
+   "reach": "static",
+   "reason": "The Auth audit log page is a log query, which a node answers with the explicit error that points to `supavise logs`."
+  }
+ ]
 }
