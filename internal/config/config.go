@@ -58,6 +58,7 @@ type Config struct {
 	Fleet     Fleet     `toml:"fleet"`
 	Functions Functions `toml:"functions"`
 	Branching Branching `toml:"branching"`
+	GitHub    GitHub    `toml:"github"`
 	Upgrade   Upgrade   `toml:"upgrade"`
 	Alerts    Alerts    `toml:"alerts"`
 	Health    Health    `toml:"health"`
@@ -227,6 +228,9 @@ func (c *Config) Validate() error {
 		return errors.New("config: backup.wal_relay = \"off\" cannot work with supervisor = \"systemd\": the Postgres units hide /etc/supavise and the backups directory, so a direct `supavise wal push` can read neither the backend settings nor write the archive, and archiving would fail forever; use auto or on")
 	}
 	if err := c.Branching.validate(); err != nil {
+		return err
+	}
+	if err := c.GitHub.validate(); err != nil {
 		return err
 	}
 	if err := c.Upgrade.validate(); err != nil {
