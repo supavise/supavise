@@ -511,6 +511,7 @@ func TestAdvisorRulesCRUD(t *testing.T) {
 		"bad category":        {"POST", base, map[string]any{"exceptions": []map[string]any{{"lint_category": "HEALTH", "is_disabled": true}}}, 400},
 		"bad assignee":        {"POST", base, map[string]any{"exceptions": []map[string]any{{"assigned_to": "me", "is_disabled": true}}}, 400},
 		"bad lint name":       {"POST", base, map[string]any{"exceptions": []map[string]any{{"lint_name": "x y", "is_disabled": true}}}, 400},
+		"big metadata":        {"POST", base, map[string]any{"exceptions": []map[string]any{{"lint_metadata": map[string]any{"k": strings.Repeat("x", 5000)}, "is_disabled": true}}}, 400},
 		"long note":           {"POST", base, map[string]any{"exceptions": []map[string]any{{"note": strings.Repeat("x", 2001), "is_disabled": true}}}, 400},
 		"delete without ids":  {"DELETE", base, nil, 400},
 		"delete with bad ids": {"DELETE", base + "?ids=1,2", nil, 400},
