@@ -3,6 +3,9 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
+	"time"
 
 	"github.com/supavise/supavise/internal/registry"
 )
@@ -87,5 +90,35 @@ func (e *Engine) purgeBucketObjects(ctx context.Context, ref string) {
 	if err := e.objects.RemoveObjects(ctx, ref); err != nil {
 		e.log.Warn("could not remove the Storage objects of the project from the bucket; they stay under its prefix", "ref", ref, "error", err)
 		e.event(ctx, ref, "project.storage_cleanup_failed", map[string]string{"error": err.Error()})
+	}
+}
+
+// portWait is how long awaitDatabasePort waits for a listener on a stopped project's database port to go.
+const portWait = 3 * time.Second
+
+// awaitDatabasePort waits until nothing listens on the database port of p, which is about to be
+// started. A branch paused for idleness has a listener there, the wake gate of the branching service
+// (internal/branching, "The wake gate"), and the gate closes the moment the status leaves INACTIVE; the
+// Engine has already set it, so this only waits out the moments between the change and the close,
+// which may be another process's. A port nothing listens on (every other project) costs one refused
+// connection. After portWait it goes on and lets the start report what holds the port.
+func (e *Engine) awaitDatabasePort(ctx context.Context, p *registry.Project) {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(e.cfg.PortsFor(p.Ref, p.Seq).Postgres))
+	deadline := time.Now().Add(portWait)
+	for {
+		c, err := net.DialTimeout("tcp", addr, 250*time.Millisecond)
+		if err != nil {
+			return // nothing listens
+		}
+		_ = c.Close()
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			e.log.Warn("something still listens on the database port of a project that is about to start", "ref", p.Ref, "addr", addr)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
