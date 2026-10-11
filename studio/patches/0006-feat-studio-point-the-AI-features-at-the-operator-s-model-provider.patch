@@ -1,0 +1,419 @@
+From c7939f0e81c4319f6bc6d496c16904afc9da7b11 Mon Sep 17 00:00:00 2001
+From: supavise <supavise@users.noreply.invalid>
+Date: Sun, 11 Oct 2026 13:17:33 -0700
+Subject: [PATCH 6/6] feat(studio): point the AI features at the operator's
+ model provider
+
+Studio's AI Assistant and the SQL editor's AI features call OpenAI with
+fixed model names, and in platform mode the client never asks the server
+whether a key exists: checkOpenAIKey answers { hasKey: true } because
+Supabase's own key serves the hosted dashboard. A deployment that runs its
+own control plane lets the operator choose the provider (OpenAI, or any API
+that speaks its protocol), so the dashboard has to say when none is set.
+
+Server side, read for each request and never sent to the browser:
+
+- SUPAVISE_AI_MODEL replaces the model of the Assistant's chat and
+  SUPAVISE_AI_COMPLETION_MODEL the model of the small calls (titles, filters,
+  cron, policies, inline completion); the completion model falls back to the
+  chat model.
+- SUPAVISE_AI_API=chat sends /chat/completions, which every gateway offers,
+  instead of /responses. Chat requests leave out store, which is a
+  /responses setting.
+- SUPAVISE_AI_REASONING_EFFORT is sent when set. A model named through the
+  variables gets no upstream effort, because those belong to OpenAI's models.
+- OPENAI_API_KEY and OPENAI_BASE_URL are read by @ai-sdk/openai already.
+
+Without the variables every call is upstream's.
+
+The check-api-key route joins the platform allowlist and answers { hasKey,
+model }, the model only when the operator chose one; the client now asks it
+in platform mode too. The model picker shows that model instead of OpenAI's
+three names, and the three messages that told the user to add an
+OPENAI_API_KEY point to the server's administrator instead.
+---
+ .../interfaces/SQLEditor/RenameQueryModal.tsx |  2 +-
+ .../ui/AIAssistantPanel/AssistantChat.tsx     |  4 +-
+ .../ui/AIAssistantPanel/ModelSelector.tsx     | 11 +++
+ .../ui/EditorPanel/SaveSnippetDialog.tsx      |  2 +-
+ apps/studio/data/ai/check-api-key-query.ts    | 11 +--
+ apps/studio/lib/ai/model.ts                   | 20 ++--
+ apps/studio/lib/ai/self-hosted-model.test.ts  | 94 +++++++++++++++++++
+ apps/studio/lib/ai/self-hosted-model.ts       | 74 +++++++++++++++
+ apps/studio/lib/hosted-api-allowlist.ts       |  1 +
+ apps/studio/pages/api/ai/sql/check-api-key.ts |  4 +-
+ 10 files changed, 206 insertions(+), 17 deletions(-)
+ create mode 100644 apps/studio/lib/ai/self-hosted-model.test.ts
+ create mode 100644 apps/studio/lib/ai/self-hosted-model.ts
+
+diff --git a/apps/studio/components/interfaces/SQLEditor/RenameQueryModal.tsx b/apps/studio/components/interfaces/SQLEditor/RenameQueryModal.tsx
+index 4a0e55a..97d2658 100644
+--- a/apps/studio/components/interfaces/SQLEditor/RenameQueryModal.tsx
++++ b/apps/studio/components/interfaces/SQLEditor/RenameQueryModal.tsx
+@@ -187,7 +187,7 @@ const RenameQueryForm = ({ snippet, onCancel, onComplete }: RenameQueryFormProps
+                     ? 'Your organization has opted out of AI features.'
+                     : isApiKeySet
+                       ? undefined
+-                      : 'Add your "OPENAI_API_KEY" to your environment variables to use this feature.',
++                      : 'No AI provider is set on this server. Ask its administrator to set one with "supavise studio ai set".',
+                 },
+               }}
+             >
+diff --git a/apps/studio/components/ui/AIAssistantPanel/AssistantChat.tsx b/apps/studio/components/ui/AIAssistantPanel/AssistantChat.tsx
+index e00a3da..0b9b804 100644
+--- a/apps/studio/components/ui/AIAssistantPanel/AssistantChat.tsx
++++ b/apps/studio/components/ui/AIAssistantPanel/AssistantChat.tsx
+@@ -513,11 +513,11 @@ export const AssistantChat = ({
+         {isSuccess && !isApiKeySet && (
+           <Admonition
+             type="default"
+-            title="OpenAI API key not set"
++            title="AI provider not set"
+             description={
+               <Markdown
+                 content={
+-                  'Add your `OPENAI_API_KEY` to your environment variables to use the AI Assistant.'
++                  'Ask the administrator of this server to set one with `supavise studio ai set`.'
+                 }
+               />
+             }
+diff --git a/apps/studio/components/ui/AIAssistantPanel/ModelSelector.tsx b/apps/studio/components/ui/AIAssistantPanel/ModelSelector.tsx
+index 5410167..ed12008 100644
+--- a/apps/studio/components/ui/AIAssistantPanel/ModelSelector.tsx
++++ b/apps/studio/components/ui/AIAssistantPanel/ModelSelector.tsx
+@@ -16,6 +16,7 @@ import {
+   TooltipTrigger,
+ } from 'ui'
+ 
++import { useCheckOpenAIKeyQuery } from '@/data/ai/check-api-key-query'
+ import { useCheckEntitlements } from '@/hooks/misc/useCheckEntitlements'
+ import { useSelectedOrganizationQuery } from '@/hooks/misc/useSelectedOrganization'
+ import { ASSISTANT_MODELS, isAdvanceOnlyModelId } from '@/lib/ai/model.utils'
+@@ -33,6 +34,8 @@ export const ModelSelector = ({ selectedModel, onSelectModel }: ModelSelectorPro
+     useCheckEntitlements('assistant.advance_model')
+ 
+   const [open, setOpen] = useState(false)
++  // [Supavise] The server's operator chose the model; the OpenAI names below would be wrong.
++  const { data: keyCheck } = useCheckOpenAIKeyQuery()
+ 
+   const slug = organization?.slug ?? '_'
+ 
+@@ -52,6 +55,14 @@ export const ModelSelector = ({ selectedModel, onSelectModel }: ModelSelectorPro
+     setOpen(false)
+   }
+ 
++  if (keyCheck?.model) {
++    return (
++      <Button disabled className="text-foreground-light">
++        {keyCheck.model}
++      </Button>
++    )
++  }
++
+   return (
+     <Popover open={open} onOpenChange={setOpen}>
+       <PopoverTrigger asChild>
+diff --git a/apps/studio/components/ui/EditorPanel/SaveSnippetDialog.tsx b/apps/studio/components/ui/EditorPanel/SaveSnippetDialog.tsx
+index f669642..f07326e 100644
+--- a/apps/studio/components/ui/EditorPanel/SaveSnippetDialog.tsx
++++ b/apps/studio/components/ui/EditorPanel/SaveSnippetDialog.tsx
+@@ -86,7 +86,7 @@ export const SaveSnippetDialog = ({ open, sql, onOpenChange, onSave }: SaveSnipp
+                     ? 'Your organization has opted out of AI features.'
+                     : isApiKeySet
+                       ? undefined
+-                      : 'Add your "OPENAI_API_KEY" to your environment variables to use this feature.',
++                      : 'No AI provider is set on this server. Ask its administrator to set one with "supavise studio ai set".',
+                 },
+               }}
+             >
+diff --git a/apps/studio/data/ai/check-api-key-query.ts b/apps/studio/data/ai/check-api-key-query.ts
+index ad5f287..e6ed0ff 100644
+--- a/apps/studio/data/ai/check-api-key-query.ts
++++ b/apps/studio/data/ai/check-api-key-query.ts
+@@ -2,17 +2,16 @@ import { useQuery } from '@tanstack/react-query'
+ 
+ import { aiKeys } from './keys'
+ import { constructHeaders, fetchHandler } from '@/data/fetchers'
+-import { BASE_PATH, IS_PLATFORM } from '@/lib/constants'
++import { BASE_PATH } from '@/lib/constants'
+ import { ResponseError, UseCustomQueryOptions } from '@/types'
+ 
+ // check to see if the OPENAI_API_KEY env var is set in self-hosted
+ // so we can disable the chat editor and add a warning about manually adding the key
+ 
+ export async function checkOpenAIKey(signal?: AbortSignal) {
+-  if (IS_PLATFORM) {
+-    return { hasKey: true }
+-  }
+-
++  // [Supavise] Upstream answers { hasKey: true } without asking in platform mode, because Supabase's
++  // own key serves the hosted dashboard. A self-hosted node has an operator's key or none, and the
++  // server knows which.
+   const headers = await constructHeaders()
+   const response = await fetchHandler(`${BASE_PATH}/api/ai/sql/check-api-key`, {
+     headers,
+@@ -28,7 +27,7 @@ export async function checkOpenAIKey(signal?: AbortSignal) {
+     throw new ResponseError(body?.message, response.status)
+   }
+ 
+-  return body as { hasKey: boolean }
++  return body as { hasKey: boolean; model?: string }
+ }
+ 
+ export type ResourceData = Awaited<ReturnType<typeof checkOpenAIKey>>
+diff --git a/apps/studio/lib/ai/model.ts b/apps/studio/lib/ai/model.ts
+index 2ff1a6c..ed180fc 100644
+--- a/apps/studio/lib/ai/model.ts
++++ b/apps/studio/lib/ai/model.ts
+@@ -11,6 +11,7 @@ import {
+   ProviderModelConfig,
+   PROVIDERS,
+ } from './model.utils'
++import { resolveOpenAICall } from './self-hosted-model'
+ 
+ type ProviderOptions = Record<string, any>
+ type SystemProviderOptions = Record<string, any>
+@@ -87,14 +88,21 @@ export async function getModel(params: GetModelParams): Promise<ModelResponse> {
+     if (!process.env.OPENAI_API_KEY) {
+       return { error: new Error('OPENAI_API_KEY not available') }
+     }
+-    const baseProviderOptions = providerRegistry.providerOptions?.openai ?? {}
+-    const openaiProviderOptions = modelEntry?.reasoningEffort
+-      ? { ...baseProviderOptions, reasoningEffort: modelEntry.reasoningEffort }
+-      : baseProviderOptions
++    // [Supavise] A self-hosted deployment names its own models and API (SUPAVISE_AI_*, see
++    // self-hosted-model.ts); `OPENAI_BASE_URL` is read by the provider. Without them this is
++    // upstream's call.
++    const call = resolveOpenAICall(
++      modelEntry,
++      chosenModelId as string,
++      providerRegistry.providerOptions?.openai ?? {}
++    )
+     return {
+       modelParams: {
+-        model: openai(chosenModelId as OpenAIModelId),
+-        providerOptions: { openai: openaiProviderOptions },
++        model:
++          call.api === 'chat'
++            ? openai.chat(call.modelId as OpenAIModelId)
++            : openai(call.modelId as OpenAIModelId),
++        providerOptions: { openai: call.providerOptions },
+       },
+       systemProviderOptions: models[chosenModelId as OpenAIModelId]?.systemProviderOptions,
+     }
+diff --git a/apps/studio/lib/ai/self-hosted-model.test.ts b/apps/studio/lib/ai/self-hosted-model.test.ts
+new file mode 100644
+index 0000000..3ba2cb2
+--- /dev/null
++++ b/apps/studio/lib/ai/self-hosted-model.test.ts
+@@ -0,0 +1,94 @@
++import { describe, expect, it } from 'vitest'
++
++import {
++  DEFAULT_COMPLETION_MODEL,
++  getAssistantModelEntry,
++  LOGS_REWRITE_MODEL,
++  PROVIDERS,
++} from './model.utils'
++import { getConfiguredAssistantModel, resolveOpenAICall } from './self-hosted-model'
++
++const base = PROVIDERS.openai.providerOptions?.openai ?? {}
++const assistant = getAssistantModelEntry('gpt-6-luna')
++
++describe('resolveOpenAICall', () => {
++  it('is upstream without any variable', () => {
++    expect(resolveOpenAICall(assistant, 'gpt-6-luna', base, {})).toEqual({
++      modelId: 'gpt-6-luna',
++      api: 'responses',
++      providerOptions: { store: false, reasoningEffort: 'medium' },
++    })
++    expect(resolveOpenAICall(DEFAULT_COMPLETION_MODEL, 'gpt-5.4-nano', base, {})).toEqual({
++      modelId: 'gpt-5.4-nano',
++      api: 'responses',
++      providerOptions: { store: false, reasoningEffort: 'none' },
++    })
++  })
++
++  it('uses the operator’s models: the chat model for the Assistant, the completion model for the small calls', () => {
++    const env = { SUPAVISE_AI_MODEL: 'openai/gpt-4o', SUPAVISE_AI_COMPLETION_MODEL: 'openai/gpt-4o-mini' }
++    expect(resolveOpenAICall(assistant, 'gpt-6-luna', base, env).modelId).toBe('openai/gpt-4o')
++    expect(resolveOpenAICall(DEFAULT_COMPLETION_MODEL, 'gpt-5.4-nano', base, env).modelId).toBe('openai/gpt-4o-mini')
++    expect(resolveOpenAICall(LOGS_REWRITE_MODEL, 'gpt-5.4-nano', base, env).modelId).toBe('openai/gpt-4o-mini')
++  })
++
++  it('lets the completion model follow the model, and leaves the other alone when only one is set', () => {
++    expect(
++      resolveOpenAICall(DEFAULT_COMPLETION_MODEL, 'gpt-5.4-nano', base, { SUPAVISE_AI_MODEL: 'llama3.1:8b' }).modelId
++    ).toBe('llama3.1:8b')
++    expect(
++      resolveOpenAICall(assistant, 'gpt-6-luna', base, { SUPAVISE_AI_COMPLETION_MODEL: 'small' }).modelId
++    ).toBe('gpt-6-luna')
++  })
++
++  it('sends the chat API without OpenAI-only options, and the operator’s effort only', () => {
++    const call = resolveOpenAICall(assistant, 'gpt-6-luna', base, {
++      SUPAVISE_AI_API: 'chat',
++      SUPAVISE_AI_MODEL: 'llama3.1:8b',
++    })
++    expect(call).toEqual({ modelId: 'llama3.1:8b', api: 'chat', providerOptions: {} })
++    expect(
++      resolveOpenAICall(assistant, 'gpt-6-luna', base, {
++        SUPAVISE_AI_API: 'chat',
++        SUPAVISE_AI_MODEL: 'o4-mini',
++        SUPAVISE_AI_REASONING_EFFORT: 'low',
++      }).providerOptions
++    ).toEqual({ reasoningEffort: 'low' })
++  })
++
++  it('keeps store: false on /responses, and upstream’s effort while the model is upstream’s', () => {
++    const call = resolveOpenAICall(assistant, 'gpt-6-luna', base, { SUPAVISE_AI_API: 'responses' })
++    expect(call.providerOptions).toEqual({ store: false, reasoningEffort: 'medium' })
++    expect(
++      resolveOpenAICall(assistant, 'gpt-6-luna', base, { SUPAVISE_AI_MODEL: 'my-deployment', SUPAVISE_AI_API: 'responses' })
++        .providerOptions
++    ).toEqual({ store: false })
++  })
++
++  it('does not change the shared base options', () => {
++    resolveOpenAICall(assistant, 'gpt-6-luna', base, { SUPAVISE_AI_API: 'chat', SUPAVISE_AI_REASONING_EFFORT: 'high' })
++    expect(base).toEqual({ store: false })
++  })
++
++  it('ignores values that are not a model name, an API or an effort', () => {
++    const call = resolveOpenAICall(assistant, 'gpt-6-luna', base, {
++      SUPAVISE_AI_MODEL: 'two words',
++      SUPAVISE_AI_API: 'completions',
++      SUPAVISE_AI_REASONING_EFFORT: 'extreme',
++    })
++    expect(call).toEqual({
++      modelId: 'gpt-6-luna',
++      api: 'responses',
++      providerOptions: { store: false, reasoningEffort: 'medium' },
++    })
++  })
++})
++
++describe('getConfiguredAssistantModel', () => {
++  it('names the operator’s model, and nothing without one', () => {
++    expect(getConfiguredAssistantModel({})).toBeUndefined()
++    expect(getConfiguredAssistantModel({ SUPAVISE_AI_MODEL: ' openai/gpt-4o ' })).toBe('openai/gpt-4o')
++    expect(getConfiguredAssistantModel({ SUPAVISE_AI_MODEL: '' })).toBeUndefined()
++    expect(getConfiguredAssistantModel({ SUPAVISE_AI_MODEL: 'a b' })).toBeUndefined()
++  })
++})
+diff --git a/apps/studio/lib/ai/self-hosted-model.ts b/apps/studio/lib/ai/self-hosted-model.ts
+new file mode 100644
+index 0000000..5667cb0
+--- /dev/null
++++ b/apps/studio/lib/ai/self-hosted-model.ts
+@@ -0,0 +1,74 @@
++import type { OpenAIModelEntry } from './model.utils'
++import { DEFAULT_COMPLETION_MODEL, LOGS_REWRITE_MODEL } from './model.utils'
++
++/**
++ * The model provider of a self-hosted deployment, from the server's environment.
++ *
++ * A node points Studio at any API that speaks OpenAI's protocol (OpenAI, OpenRouter, LiteLLM,
++ * a local Ollama, ...). `OPENAI_API_KEY` and `OPENAI_BASE_URL` are read by `@ai-sdk/openai`
++ * itself. The variables below choose what upstream fixes in code: the model names, which are
++ * OpenAI's, the API that carries the request, and the reasoning effort.
++ *
++ * - `SUPAVISE_AI_MODEL`: the model of the Assistant's chat (replaces the one picked in the UI).
++ * - `SUPAVISE_AI_COMPLETION_MODEL`: the model of the small calls (titles, filters, cron, policies,
++ *   inline completion). Falls back to `SUPAVISE_AI_MODEL`.
++ * - `SUPAVISE_AI_API`: `chat` for /chat/completions, which every gateway offers; anything else
++ *   keeps upstream's /responses.
++ * - `SUPAVISE_AI_REASONING_EFFORT`: sent with every request when set. A model chosen through the
++ *   variables above gets no effort otherwise, because upstream's efforts belong to OpenAI's models.
++ *
++ * They are read on the server for each request and never reach the browser. Without any of them
++ * every function here answers as upstream does.
++ */
++
++const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/
++const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
++
++type Env = Record<string, string | undefined>
++
++function modelFromEnv(value: string | undefined): string | undefined {
++  const name = value?.trim()
++  return name && MODEL_NAME.test(name) ? name : undefined
++}
++
++/** The model of the Assistant's chat the operator chose, if any. */
++export function getConfiguredAssistantModel(env: Env = process.env): string | undefined {
++  return modelFromEnv(env.SUPAVISE_AI_MODEL)
++}
++
++export type OpenAICall = {
++  modelId: string
++  /** `chat` is /chat/completions, `responses` is /responses (upstream's choice). */
++  api: 'chat' | 'responses'
++  providerOptions: Record<string, any>
++}
++
++/**
++ * The model, API and provider options of a call to the `openai` provider. `chosenModelId` and
++ * `baseProviderOptions` are what upstream would use.
++ */
++export function resolveOpenAICall(
++  modelEntry: OpenAIModelEntry | undefined,
++  chosenModelId: string,
++  baseProviderOptions: Record<string, any>,
++  env: Env = process.env
++): OpenAICall {
++  const isCompletion = modelEntry === DEFAULT_COMPLETION_MODEL || modelEntry === LOGS_REWRITE_MODEL
++  const assistantModel = modelFromEnv(env.SUPAVISE_AI_MODEL)
++  const modelOverride = isCompletion
++    ? (modelFromEnv(env.SUPAVISE_AI_COMPLETION_MODEL) ?? assistantModel)
++    : assistantModel
++  const api = env.SUPAVISE_AI_API === 'chat' ? 'chat' : 'responses'
++  const effort = env.SUPAVISE_AI_REASONING_EFFORT?.trim()
++  const effortOverride = effort && REASONING_EFFORTS.includes(effort) ? effort : undefined
++
++  // Upstream: the entry's own effort on top of the base options.
++  const reasoningEffort = effortOverride ?? (modelOverride ? undefined : modelEntry?.reasoningEffort)
++  // `store: false` keeps OpenAI from retaining a /responses request; /chat/completions stores
++  // nothing by default, and a gateway may reject a field it does not know.
++  const options = { ...baseProviderOptions }
++  if (api === 'chat') delete options.store
++  if (reasoningEffort) options.reasoningEffort = reasoningEffort
++
++  return { modelId: modelOverride ?? chosenModelId, api, providerOptions: options }
++}
+diff --git a/apps/studio/lib/hosted-api-allowlist.ts b/apps/studio/lib/hosted-api-allowlist.ts
+index ba1cc4c..99f4be1 100644
+--- a/apps/studio/lib/hosted-api-allowlist.ts
++++ b/apps/studio/lib/hosted-api-allowlist.ts
+@@ -14,6 +14,7 @@ export const HOSTED_SUPPORTED_API_URLS = [
+   '/ai/feedback/classify',
+   '/ai/docs',
+   '/ai/sql/parse-client-code',
++  '/ai/sql/check-api-key',
+   '/get-ip-address',
+   '/get-utc-time',
+   '/get-deployment-commit',
+diff --git a/apps/studio/pages/api/ai/sql/check-api-key.ts b/apps/studio/pages/api/ai/sql/check-api-key.ts
+index 9070268..4b3dcec 100644
+--- a/apps/studio/pages/api/ai/sql/check-api-key.ts
++++ b/apps/studio/pages/api/ai/sql/check-api-key.ts
+@@ -1,5 +1,6 @@
+ import { NextApiRequest, NextApiResponse } from 'next'
+ 
++import { getConfiguredAssistantModel } from '@/lib/ai/self-hosted-model'
+ import { apiWrapper } from '@/lib/api/apiWrapper'
+ 
+ const wrapper = (req: NextApiRequest, res: NextApiResponse) =>
+@@ -21,7 +22,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
+ 
+ const handleGet = async (_req: NextApiRequest, res: NextApiResponse) => {
+   if (process.env.OPENAI_API_KEY) {
+-    return res.status(200).json({ hasKey: true })
++    // [Supavise] `model` is the operator's model, when they chose one: the key never leaves the server.
++    return res.status(200).json({ hasKey: true, model: getConfiguredAssistantModel() })
+   } else {
+     return res.status(200).json({ hasKey: false })
+   }
+-- 
+2.50.1 (Apple Git-155)
+
