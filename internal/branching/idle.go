@@ -44,6 +44,13 @@ type Activity interface {
 	Active(ref string) int
 }
 
+// reasonPauser is what the idle pause needs of the Engine beyond Engine itself: a pause that records its
+// reason. *lifecycle.Engine has it; an Engine without it cannot pause a branch for idleness, because the
+// branch could never be woken.
+type reasonPauser interface {
+	PauseWith(ctx context.Context, ref string, o lifecycle.PauseOptions) error
+}
+
 // ErrNotIdle is returned by Wake for a project the owner paused: only a pause the node made for
 // idleness wakes by itself.
 var ErrNotIdle = errors.New("branching: the project was paused by its owner and is not woken by a request")
@@ -91,6 +98,7 @@ func (s *Service) IdleSweep(ctx context.Context) (*IdleResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	pauser, canPause := s.eng.(reasonPauser)
 	pauses := map[string]registry.Pause{}
 	if st := registry.BranchLifecycleOf(s.reg); st != nil {
 		ps, err := st.ListPauses(ctx)
@@ -120,7 +128,7 @@ func (s *Service) IdleSweep(ctx context.Context) (*IdleResult, error) {
 			}
 			continue
 		}
-		if !on || s.activity == nil || !p.Status.Running() {
+		if !on || !canPause || s.activity == nil || !p.Status.Running() {
 			continue
 		}
 		running[p.Ref] = true
@@ -152,7 +160,7 @@ func (s *Service) IdleSweep(ctx context.Context) (*IdleResult, error) {
 		if t, ok := s.activity.Last(p.Ref); (ok && now.Sub(t) < idleAfter) || s.activity.Active(p.Ref) > 0 {
 			continue
 		}
-		if err := s.eng.PauseWith(ctx, p.Ref, lifecycle.PauseOptions{Reason: registry.PauseIdle}); err != nil {
+		if err := pauser.PauseWith(ctx, p.Ref, lifecycle.PauseOptions{Reason: registry.PauseIdle}); err != nil {
 			s.log.Warn("could not pause an idle branch", "ref", p.Ref, "name", b.Name, "err", err)
 			res.Failed[p.Ref] = err.Error()
 			continue

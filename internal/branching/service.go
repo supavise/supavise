@@ -32,8 +32,6 @@ import (
 type Engine interface {
 	lifecycle.Manager
 	DeleteWith(ctx context.Context, ref string, o lifecycle.DeleteOptions) error
-	// PauseWith pauses a project and records why (the idle pause of branches, idle.go).
-	PauseWith(ctx context.Context, ref string, o lifecycle.PauseOptions) error
 }
 
 // Deps are the collaborators of Service.

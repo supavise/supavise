@@ -27,6 +27,17 @@ var disabledFeatures = []string{
 	"storage:analytics", "storage:vectors",
 }
 
+// featureCustomDomains is the key that hides Settings > General > Custom domains, the page that claims,
+// verifies and activates a project's or branch's own hostname. It stays in disabledFeatures only for a
+// node that cannot serve one (customDomainsOffered).
+const featureCustomDomains = "project_settings:custom_domains"
+
+// customDomainsOffered reports whether the Custom domains page works on this node. A custom hostname
+// needs a certificate ordered on demand for that name, and tls.mode "dns01" issues only the wildcard,
+// so the domains service refuses a claim there (internal/domains README, "Certificates"). Every other
+// mode serves the page, for projects and branches alike.
+func (s *Server) customDomainsOffered() bool { return s.cfg.TLS.Mode != "dns01" }
+
 // featureReadReplicas is the key that hides Studio's read replica screens (the Infrastructure
 // page, the database selector, the replica rows of the reports). It stays in disabledFeatures
 // until a second server has joined (replicasOffered).
@@ -85,6 +96,9 @@ func (s *Server) profileOf(ctx context.Context, u *User) *plat.ProfileResponseOu
 	disabled := append([]string(nil), disabledFeatures...)
 	if s.replicasOffered(ctx) {
 		disabled = slices.DeleteFunc(disabled, func(f string) bool { return f == featureReadReplicas })
+	}
+	if s.customDomainsOffered() {
+		disabled = slices.DeleteFunc(disabled, func(f string) bool { return f == featureCustomDomains })
 	}
 	return &plat.ProfileResponseOutput{
 		Auth0Id: u.UserID, DisabledFeatures: &disabled, FirstName: opt(u.FirstName), LastName: opt(u.LastName),
