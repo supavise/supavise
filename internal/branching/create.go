@@ -48,6 +48,9 @@ type CreateInput struct {
 	// the parent's do. Logical replication subscriptions are detached either way. Ignored
 	// without WithData: a schema-only branch inherits no data.
 	AllowEgress bool
+	// SchemaSource, when set, builds the schema of the branch instead of the parent's migrations,
+	// seed and Edge Functions (see SchemaSource). It needs a schema-only branch.
+	SchemaSource SchemaSource
 }
 
 // egressEnforced reports whether the supervisor can confine a unit's network traffic: the
@@ -99,6 +102,9 @@ func (s *Service) Create(ctx context.Context, ref string, in CreateInput) (b *Br
 	}
 	if err := ValidName(in.Name); err != nil {
 		return nil, err
+	}
+	if in.SchemaSource != nil && in.WithData {
+		return nil, invalid("a branch built from a repository starts without data")
 	}
 	if in.NotifyURL != "" {
 		if err := validNotifyURL(in.NotifyURL); err != nil {
@@ -336,6 +342,12 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 
 	detail := "schema only"
 	switch {
+	case method == MethodSchema && j.in.SchemaSource != nil && !j.recreate:
+		d, err := j.in.SchemaSource.Schema(ctx, runFrom(ctx), j.ref)
+		if err != nil {
+			return "", err
+		}
+		detail = d
 	case method == MethodSchema:
 		n, seeded, err := s.replay(ctx, j)
 		if err != nil {
@@ -353,7 +365,7 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		detail = fmt.Sprintf("data cloned by %s in %d ms (%d files, %s apparent, %s of new disk, %d WAL segments)",
 			method, stats.TotalMillis, stats.Files, lifecycle.HumanBytes(stats.Bytes), lifecycle.HumanBytes(stats.ExtraDiskByte), stats.WALSegments)
 	}
-	if !j.recreate || j.in.WithData {
+	if (!j.recreate || j.in.WithData) && j.in.SchemaSource == nil {
 		// What the branch and its parent agree on now: the diff later shows what the branch changed
 		// from here. A reset of a schema-only branch keeps the base it has; one that copies data again
 		// starts a new one.
@@ -375,7 +387,12 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		s.setState(ctx, j.ref, registry.BranchRunningMigration, detail, func(b *registry.BranchInfo) { b.ExpiresAt = s.expiry(j.in.TTL) })
 	}
 	s.phase(ctx, StepDeploy)
-	if !j.recreate {
+	if !j.recreate && j.in.SchemaSource != nil {
+		// A branch built from a repository deploys the repository's functions, not the parent's.
+		if err := j.in.SchemaSource.Functions(ctx, runFrom(ctx), j.ref); err != nil {
+			return "", err
+		}
+	} else if !j.recreate {
 		// The deploy step is where a branch gets its Edge Functions: the parent's, copied, and the
 		// secrets of the create body.
 		if err := s.carryAtCreate(ctx, j.parent.Ref, j.ref, j.in.Secrets); err != nil {
