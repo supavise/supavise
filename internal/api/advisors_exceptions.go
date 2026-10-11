@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -149,6 +150,9 @@ func (in exceptionIn) check() error {
 	}
 	if len(in.LintMetadata) > 50 {
 		return errf(http.StatusBadRequest, "lint_metadata is limited to 50 keys")
+	}
+	if b, _ := json.Marshal(in.LintMetadata); len(b) > 4096 {
+		return errf(http.StatusBadRequest, "lint_metadata is limited to 4096 bytes")
 	}
 	return nil
 }
