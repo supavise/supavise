@@ -9,7 +9,7 @@
 //	go run testdata/genenv/main.go configuration.go saml.go rate.go > testdata/gotrue-env-names.txt
 //
 // The input files come from the pinned release, for example
-// https://github.com/supabase/auth/tree/v2.195.0/internal/conf.
+// https://github.com/supabase/auth/tree/v2.197.0/internal/conf.
 package main
 
 import (
