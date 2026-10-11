@@ -42,7 +42,8 @@ function makeApp() {
     `let API_URL="${ph.NEXT_PUBLIC_API_URL.placeholder}",G="${ph.NEXT_PUBLIC_GOTRUE_URL.placeholder}",` +
       `S=\`${ph.NEXT_PUBLIC_SITE_URL.placeholder}/x\`,K="${ph.NEXT_PUBLIC_HCAPTCHA_SITE_KEY.placeholder}",` +
       `D="${ph.NEXT_PUBLIC_DISABLED_FEATURES.placeholder}".split(","),` +
-      `M="${ph.NEXT_PUBLIC_MCP_URL.placeholder}";`
+      `M="${ph.NEXT_PUBLIC_MCP_URL.placeholder}",` +
+      `C="${ph.NEXT_PUBLIC_CONFIGCAT_PROXY_URL.placeholder}";`
   )
   writeFileSync(
     join(app, 'apps/studio/.next/server/pages/sign-in.html'),
@@ -109,6 +110,7 @@ test('apply substitutes values, origins and CSP hosts', () => {
       ...goodEnv,
       NEXT_PUBLIC_HCAPTCHA_SITE_KEY: 'abc-123',
       NEXT_PUBLIC_MCP_URL: 'https://api.example.com/mcp/',
+      NEXT_PUBLIC_CONFIGCAT_PROXY_URL: 'https://api.example.com',
       CSP_EXTRA_PROJECT_HOSTS: '*.api.example.com, db.example.net:8443',
     })
     const js = readFileSync(join(app, 'apps/studio/.next/static/chunks/a.js'), 'utf8')
@@ -118,6 +120,7 @@ test('apply substitutes values, origins and CSP hosts', () => {
     assert.match(js, /K="abc-123"/)
     assert.match(js, /D="dashboard_auth:sign_up,/)
     assert.match(js, /M="https:\/\/api\.example\.com\/mcp"/)
+    assert.match(js, /C="https:\/\/api\.example\.com";/)
     const manifest = JSON.parse(readFileSync(join(app, 'apps/studio/.next/routes-manifest.json'), 'utf8'))
     const csp = manifest.headers[0].value
     assert.ok(csp.includes("connect-src 'self' https://api.example.com https://api.example.com "))
@@ -144,6 +147,8 @@ test('empty optional values: no captcha, default feature list, no extra CSP host
     assert.match(js, /D="dashboard_auth:sign_up,dashboard_auth:sign_in_with_github/)
     // an install that does not set the MCP URL (an older unit) keeps the value Studio always had
     assert.match(js, /M="http:\/\/localhost:8080\/mcp"/)
+    // no flag document configured: the client gets an empty URL and Studio reads every flag as off
+    assert.match(js, /C="";/)
     const csp = JSON.parse(readFileSync(join(app, 'apps/studio/.next/routes-manifest.json'), 'utf8'))
       .headers[0].value
     assert.ok(!csp.includes('placeholder'))
@@ -263,4 +268,20 @@ test('the MCP URL is optional, keeps its old default and is not a CSP source', (
       .NEXT_PUBLIC_MCP_URL,
     'https://api.example.com/mcp'
   )
+})
+
+test('the ConfigCat URL is an optional string, empty by default, and not a CSP source', () => {
+  const v = ph.NEXT_PUBLIC_CONFIGCAT_PROXY_URL
+  assert.equal(v.kind, 'string')
+  assert.equal(v.required, false)
+  assert.equal(v.default, '')
+  assert.equal(v.origin, undefined)
+  assert.equal(resolveValues(spec, goodEnv).resolved.NEXT_PUBLIC_CONFIGCAT_PROXY_URL, '')
+  assert.equal(
+    resolveValues(spec, { ...goodEnv, NEXT_PUBLIC_CONFIGCAT_PROXY_URL: 'https://api.example.com' }).resolved
+      .NEXT_PUBLIC_CONFIGCAT_PROXY_URL,
+    'https://api.example.com'
+  )
+  const bad = resolveValues(spec, { ...goodEnv, NEXT_PUBLIC_CONFIGCAT_PROXY_URL: 'https://x";alert(1);//' })
+  assert.equal(bad.errors.length, 1, bad.errors.join('\n'))
 })

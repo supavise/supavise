@@ -412,7 +412,9 @@ func (s *Server) platformAddons(w http.ResponseWriter, r *http.Request) error {
 	set(resp, "ref", p.Ref)
 	selected, available := s.computeAddons(r.Context(), p, computeVariantPlatform)
 	set(resp, "available_addons", available)
-	if s.backups != nil {
+	// Reported only while the node keeps what point-in-time recovery needs (pitrEnabled): the Backups page sends
+	// a project with the add-on to its Point in time tab, and a node without the WAL archive has none.
+	if s.pitrEnabled() {
 		days, id, name := s.pitrAddon(p)
 		selected = append(selected, map[string]any{"type": "pitr", "variant": map[string]any{
 			"identifier": id, "name": name, "price": 0, "price_description": "Included", "price_type": "fixed",
@@ -438,7 +440,9 @@ func (s *Server) v1Addons(w http.ResponseWriter, r *http.Request) error {
 	resp := base("GET /v1/projects/{ref}/billing/addons")
 	selected, available := s.computeAddons(r.Context(), p, computeVariantV1)
 	set(resp, "available_addons", available)
-	if s.backups != nil {
+	// Reported only while the node keeps what point-in-time recovery needs (pitrEnabled): the Backups page sends
+	// a project with the add-on to its Point in time tab, and a node without the WAL archive has none.
+	if s.pitrEnabled() {
 		days, id, name := s.pitrAddon(p)
 		selected = append(selected, map[string]any{"type": "pitr", "variant": map[string]any{
 			"id": id, "name": name, "meta": map[string]any{"backup_duration_days": days},

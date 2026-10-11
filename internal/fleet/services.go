@@ -295,6 +295,11 @@ func storageEnv(cfg *config.Config, c *creds, credToken string) (map[string]stri
 // given without it. The flag is read when Studio starts, which is why adding the first
 // provider restarts the unit (Manager.RefreshStudio).
 //
+// NEXT_PUBLIC_CONFIGCAT_PROXY_URL (a placeholder in the build) points Studio's flag client at the Management
+// API, which serves the document. NIMBUS_PROD_PROJECTS_URL and its _WS twin name the hosts of project APIs for
+// the Edge Function Test tab; Studio's CSP code adds both together, and the CSP itself comes from
+// CSP_EXTRA_PROJECT_HOSTS.
+//
 // Unless [api] disable_oauth is set, Studio also gets the remote MCP endpoint. Connect > MCP
 // shows NEXT_PUBLIC_MCP_URL (a placeholder in the build). Patch 0004 serves the route
 // api.<domain>/mcp forwards to: it calls the Management API at SUPAVISE_MANAGEMENT_API_URL on
@@ -308,6 +313,14 @@ func studioEnv(cfg *config.Config, sso bool) map[string]string {
 		"NEXT_PUBLIC_GOTRUE_URL":  cfg.APIURL() + "/auth/v1",
 		"NEXT_PUBLIC_SITE_URL":    cfg.DashboardURL(),
 		"CSP_EXTRA_PROJECT_HOSTS": "*.api." + cfg.BaseDomain(),
+		// Studio's feature flags come from the document the Management API serves at this origin
+		// (internal/api/configcat.go). The API origin is already in the CSP's connect-src.
+		"NEXT_PUBLIC_CONFIGCAT_PROXY_URL": cfg.APIURL(),
+		// The Edge Function Test tab posts to Studio's own /api/edge-functions/test, which accepts only a
+		// function URL on these hosts (lib/api/edgeFunctions.ts isValidEdgeFunctionURL; a platform build
+		// otherwise allows *.supabase.co only). Read per request, not substituted into the build.
+		"NIMBUS_PROD_PROJECTS_URL":    "https://*.api." + cfg.BaseDomain(),
+		"NIMBUS_PROD_PROJECTS_URL_WS": "wss://*.api." + cfg.BaseDomain(),
 	}
 	if k := cfg.Studio.HCaptchaSiteKey; k != "" {
 		env["NEXT_PUBLIC_HCAPTCHA_SITE_KEY"] = k

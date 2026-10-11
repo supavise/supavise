@@ -530,6 +530,7 @@ func (s *Server) implemented() map[string]route {
 	s.routesWebhooks(add)
 	s.routesAnalytics(add)
 	s.routesUnsupported(add)
+	s.routesConfigCat(add)
 	// Read replicas and failover: one registration function per file, so that each part of the
 	// work adds its routes without editing this one.
 	s.routesReplicas(add)
@@ -547,6 +548,13 @@ func (s *Server) implemented() map[string]route {
 	r := m["GET /platform/cli/login/{session_id}"]
 	r.auth = authNone
 	m["GET /platform/cli/login/{session_id}"] = r
+	// Routes the dashboard reads without signing in (publicRoutes).
+	for _, key := range publicRoutes {
+		if rt, ok := m[key]; ok {
+			rt.auth = authNone
+			m[key] = rt
+		}
+	}
 	// So do the OAuth endpoints a client calls before it has a token (oauthPublicRoutes).
 	for _, key := range oauthPublicRoutes {
 		if rt, ok := m[key]; ok {

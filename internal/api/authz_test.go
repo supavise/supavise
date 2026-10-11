@@ -445,8 +445,10 @@ func TestImplementedRoutesOpenToEveryUserAreAllowlisted(t *testing.T) {
 	// The OAuth endpoints of /v1 are the clients' own: authorize, token and revoke carry no session (they
 	// are authNone, so the rule never decides), the project-claim stub is open like its siblings, and the
 	// feedback form answers every user with the same refusal (unsupported.go).
-	// The resource warnings are a list too: they name only the projects the caller can see.
-	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/platform/feedback/send$|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/platform/telemetry/feature-flags$|/v1/oauth/)`)
+	// The resource warnings are a list too: they name only the projects the caller can see. Updating the
+	// address of the caller's own account is refused with a reason (unsupported.go), and the ConfigCat flag
+	// document is the same for everyone and needs no sign-in (configcat.go).
+	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/platform/feedback/send$|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/platform/telemetry/feature-flags$|/v1/oauth/|/platform/update-email$|/configuration-files/)`)
 	for key := range newFixture(t).srv.implemented() {
 		m, p, _ := strings.Cut(key, " ")
 		if n := routeNeed(m, p); n.kind == needAny && !open.MatchString(p) {
