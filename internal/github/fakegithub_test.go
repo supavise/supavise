@@ -91,6 +91,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 	mux.HandleFunc("POST /repos/{owner}/{repo}/check-runs", f.createCheck)
 	mux.HandleFunc("PATCH /repos/{owner}/{repo}/check-runs/{id}", f.updateCheck)
 	mux.HandleFunc("POST /repos/{owner}/{repo}/issues/{n}/comments", f.createComment)
+	mux.HandleFunc("GET /repos/{owner}/{repo}/issues/{n}/comments", f.listComments)
 	mux.HandleFunc("PATCH /repos/{owner}/{repo}/issues/comments/{id}", f.updateComment)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/branches", f.listBranches)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/branches/{b...}", f.getBranch)
@@ -196,24 +197,53 @@ func (f *fakeGitHub) tree(w http.ResponseWriter, r *http.Request) {
 	if !f.needInstallation(w, r) {
 		return
 	}
+	sha := r.PathValue("sha")
+	recursive := r.URL.Query().Get("recursive") == "1"
+	commit, dir := sha, ""
+	if rest, ok := strings.CutPrefix(sha, "tree-"); ok {
+		// tree-<commit>-<path with / as :>: a directory of a commit
+		commit, dir, _ = strings.Cut(rest, "|")
+		dir = strings.ReplaceAll(dir, ":", "/")
+	}
 	f.mu.Lock()
-	files, ok := f.files[r.PathValue("sha")]
-	trunc := f.truncated
+	files, ok := f.files[commit]
+	trunc := f.truncated && recursive && dir == ""
 	f.mu.Unlock()
 	if !ok {
 		f.fail(w, http.StatusNotFound, "Not Found")
 		return
 	}
+	prefix := ""
+	if dir != "" {
+		prefix = dir + "/"
+	}
+	seenDirs := map[string]bool{}
+	var tree []map[string]any
 	var paths []string
 	for p := range files {
-		paths = append(paths, p)
+		if strings.HasPrefix(p, prefix) {
+			paths = append(paths, p)
+		}
 	}
 	sort.Strings(paths)
-	var tree []map[string]any
 	for _, p := range paths {
-		tree = append(tree, map[string]any{"path": p, "mode": "100644", "type": "blob", "sha": blobSHA(files[p]), "size": len(files[p])})
+		rel := strings.TrimPrefix(p, prefix)
+		if !recursive {
+			if first, _, nested := strings.Cut(rel, "/"); nested {
+				if !seenDirs[first] {
+					seenDirs[first] = true
+					tree = append(tree, map[string]any{"path": first, "mode": "040000", "type": "tree",
+						"sha": "tree-" + commit + "|" + strings.ReplaceAll(prefix+first, "/", ":")})
+				}
+				continue
+			}
+		}
+		tree = append(tree, map[string]any{"path": rel, "mode": "100644", "type": "blob", "sha": blobSHA(files[p]), "size": len(files[p])})
 	}
-	f.writeJSON(w, http.StatusOK, map[string]any{"sha": r.PathValue("sha"), "tree": tree, "truncated": trunc})
+	if trunc {
+		tree = tree[:min(len(tree), 2)]
+	}
+	f.writeJSON(w, http.StatusOK, map[string]any{"sha": sha, "tree": tree, "truncated": trunc})
 }
 
 func (f *fakeGitHub) blob(w http.ResponseWriter, r *http.Request) {
@@ -332,6 +362,27 @@ func (f *fakeGitHub) createComment(w http.ResponseWriter, r *http.Request) {
 	f.comments[id] = &fakeComment{ID: id, PR: n, Body: in.Body}
 	f.mu.Unlock()
 	f.writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+func (f *fakeGitHub) listComments(w http.ResponseWriter, r *http.Request) {
+	if !f.needInstallation(w, r) {
+		return
+	}
+	n, _ := strconv.Atoi(r.PathValue("n"))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var ids []int64
+	for id, c := range f.comments {
+		if c.PR == n {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	out := []map[string]any{{"id": 1, "body": "an unrelated comment"}}
+	for _, id := range ids {
+		out = append(out, map[string]any{"id": id, "body": f.comments[id].Body})
+	}
+	f.writeJSON(w, http.StatusOK, out)
 }
 
 func (f *fakeGitHub) updateComment(w http.ResponseWriter, r *http.Request) {

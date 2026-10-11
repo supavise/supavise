@@ -144,7 +144,15 @@ func (s *Service) deployProduction(ctx context.Context, conn registry.GitHubConn
 	if checkID == 0 || ctx.Err() != nil {
 		return err
 	}
-	out := checkOutput{Title: oc.Headline, Summary: oc.summary(), Text: logText(oc.Run)}
+	// The check run is read by everyone who can read the repository, which may be public, and production's
+	// errors can quote its data: the log stays in the dashboard, and the failure shown here is short.
+	if len(oc.Detail) > 300 {
+		oc.Detail = oc.Detail[:297] + "..."
+	}
+	if !oc.Success && !oc.Neutral {
+		oc.Detail += "\n\nThe log of the run is in the dashboard (Branches > the production branch > Workflow logs)."
+	}
+	out := checkOutput{Title: oc.Headline, Summary: oc.summary()}
 	if ferr := rep.finish(ctx, checkID, oc.conclusion(), details, out); ferr != nil {
 		s.log.Warn("could not finish the check run", "repo", conn.RepositoryName, "err", ferr)
 	}

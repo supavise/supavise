@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -32,6 +33,11 @@ type fakeDB struct {
 	failAt    string   // a version whose migration fails
 	failSeed  bool
 	bucketLag int // RunScripts that fail with "Storage schema is not ready" first
+	// gate holds the migration gateAt until it is closed, or until the context ends; entered is told
+	// when a migration waits.
+	gate    chan struct{}
+	gateAt  string
+	entered chan struct{}
 }
 
 func newFakeDB() *fakeDB {
@@ -44,8 +50,19 @@ func (d *fakeDB) Migrations(_ context.Context, ref string) ([]branching.Migratio
 	return slices.Clone(d.history[ref]), nil
 }
 
-func (d *fakeDB) Apply(_ context.Context, ref string, ms []branching.Migration, _ branching.ApplyOptions) (branching.ApplyResult, error) {
+func (d *fakeDB) Apply(ctx context.Context, ref string, ms []branching.Migration, _ branching.ApplyOptions) (branching.ApplyResult, error) {
 	d.mu.Lock()
+	if len(ms) == 1 && d.gate != nil && ms[0].Version == d.gateAt {
+		gate, entered := d.gate, d.entered
+		d.mu.Unlock()
+		entered <- struct{}{}
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return branching.ApplyResult{}, ctx.Err()
+		}
+		d.mu.Lock()
+	}
 	defer d.mu.Unlock()
 	for _, m := range ms {
 		if m.Version == d.failAt {
@@ -441,3 +458,18 @@ func repoFiles(extra map[string]string) map[string]string {
 	}
 	return f
 }
+
+func decodeClaims(t *testing.T, seg string) map[string]any {
+	t.Helper()
+	b, err := base64.RawURLEncoding.DecodeString(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func jsonBody(v any) ([]byte, error) { return json.Marshal(v) }
