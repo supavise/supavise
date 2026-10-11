@@ -252,7 +252,11 @@ var routeRules = []routeRule{
 	rule("DELETE", "/v1/projects/{ref}/api-keys/{id}", chk(members.ActDelete, members.ResServiceKeys)),
 	rule("W", "/v1/projects/{ref}/api-keys/**", chk(members.ActUpdate, members.ResServiceKeys)),
 	rule("W", "/v1/projects/{ref}/config/auth/signing-keys/**", chk(members.ActUpdate, members.ResServiceKeys)),
-	rule("W", "/platform/projects/{ref}/config/secrets", chk(members.ActUpdate, members.ResServiceKeys)),
+	// Studio enables "Change legacy JWT secret" for infra:Execute on queue_job.projects.update_jwt:
+	// Owners and Administrators (a Developer holds that action for restarting the project only).
+	rule("W", "/platform/projects/{ref}/config/secrets", chk(members.ActInfraExecute, "queue_job.projects.update_jwt")),
+	// The pgsodium root key opens everything Vault holds: Owners and Administrators, like the keys.
+	rule("", "/v1/projects/{ref}/pgsodium", chk(members.ActUpdate, members.ResServiceKeys)),
 	rule("R", "/v1/projects/{ref}/secrets", chk(members.ActSecretsRead, members.ResAny)),
 	rule("W", "/v1/projects/{ref}/secrets", chk(members.ActSecretsWrite, members.ResAny)),
 	rule("PATCH", "/v1/projects/{ref}/database/password", chk(members.ActUpdate, P)),

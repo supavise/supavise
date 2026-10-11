@@ -217,6 +217,15 @@ func matrixCases() []routeCase {
 		rc("YYNNNN", "DELETE", p+"/secrets", []any{"FOO"}),
 		rc("YYNNNN", "POST", p+"/api-keys", map[string]any{"type": "publishable", "name": "matrix_key"}),
 		rc("YYNNNN", "PUT", p+"/api-keys/legacy?enabled=true", nil),
+		// the legacy JWT secret: changing it is infra:Execute on queue_job.projects.update_jwt (Studio's
+		// check for the button), reading how a change went is a read of the project
+		rc("YYNNNN", "PATCH", pp+"/config/secrets", map[string]any{"jwt_secret": "ROLL", "change_tracking_id": "matrix"}),
+		rc("YYYYYN", "GET", pp+"/config/secrets/update-status", nil),
+		rc("YYYYYN", "GET", p+"/config/auth/signing-keys/legacy", nil),
+		rc("YYNNNN", "POST", p+"/config/auth/signing-keys", map[string]any{"algorithm": "ES256", "status": "standby"}),
+		// the pgsodium root key opens everything Vault holds
+		rc("YYNNNN", "GET", p+"/pgsodium", nil),
+		rc("YYNNNN", "PUT", p+"/pgsodium", map[string]any{"root_key": strings.Repeat("ab", 32)}),
 		// custom domains: every role reads them; Owners and Administrators change them
 		rc("YYYYYN", "GET", p+"/custom-hostname", nil),
 		rc("YYYYYN", "GET", p+"/vanity-subdomain", nil),

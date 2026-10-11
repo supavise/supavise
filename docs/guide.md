@@ -8,6 +8,8 @@ This guide picks up after the install in the [README](../README.md#get-started).
 - [Give an agent or a preview its own branch](#give-an-agent-or-a-preview-its-own-branch)
 - [Connect an AI tool to a project](#connect-an-ai-tool-to-a-project)
 - [Back up and restore](#back-up-and-restore)
+- [Move a project from hosted Supabase](#move-a-project-from-hosted-supabase)
+- [Move a project off Supavise](#move-a-project-off-supavise)
 - [Monitor the node](#monitor-the-node)
 - [Read replicas and failover](#read-replicas-and-failover)
 - [Updates and maintenance](#updates-and-maintenance)
@@ -183,6 +185,212 @@ Good to know:
 - Don't restart `supavise` while a project shows RESTORING.
 - A restore needs free disk for a second copy of the project's data. The previous data stays on the server until the project's next successful restore.
 - If a restore fails, the project shows RESTORE_FAILED and keeps its original data where possible. Restore again, or pause and resume the project. The [backup docs](../internal/backup/README.md) cover the details.
+
+## Move a project from hosted Supabase
+
+You move a project in five parts: the database (roles, schema, data and Auth users), the files in Storage, the Edge Functions, the settings, and the keys your app holds. The database part uses the three dumps of Supabase's [backup and restore guide](https://supabase.com/docs/guides/platform/migrating-within-supabase/backup-restore), restored through the node's pooler. The hosted project keeps running until you switch your app, so you can rehearse the move on a throwaway project first.
+
+**Before you start**
+
+- On your machine, install the Supabase CLI, Docker (`supabase db dump` runs `pg_dump` in a container), `psql` 17, `jq` and `curl`.
+- Run the CLI commands in a directory that holds `supabase/config.toml` (`supabase init` creates it) with `major_version = 17` under `[db]`. The dump then runs with Postgres 17 tools, which read hosted projects on Postgres 15 and 17. The node runs Postgres 17.
+- Check that your machine can reach port 5432 of the node.
+- If a hosted project uses an extension that the node's Postgres doesn't ship, `CREATE EXTENSION` stops the restore. List the extensions on both sides and compare:
+
+  ```bash
+  psql "$OLD_DB_URL" --command "select extname from pg_extension order by 1"
+  psql "$NEW_DB_URL" --command "select name from pg_available_extensions order by 1"
+  ```
+
+- Stop writes to the hosted project before the dump you restore from. Writes made after the dump don't move.
+
+**1. Create the project with your keys**
+
+If you want your app to keep the `anon` and `service_role` keys it holds, create the project with the hosted project's legacy JWT secret. GoTrue, PostgREST, Realtime and Storage then accept those keys, and users keep their sessions. Copy the secret from **Project settings**, **JWT keys**, **Legacy JWT secret** in the hosted dashboard, or ask the Management API:
+
+<!-- migrate-smoke: jwt-secret -->
+```bash
+curl -fsS -H "Authorization: Bearer $OLD_TOKEN" "$OLD_API/v1/projects/$OLD_REF/postgrest" | jq -r .jwt_secret > jwt-secret.txt
+```
+
+A project that exists already takes the secret in the dashboard: **Project settings**, **JWT keys**, **Legacy JWT secret**, **Change legacy JWT secret**, **Create my own secret**. The node signs the `anon` and `service_role` keys again with it, so the hosted keys then work only if the project's ref is the hosted one.
+
+If the hosted project has revoked its legacy secret, there is nothing to copy. Create the project without the three key flags below: the node then generates new keys, and your app needs them.
+
+To keep the keys byte for byte, save the two legacy keys in files as well (**Project settings**, **API keys**, **Legacy API keys**, or the API):
+
+<!-- migrate-smoke: legacy-keys -->
+```bash
+curl -fsS -H "Authorization: Bearer $OLD_TOKEN" "$OLD_API/v1/projects/$OLD_REF/api-keys?reveal=true" > api-keys.json
+jq -r '.[] | select(.type == "legacy" and .name == "anon") | .api_key' api-keys.json > anon-key.txt
+jq -r '.[] | select(.type == "legacy" and .name == "service_role") | .api_key' api-keys.json > service-role-key.txt
+```
+
+Create the project on the node. The command runs as the `supavise` user, so that user must be able to read the files. Set `NEW_REF` to the hosted project's ref to give the project the same ref: the proxy then accepts the hosted keys because their `ref` claim names the project. With another ref, only the two key files make the node accept them. Set `NEW_SIZE` to a compute size (`supavise projects sizes` lists them).
+
+<!-- migrate-smoke: create -->
+```bash
+sudo -u supavise supavise projects create --name "$NEW_NAME" --ref "$NEW_REF" --size "$NEW_SIZE" \
+  --jwt-secret-file jwt-secret.txt --anon-key-file anon-key.txt --service-role-key-file service-role-key.txt --show-keys
+```
+
+The command prints the new project's database password. The project also has its own publishable and secret keys (`sb_...`), because hosted keys of that kind can't be imported: if your app uses them, switch it to the new ones.
+
+**2. Set the connection strings**
+
+Use the session pooler of each side (port 5432). For hosted, copy the string from the **Connect** panel and put in the database password (reset it under **Database settings** if you don't have it). For the node, the user is `postgres.<ref>`:
+
+```bash
+export OLD_DB_URL='postgresql://postgres.<hosted ref>:<hosted password>@<hosted pooler host>:5432/postgres'
+export NEW_DB_URL='postgresql://postgres.<ref>:<node password>@pooler.<domain>:5432/postgres'
+```
+
+**3. Dump and restore the database**
+
+<!-- migrate-smoke: dump -->
+```bash
+supabase db dump --db-url "$OLD_DB_URL" -f roles.sql --role-only
+supabase db dump --db-url "$OLD_DB_URL" -f schema.sql
+supabase db dump --db-url "$OLD_DB_URL" -f data.sql --use-copy --data-only -x "storage.buckets_vectors" -x "storage.vector_indexes"
+```
+
+<!-- migrate-smoke: restore -->
+```bash
+psql --single-transaction --variable ON_ERROR_STOP=1 \
+  --command 'alter default privileges in schema public revoke all on tables from anon, authenticated, service_role' \
+  --command 'alter default privileges in schema public revoke all on functions from anon, authenticated, service_role' \
+  --command 'alter default privileges in schema public revoke all on sequences from anon, authenticated, service_role' \
+  --file roles.sql --file schema.sql \
+  --command 'SET session_replication_role = replica' \
+  --file data.sql --dbname "$NEW_DB_URL"
+```
+
+The first three commands keep your access rules. A new table, function or sequence in `public` gets `ALL` for `anon`, `authenticated` and `service_role` from the project's default privileges, and the dump only adds grants: it never takes one away. Without the commands, a table that you locked down on hosted (`revoke all ... from anon`) is open again through the Data API. The commands run in the restore's transaction, so a failed restore leaves the default privileges as they were. The dump lists the grants of each object and sets the default privileges of your `postgres` role again at its end, so the project ends up with the grants it had on hosted. Step 8 compares them.
+
+The restore runs in one transaction, so a failure leaves the project as it was. Fix the cause and run the restore again. If psql stops, look for the message:
+
+- **`relation "..." does not exist` or `column "..." of relation "..." does not exist`, in the `auth` or `storage` schema.** If you created the project a moment ago, wait until Auth and Storage have set up their schemas and run the restore again. Otherwise the hosted project runs a newer Auth or Storage than the node. Update the node first (`sudo supavise upgrade`), or delete that table's `COPY` block from `data.sql` (down to the `\.` line) and accept that its rows don't move. `sudo -u supavise supavise projects get <ref> --json | jq .versions` shows the node's versions.
+- **`permission denied`, on a line that sets an owner to `supabase_admin` or on a `GRANT` to `cli_login_postgres`.** Comment that line out.
+- **Any error in the `supabase_functions` schema.** The hosted project uses Database Webhooks. Turn them on for the new project (**Integrations**, **Database Webhooks**) and run the restore again.
+
+The dumps carry Auth users with their password hashes, identities, MFA factors and refresh tokens, so users sign in with the same passwords and refresh the sessions they have. Supabase's guide also lists optional dumps of the migration history (`--schema supabase_migrations`); they work against the node the same way.
+
+**4. Bring back what the dump leaves out**
+
+The dump creates the `pg_cron` extension but not its jobs. Create the jobs again from the hosted project's list (a job that was switched off comes back switched on):
+
+<!-- migrate-smoke: cron -->
+```bash
+psql "$OLD_DB_URL" --no-align --tuples-only --command "select case when jobname is null then format('select cron.schedule(%L, %L);', schedule, command) else format('select cron.schedule(%L, %L, %L);', jobname, schedule, command) end from cron.job" > cron-jobs.sql
+psql "$NEW_DB_URL" --file cron-jobs.sql
+```
+
+Then handle the rest by hand:
+
+- **Passwords of your own login roles.** `roles.sql` creates the roles without passwords. Set each one: `alter role "app_user" with password '<new password>';`.
+- **Realtime publications.** `schema.sql` adds tables to `supabase_realtime`. Check **Database**, **Publications** and add what is missing.
+- **Triggers and policies you added to `auth` or `storage`.** The dump leaves them out. Supabase's guide recreates them from `supabase db diff --linked --schema auth,storage`, run against the hosted project.
+- **Vault secrets and the pgsodium root key.** They don't move. The dumps leave the `vault` and `pgsodium` schemas out, each cluster on the node has its own root key, and the node refuses `PUT /v1/projects/<ref>/pgsodium`, the call that Supabase's guide uses to copy the key. Create the secrets again with `vault.create_secret`.
+
+**5. Copy the settings**
+
+Read the Auth, PostgREST, Storage and Realtime settings from hosted and send them to the node with a personal access token for each side. Do this before you copy the files: the Storage settings hold the largest upload the project accepts (`fileSizeLimit`), which is 50 MiB on a new project. Remove the secrets first: hosted reports them as hashes, which the node would take as new values. Set the secrets again in the dashboard (OAuth client secrets, the SMTP password, hook secrets, the captcha secret and SMS provider keys).
+
+<!-- migrate-smoke: settings -->
+```bash
+secrets='^(external_.*_secret|hook_.*_secrets|nimbus_oauth_client_secret|security_captcha_secret|sms_messagebird_access_key|sms_textlocal_api_key|sms_twilio_auth_token|sms_twilio_verify_auth_token|sms_vonage_api_secret|smtp_pass|jwt_secret)$'
+for path in config/auth postgrest config/storage config/realtime; do
+  curl -fsS -H "Authorization: Bearer $OLD_TOKEN" "$OLD_API/v1/projects/$OLD_REF/$path" |
+    jq --arg re "$secrets" 'with_entries(select(.key | test($re) | not))' |
+    curl -fsS -X PATCH -H "Authorization: Bearer $NEW_TOKEN" -H 'Content-Type: application/json' --data @- "$NEW_API/v1/projects/$NEW_REF/$path" > /dev/null
+done
+```
+
+The node ignores a setting it doesn't know. If it answers 400, the message names a setting it refuses (for example a hook URL that isn't HTTPS): fix or remove that setting and send again.
+
+**6. Copy the files in Storage**
+
+The restore brought the buckets and the list of objects. Copy the files. This loop reads that list from the new database, downloads each file from the hosted project and uploads it to the node, with its content type and cache control. Set the URLs and the `service_role` keys of both projects first (a hosted URL looks like `https://<hosted ref>.supabase.co`, the node's like `https://<ref>.api.<domain>`):
+
+<!-- migrate-smoke: storage -->
+```bash
+enc() { jq -rn --arg p "$1" '$p | split("/") | map(@uri) | join("/")'; }
+rm -f storage-failed.txt
+psql "$NEW_DB_URL" --no-align --tuples-only --field-separator $'\t' --command "select bucket_id, name, coalesce(metadata->>'mimetype', 'application/octet-stream'), coalesce(metadata->>'cacheControl', 'max-age=3600') from storage.objects where metadata is not null order by 1, 2" |
+while IFS=$'\t' read -r bucket name mime cache; do
+  path="$bucket/$(enc "$name")"
+  if curl -fsS "$OLD_URL/storage/v1/object/authenticated/$path" -H "apikey: $OLD_KEY" -H "Authorization: Bearer $OLD_KEY" |
+    curl -fsS -o /dev/null -X POST "$NEW_URL/storage/v1/object/$path" -H "apikey: $NEW_KEY" -H "Authorization: Bearer $NEW_KEY" \
+      -H "x-upsert: true" -H "Content-Type: $mime" -H "Cache-Control: $cache" --data-binary @-; then
+    echo "copied $bucket/$name"
+  else
+    echo "$bucket/$name" >> storage-failed.txt
+  fi
+done
+if [ -s storage-failed.txt ]; then echo "Not copied:"; cat storage-failed.txt; false; fi
+```
+
+The loop goes on after an object fails and lists the failures at the end. If an upload answers 413, the object is larger than the project's `fileSizeLimit`: check that step 5 copied the Storage settings, raise the limit if the hosted value is lower than the object, and run the loop again (it copies every object once more). An object name with a tab or a line break breaks the loop, and curl holds one object in memory while it uploads. For a large bucket, the script in Supabase's guide, which works against both URLs, copies in batches.
+
+**7. Deploy the Edge Functions and set the secrets**
+
+Download each function from the hosted project (after `supabase login` with a hosted token) and deploy it to the node with the profile and token from [Use the Supabase CLI](#use-the-supabase-cli):
+
+```bash
+supabase functions list --project-ref <hosted ref>
+supabase functions download <slug> --project-ref <hosted ref>
+supabase --profile ./supavise-profile.yaml functions deploy --use-api --project-ref <ref>
+```
+
+The download doesn't include import maps or `deno.json`, so add them back. Set `verify_jwt` for each function in `supabase/config.toml` (`[functions.<slug>]`) before you deploy, because the download doesn't carry it either. Secret values can't be read from hosted: `supabase secrets list` shows names only. Set each value again:
+
+```bash
+supabase --profile ./supavise-profile.yaml secrets set --env-file ./prod.env --project-ref <ref>
+```
+
+**8. Check, then switch your app**
+
+Compare the grants of `anon`, `authenticated`, `service_role` and `PUBLIC` (shown as `-`) on the tables, views, sequences and functions of `public`. The command prints nothing when both projects agree. A line that starts with `<` is a grant that only the first project has, and one that starts with `>` a grant that only the second has: fix the difference with `grant` or `revoke`.
+
+<!-- migrate-smoke: grants -->
+```bash
+grants="select format('%s %s %s %s', kind, name, grantee, privilege) from (
+  select 'table' as kind, c.oid::regclass::text as name, a.grantee::regrole::text as grantee, a.privilege_type as privilege
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace, aclexplode(c.relacl) a
+  where n.nspname = 'public' and c.relkind in ('r', 'p', 'v', 'm', 'f', 'S')
+    and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'e')
+  union all
+  select 'function', p.oid::regprocedure::text, a.grantee::regrole::text, a.privilege_type
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace, aclexplode(p.proacl) a
+  where n.nspname = 'public'
+    and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
+) g where grantee in ('anon', 'authenticated', 'service_role', '-') order by 1"
+psql "$OLD_DB_URL" --no-align --tuples-only --command "$grants" > grants-old.txt
+psql "$NEW_DB_URL" --no-align --tuples-only --command "$grants" > grants-new.txt
+diff grants-old.txt grants-new.txt
+```
+
+Then compare row counts, sign in as a user and read a table with RLS as your app does (`ANON_KEY` is the anon key your app holds):
+
+```bash
+psql "$NEW_DB_URL" --command "select count(*) from auth.users"
+curl -fsS "$NEW_URL/auth/v1/token?grant_type=password" -H "apikey: $ANON_KEY" -H 'Content-Type: application/json' -d '{"email":"<user email>","password":"<password>"}' | jq .user.email
+curl -fsS "$NEW_URL/rest/v1/<table>?select=id&limit=1" -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_KEY"
+```
+
+Then change the URL in your app to `https://<ref>.api.<domain>`. If you serve the node's project on the same hostname your app already uses (see [custom domains](../deploy/README.md#custom-domains-and-vanity-subdomains)), you change DNS instead and the app needs no change.
+
+What doesn't move, in short: the `sb_` keys, Vault secrets and the pgsodium key, passwords of your own login roles, secret values, and the access tokens that hosted signed with an asymmetric key. Those tokens fail on the node and users sign in again, while their refresh tokens keep working.
+
+## Move a project off Supavise
+
+Hosted Supabase, or any Postgres 17, takes a Supavise project the same way: you dump through the node's pooler and restore into the new database. Follow [the steps above](#move-a-project-from-hosted-supabase) with the two sides swapped: `OLD_DB_URL` is the node's connection string (`postgres.<ref>` on `pooler.<domain>:5432`) and `NEW_DB_URL` the new project's. The dump commands, the restore, the pg_cron step, the grants comparison and the Storage loop are the same.
+
+- **Keys.** Hosted can't import keys. If you want users' access tokens to stay valid, set the node's JWT secret on the new hosted project (**Project settings**, **JWT keys**, **Change legacy JWT secret**, **Create my own secret**; read the node's secret with `supavise projects get <ref> --show-keys`). Hosted then signs new `anon` and `service_role` keys, and your app needs them.
+- **Edge Functions.** Download each function from the node with the profile (`supabase --profile ./supavise-profile.yaml functions download <slug> --project-ref <ref>`), then deploy it to the hosted project. The node never returns secret values: `supabase secrets list` shows digests, so set the values again from your own records.
+- **Settings.** Use the loop in step 5 the other way round. The node reports the same hashes for secrets, so the same filter applies.
+- **Vault and pgsodium.** The dumps leave them out. `GET /v1/projects/<ref>/pgsodium` returns the node project's root key if you need to decrypt data that you export yourself.
+- **Auth and Storage versions.** If the restore stops on an `auth` or `storage` table or column that the new project lacks, the node runs a newer version than the target. Fix it as in step 3.
 
 ## Monitor the node
 

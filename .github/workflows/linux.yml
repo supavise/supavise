@@ -300,6 +300,38 @@ jobs:
           logs: /tmp/supavise-roles-logs
           artifact: roles-smoke-${{ matrix.arch }}
 
+  # Moving a project onto a node and off it again, with the commands of docs/guide.md run from the guide itself and
+  # the Supabase CLI of internal/versions/versions.yaml (cli.version_tested; its `db dump` runs pg_dump in Docker):
+  # the JWT secret and legacy keys of a first project (playing the hosted one) kept by a second, the three dumps
+  # restored in one transaction, the pg_cron job the dump leaves out, a Storage object, copied settings, RLS with
+  # the first project's anon key, a moved user's password and refresh token, the reverse dump into a third project,
+  # the legacy JWT secret changed as Studio does, and the pgsodium key.
+  migrate-smoke:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Supabase CLI (cli.version_tested)
+        run: |
+          v=$(sed -n 's/^  version_tested: "\(.*\)"$/\1/p' internal/versions/versions.yaml)
+          test -n "$v"
+          npm install --prefix /tmp/sbcli "supabase@$v"
+          /tmp/sbcli/node_modules/.bin/supabase --version
+      - uses: ./.github/actions/linux-test
+        with:
+          name: migrate smoke
+          run: sudo env "PATH=$PATH" LOG_DIR=/tmp/supavise-migrate-logs SUPAVISE_BIN=/tmp/supavise SUPABASE_CLI=/tmp/sbcli/node_modules/.bin/supabase tests/linux/migrate-smoke.sh
+          logs: /tmp/supavise-migrate-logs
+          artifact: migrate-smoke-${{ matrix.arch }}
+
   # OAuth sign-in for MCP clients under systemd, without Studio (tests/linux/oauth/oauth-walk.mjs, steps
   # L-01 to L-14, the contract of docs/design.md section 13): dynamic registration, authorize and consent, the token
   # endpoint, revoke, an OAuth token on /v1 (bound to one organization, checked against its scopes, refused

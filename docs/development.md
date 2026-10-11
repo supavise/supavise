@@ -38,7 +38,7 @@ The unpacked artifacts default to `~/.cache/sbctl/unpacked`, a path the test cod
 | Workflow | Jobs |
 |---|---|
 | `ci` | `test`, `cfn-lint`, `aws-deploy`, `actionlint`, `functions-main` |
-| `linux` | `systemd-smoke`, `backup-integration`, `pebble`, `fleet-smoke`, `settings-smoke`, `compute-smoke`, `backups-smoke`, `upgrade-smoke`, `upgrade-e2e`, `roles-smoke`, `sso-smoke`, `install-e2e`, `os-updates`, `functions-smoke`, `branching-xfs` (which also runs `branching-egress`), `converge-e2e`, `firstboot-e2e`, `cluster-identity`, `replica-blocks`, `fleet-follower`, `storage-migrate`, `oauth-smoke` |
+| `linux` | `systemd-smoke`, `backup-integration`, `pebble`, `fleet-smoke`, `settings-smoke`, `compute-smoke`, `backups-smoke`, `upgrade-smoke`, `upgrade-e2e`, `roles-smoke`, `sso-smoke`, `install-e2e`, `os-updates`, `functions-smoke`, `branching-xfs` (which also runs `branching-egress`), `converge-e2e`, `firstboot-e2e`, `cluster-identity`, `replica-blocks`, `fleet-follower`, `storage-migrate`, `oauth-smoke`, `migrate-smoke` |
 | `conformance` | `suites`, `specdiff`, `bump-check` |
 | `studio` | `build` (runs `studio/build.sh`, then `studio/spike.sh`), `mcp-e2e` (the OAuth walk and MCP over HTTP on the amd64 build; `tests/linux/oauth-smoke.sh --studio-artifact`) |
 | `footprint` | manual; see [reference/footprint.md](reference/footprint.md) |

@@ -197,6 +197,8 @@ func TestImplementedRoutesMatchSpec(t *testing.T) {
 		{key: "PUT /v1/projects/{ref}/config/database/postgres", body: map[string]any{"statement_timeout": "10s"}, check: want("statement_timeout", "10s")},
 		{key: "PATCH /v1/projects/{ref}/database/password", body: map[string]any{"password": "long-enough-password"}, check: want("message", "Successfully updated database password")},
 		{key: "PATCH /platform/projects/{ref}/db-password", body: map[string]any{"password": "long-enough-password-2"}},
+		{key: "PATCH /platform/projects/{ref}/config/secrets", body: map[string]any{"jwt_secret": "ROLL", "change_tracking_id": "conformance"}, check: want("message", "Successfully updated JWT secret")},
+		{key: "GET /platform/projects/{ref}/config/secrets/update-status", check: want("update_status.status", 1)},
 		// database
 		{key: "POST /v1/projects/{ref}/database/query", body: map[string]any{"query": "select 1"}, status: 201, check: want("0.?column?", 1)},
 		{key: "POST /v1/projects/{ref}/database/query", body: map[string]any{"query": "selec 1 syntax error"}, status: 400, check: want("message", `syntax error at or near "selec"`)},
@@ -273,7 +275,7 @@ func TestStubsMatchSpec(t *testing.T) {
 		})
 		rec := f.do(op.Method, path, nil)
 		if rec.Header().Get("X-Supavise-Stub") == "" {
-			continue // a more specific implemented route (or an ambiguous pair) answered
+			continue
 		}
 		n++
 		want := op.Status
