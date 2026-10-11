@@ -74,7 +74,10 @@ then fails to start.
   `service_role` keys are signed with it again, everything else stays (the publishable and secret keys, the
   passwords). `RotateKeys` and `SetJWTSecret` share `applyKeys`: the keys are sealed, GoTrue and PostgREST
   restart on them, the fleet tenants update, and the previous keys are restored on error (a
-  `*JWTSecretError` names the step: store, restart or tenants). A paused project only stores the keys.
+  `*JWTSecretError` names the step: store, restart or tenants). When putting the previous keys back fails
+  too, `applyKeys` reports it (each failure is logged with the ref) and the error says the previous keys
+  could not be restored (`JWTSecretError.NotRestored`; the text of `RotateKeys` changes the same way): the
+  registry, a unit or a tenant may then hold the new keys. A paused project only stores the keys.
   The secret the project already has changes nothing. Not done here, because the engine does not own it: the Edge
   Functions environment (the API writes it through `Deps.Functions`, `rotate-keys` through
   `syncFunctions`) and the PostgREST of read replicas on other nodes.

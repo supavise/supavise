@@ -170,7 +170,10 @@ func (s *Server) updateJWTSecret(w http.ResponseWriter, r *http.Request) error {
 			code, progress = jwtErrorGatewayUpdate, jwtProgressServicesRestarted
 		}
 		s.jwtUpdates.put(p.Ref, jwtUpdate{trackingID: tracking, status: jwtStatusFailed, progress: progress, errCode: &code, at: s.now()})
-		s.log.Error("JWT secret change failed", "ref", p.Ref, "step", je.Step, "err", je.Err)
+		s.log.Error("JWT secret change failed", "ref", p.Ref, "step", je.Step, "previous_secret_restored", !je.NotRestored, "err", je.Err)
+		if je.NotRestored {
+			return errf(http.StatusInternalServerError, "Failed to update the JWT secret, and the previous secret could not be restored; check the project's services (supavise projects health %s) and the supavise journal", p.Ref)
+		}
 		return errf(http.StatusInternalServerError, "Failed to update the JWT secret; the previous secret is back in use")
 	}
 	s.jwtUpdates.put(p.Ref, jwtUpdate{trackingID: tracking, status: jwtStatusUpdated, progress: jwtProgressGatewayConfigUpdated, at: s.now()})

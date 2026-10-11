@@ -148,6 +148,18 @@ func TestJWTSecretUpdateFailures(t *testing.T) {
 		})
 	}
 
+	t.Run("a restore that failed too is said in the answer", func(t *testing.T) {
+		f := newFixture(t)
+		f.mgr.jwtErr = &lifecycle.JWTSecretError{Step: lifecycle.KeyStepRestart, Err: errors.New("boom"), NotRestored: true}
+		rec := f.do("PATCH", jwtSecretPath, map[string]any{"jwt_secret": hostedSecret, "change_tracking_id": "track-n"})
+		body := rec.Body.String()
+		if rec.Code != 500 || !strings.Contains(body, "could not be restored") || strings.Contains(body, "back in use") || strings.Contains(body, "boom") {
+			t.Fatalf("%d %s", rec.Code, body)
+		}
+		if st, _ := jwtStatus(t, f, jwtStatusPath).(map[string]any); st["status"] != float64(jwtStatusFailed) {
+			t.Fatalf("update_status = %v", st)
+		}
+	})
 	t.Run("refused keeps the last status", func(t *testing.T) {
 		f := newFixture(t)
 		f.mustDo("PATCH", jwtSecretPath, map[string]any{"jwt_secret": hostedSecret, "change_tracking_id": "first"}, 200)
