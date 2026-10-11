@@ -35,6 +35,9 @@ type Memory struct {
 	optouts    []ReplicaOptout
 	joinTokens map[string]JoinToken
 	moves      []Move
+
+	// advisorRules are the advisor rules (advisors_mem.go), by project ref.
+	advisorRules map[string][]AdvisorException
 }
 
 func NewMemory() *Memory {
@@ -333,6 +336,7 @@ func (m *Memory) DeleteProject(_ context.Context, ref string) error {
 	}
 	m.upgrades = kept
 	delete(m.hostnames, ref)
+	delete(m.advisorRules, ref)
 	delete(m.vanity, ref)
 	for h, r := range m.routes {
 		if r.Ref == ref {
