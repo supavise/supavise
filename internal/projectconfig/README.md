@@ -30,6 +30,20 @@ only if the version is the one it read (`Store.Put`), and `Manager.Patch` retrie
 top of the newer row. Each save appends the registry event `settings.<service>.updated` with the
 version and the names of the changed settings, never values.
 
+## Branches
+
+A branch starts on its parent's saved settings. `Manager.CopyForBranch(from, to)` (`branchcopy.go`) reads the parent's saved
+settings of Auth, PostgREST, Realtime, Storage and Postgres and saves them for the branch through the same `Patch` a save
+goes through, so the combination is validated; the lifecycle engine calls it before the branch's units first start
+(`lifecycle.Engine.copyInitialSettings`, with `CreateRequest.SettingsFrom`) and a reset or any later create over the same row
+does not call it again. Secrets are copied (`Seal` binds a value to no project). What is never copied is the list `branchExcluded`
+holds, with the reason: the settings that name the parent's address (`site_url`, `uri_allow_list`, `saml_external_url`, the WebAuthn
+relying party and the three switches that cannot run without it), the pool sizes and the Postgres settings of `SizingSettings` that the compute class
+puts on the command line, the Realtime tenant's pools and `suspend`, and the whole Pooler service. The JWT secret, the API keys,
+the database password, the custom hostname and the vanity subdomain are not settings, so they are never in the copy.
+`TestEverySettingThatLooksLikeAnAddressIsDecided` fails for a new setting whose name looks like an address until it is excluded or
+listed as kept, and `TestCopyForBranchSkipsWhatIdentifiesAddressesOrSizesTheParent` is the golden list.
+
 ## Schemas
 
 `Schema` lists each service's settings as `Field`s (type, range, enum, pattern, secret flag,

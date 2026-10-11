@@ -44,8 +44,9 @@ type Deps struct {
 	Backup *backup.Service
 	// DB runs SQL in project databases. Nil connects with pgx through Engine.ConnString.
 	DB Database
-	// Functions, when set, lets Merge report Edge Functions that exist only on the branch or
-	// differ from the parent's. Nil: merge reports nothing about functions.
+	// Functions reads the Edge Function deployments of a project. When it is also a FunctionCarrier
+	// (internal/api.BranchFunctions is), a new branch gets the parent's functions, a push brings the
+	// parent's new ones and a merge deploys the branch's. Nil: functions are neither copied nor merged.
 	Functions  FunctionSource
 	Log        *slog.Logger
 	Now        func() time.Time
@@ -60,10 +61,9 @@ type Deps struct {
 	StaleAfter time.Duration
 }
 
-// FunctionSource reads the Edge Function deployments stored for a project, so that Merge can
-// tell an agent which of a branch's functions it does not carry back (it merges migrations
-// only). Digest maps function slug to a digest of the deployed function: its source files and
-// settings.
+// FunctionSource reads the Edge Function deployments stored for a project. Digests maps function
+// slug to a digest of the deployed function: its settings and source files. A FunctionSource that is
+// also a FunctionCarrier (carry.go) is what copies and merges functions.
 type FunctionSource interface {
 	Digests(ctx context.Context, ref string) (map[string]string, error)
 }

@@ -212,6 +212,53 @@ supavise backups restore-files "$REF_V" --to latest --force || fail "backups res
 [[ $(fn_json | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])') == "$FN_ID" ]] || fail "the restored function has another id"
 delete_fn "$REF_V" backedup
 
+log "a branch starts with the parent's Edge Functions, a push brings a new body, a merge deploys the branch's own"
+# Project V is the parent. `supavise branches ...` runs in this shell's process against the node the
+# functions dev daemon serves; the daemon's reconcile (5 s) puts the copied rows where the runtime reads them.
+deploy_body() { # REF SLUG BODY VERIFY_JWT: upload one function that answers with a constant
+  printf 'Deno.serve(() => new Response("%s"))\n' "$3" >"$LOG_DIR/br-$2.ts"
+  local out
+  out=$(curl -s -w '\n%{http_code}' -X POST -H "Authorization: Bearer $PAT" \
+    -F "metadata={\"entrypoint_path\":\"index.ts\",\"name\":\"$2\",\"verify_jwt\":$4};type=application/json" \
+    -F "file=@$LOG_DIR/br-$2.ts;filename=index.ts" "$API/v1/projects/$1/functions/deploy?slug=$2") || fail "curl: deploy $2 to $1"
+  [[ $(tail -n1 <<<"$out") =~ ^20[01]$ ]] || fail "deploying $2 to $1 answered: $out"
+}
+fn_field() { # REF SLUG PYEXPR
+  curl -s -H "Authorization: Bearer $PAT" "$API/v1/projects/$1/functions/$2" | json_get "$3"
+}
+serves() { [[ $(curl -s --max-time 10 "http://$1.api.$DOMAIN:$P_HTTP/functions/v1/$2") == "$3" ]]; } # REF SLUG BODY
+answers() { [[ $(http_code "http://$1.api.$DOMAIN:$P_HTTP/functions/v1/$2") == "$3" ]]; }          # REF SLUG CODE
+deploy_body "$REF_V" carried "carried v1" true
+deploy_body "$REF_V" openfn "open v1" false
+curl -s -o /dev/null -X POST -H "Authorization: Bearer $PAT" -H 'Content-Type: application/json' -d '[{"name":"PARENT_ONLY","value":"p"}]' "$API/v1/projects/$REF_V/secrets"
+BR=$(supavise branches create "$REF_V" fn-branch --json | json_get 'd["project_ref"]') || fail "branches create"
+[[ $BR =~ ^[a-z]{20}$ ]] || fail "bad branch ref '$BR'"
+for slug in carried openfn; do
+  [[ $(fn_field "$BR" "$slug" 'd["ezbr_sha256"]') == "$(fn_field "$REF_V" "$slug" 'd["ezbr_sha256"]')" ]] || fail "the branch's copy of $slug has another digest than the parent's"
+  [[ $(fn_field "$BR" "$slug" 'd["updated_at"]') == "$(fn_field "$REF_V" "$slug" 'd["updated_at"]')" ]] || fail "the branch's copy of $slug has another update time"
+  [[ $(fn_field "$BR" "$slug" 'd["id"]') != "$(fn_field "$REF_V" "$slug" 'd["id"]')" ]] || fail "the branch shares the id of $slug"
+done
+[[ $(fn_field "$BR" carried 'd["verify_jwt"]') == True && $(fn_field "$BR" openfn 'd["verify_jwt"]') == False ]] || fail "verify_jwt was not kept on the copies"
+wait_for 90 1 "the branch to serve the function that needs no JWT" serves "$BR" openfn "open v1"
+wait_for 60 1 "the branch to refuse a call to carried without a JWT" answers "$BR" carried 401
+BR_ANON=$(curl -s -H "Authorization: Bearer $PAT" "$API/v1/projects/$BR/api-keys?reveal=true" | json_get '[k["api_key"] for k in d if k.get("name") == "anon"][0]') || fail "no anon key for the branch"
+[[ $(curl -s --max-time 10 -H "Authorization: Bearer $BR_ANON" "http://$BR.api.$DOMAIN:$P_HTTP/functions/v1/carried") == "carried v1" ]] || fail "the branch refuses carried with its own anon key (verify_jwt must check the branch's secret)"
+# Secrets are per project: the parent's is not on the branch.
+[[ $(curl -s -H "Authorization: Bearer $PAT" "$API/v1/projects/$BR/secrets") == "[]" ]] || fail "the branch has secrets it was not given: $(curl -s -H "Authorization: Bearer $PAT" "$API/v1/projects/$BR/secrets")"
+curl -s -H "Authorization: Bearer $PAT" "$API/v1/projects/$REF_V/secrets" | grep -q PARENT_ONLY || fail "the parent lost its secret"
+# A push brings the parent's new body.
+deploy_body "$REF_V" openfn "open v2" false
+supavise branches push "$BR" || fail "branches push"
+wait_for 90 1 "the branch to serve the parent's new body" serves "$BR" openfn "open v2"
+# A function made on the branch reaches the parent with a merge, which deletes nothing.
+deploy_body "$BR" branchonly "from the branch" false
+supavise branches merge "$BR" || fail "branches merge"
+wait_for 90 1 "the parent to serve the branch's function" serves "$REF_V" branchonly "from the branch"
+serves "$REF_V" openfn "open v2" || fail "the merge changed a function the branch had not"
+answers "$REF_V" carried 401 || fail "the merge changed carried"
+supavise branches delete "$BR" || fail "branches delete"
+delete_fn "$REF_V" carried; delete_fn "$REF_V" openfn; delete_fn "$REF_V" branchonly
+
 log "the bundler unit ran for project V's uploads and is idle now"
 B=supavise-edge-bundle@$REF_V.service
 [[ $(unit_state "$B") == inactive ]] || fail "$B is $(unit_state "$B")"

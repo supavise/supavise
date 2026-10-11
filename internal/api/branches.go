@@ -616,7 +616,10 @@ func (s *Server) diffBranch(w http.ResponseWriter, r *http.Request) error {
 	if s.branches == nil {
 		return errf(http.StatusNotFound, "Branch not found")
 	}
-	diff, err := s.branches.Diff(r.Context(), r.PathValue("branch_id_or_ref"))
+	q := r.URL.Query()
+	diff, err := s.branches.DiffWith(r.Context(), r.PathValue("branch_id_or_ref"), branching.DiffOptions{
+		IncludedSchemas: q.Get("included_schemas"), PGDelta: truthy(q.Get("pgdelta")),
+	})
 	if err != nil {
 		return mapBranchErr(err)
 	}

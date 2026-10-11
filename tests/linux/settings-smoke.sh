@@ -518,4 +518,47 @@ done
 [[ $(pool_row) == "11,200,11" ]] || fail "the pool size saved while paused was not applied to Supavisor's tenant by the resume (got '$(pool_row)')"
 [[ $(pcode GET /rest/v1/ -H "apikey: $KEY") == 401 ]] || fail "a revoked key came back after the pause"
 
+log "a branch starts on the parent's saved settings, not on what names or sizes the parent, and gets the schema built with the SQL editor"
+# The parent has no migration history: everything below is SQL, among it a policy on storage.objects and a
+# trigger on auth.users, which a baseline must carry.
+BR_SQL="create table public.br_notes (id int primary key); alter table public.br_notes enable row level security;
+  create policy br_read on public.br_notes for select to authenticated using (true);
+  create policy br_objects on storage.objects for select to anon using (bucket_id = 'br');
+  create function public.br_signup() returns trigger language plpgsql security definer as \$\$ begin return new; end \$\$;
+  create trigger br_on_signup after insert on auth.users for each row execute function public.br_signup()"
+must 201 POST "$CFG/database/query" "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$BR_SQL")"
+BRANCH=$(api POST "$CFG/branches" -d '{"branch_name":"settings-branch"}') || fail "create branch"
+BR=$(json_get 'd["project_ref"]' <<<"$BRANCH") || fail "no project_ref in $BRANCH"
+BR_ID=$(json_get 'd["id"]' <<<"$BRANCH")
+[[ $BR =~ ^[a-z]{20}$ ]] || fail "bad branch ref '$BR'"
+for ((i = 0; i < 180; i++)); do
+  st=$(api GET "$CFG/branches/settings-branch" | json_get 'd["status"]') || st=
+  [[ $st == FUNCTIONS_DEPLOYED || $st == MIGRATIONS_FAILED || $st == FUNCTIONS_FAILED ]] && break
+  sleep 2
+done
+[[ $st == FUNCTIONS_DEPLOYED ]] || fail "the branch ended $st: $(api GET "$CFG/branches/settings-branch" | json_get 'd.get("supavise_detail")')"
+BCFG="/v1/projects/$BR"
+BAUTH=$(api GET "$BCFG/config/auth")
+[[ $(json_get 'd["external_github_enabled"]' <<<"$BAUTH") == True && $(json_get 'd["external_github_client_id"]' <<<"$BAUTH") == client-id ]] || fail "the provider did not reach the branch: $BAUTH"
+[[ $(json_get 'd["disable_signup"]' <<<"$BAUTH") == True ]] || fail "disable_signup did not reach the branch"
+[[ $(json_get 'd["site_url"]' <<<"$BAUTH") != https://site.example.com ]] || fail "the parent's site_url was copied to the branch"
+[[ $(json_get 'd["uri_allow_list"]' <<<"$BAUTH") != "https://new.example.com/**" ]] || fail "the parent's redirect allow list was copied to the branch"
+# The sealed client secret came along: the branch's GoTrue starts the GitHub flow with the parent's client id.
+BGH=""
+for ((i = 0; i < 60; i++)); do
+  BGH=$(curl -s -o /dev/null -D - -m 30 -H "Host: $BR.api.$SUPAVISE_DOMAIN" "http://127.0.0.1/auth/v1/authorize?provider=github" | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}')
+  [[ $BGH == *client_id=client-id* ]] && break
+  sleep 2
+done
+[[ $BGH == *client_id=client-id* ]] || fail "the branch's GoTrue does not run on the copied provider: '$BGH'"
+[[ $(api GET "$BCFG/postgrest" | json_get 'd["max_rows"]') == 9 ]] || fail "PostgREST's max_rows did not reach the branch"
+bsql() { api POST "$BCFG/database/query" -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$1")"; }
+[[ $(api GET "$BCFG/config/database/postgres" | json_get 'd["statement_timeout"]') == 7s ]] || fail "a non-sizing Postgres setting did not reach the branch"
+[[ $(bsql "show max_connections" | json_get 'd[0]["max_connections"]') != 40 ]] || fail "the parent's max_connections was copied: a branch has the sizing of its own class"
+[[ $(bsql "select polname from pg_policy order by 1" | json_get '",".join(r["polname"] for r in d)') == br_objects,br_read ]] || fail "the branch lacks the policies (one on storage.objects) of the SQL editor: $(bsql "select polname from pg_policy")"
+[[ $(bsql "select tgname from pg_trigger where not tgisinternal" | json_get '",".join(r["tgname"] for r in d)') == br_on_signup ]] || fail "the branch lacks the trigger on auth.users"
+[[ $(bsql "select to_regclass('public.br_notes') is not null as t" | json_get 'd[0]["t"]') == True ]] || fail "the branch lacks the table of the SQL editor"
+[[ $(api GET "$CFG/database/migrations" | json_get 'len(d)') == 1 && $(api GET "$CFG/database/migrations" | json_get 'd[0]["name"]') == remote_schema ]] || fail "the parent's history was not initialised with the baseline: $(api GET "$CFG/database/migrations")"
+must 200 DELETE "/v1/branches/$BR_ID"
+
 log "settings smoke test passed"

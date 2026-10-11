@@ -168,6 +168,10 @@ func (s *Server) updateFunctionBundle(w http.ResponseWriter, r *http.Request, re
 	if err := s.functionsChanged(r.Context(), ref); err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, fnJSON(f))
+	out, err := s.fnResponse(r.Context(), f)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, out)
 	return nil
 }
