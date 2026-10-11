@@ -52,6 +52,11 @@ type Options struct {
 	Proc   Proc
 	Prober Prober
 	Disk   DiskSource
+	// Gone, when set, is called with the ref of a project that a tick finds deleted or created again
+	// under the same ref (a delete by the CLI or the branch scheduler runs where the service cannot
+	// see it), once the service has dropped what it keeps of it, so that the daemon drops what else it
+	// keeps (the request counts). A delete through the Management API calls Forget at once instead.
+	Gone func(ref string)
 	// CPUs is the node's core count, which a project without a CPU quota is measured against; nil
 	// means runtime.NumCPU.
 	CPUs        func() int
@@ -88,6 +93,9 @@ type Service struct {
 // projState is what the service remembers of one project between two samples.
 type projState struct {
 	name string
+	// created is the registry's creation time of the project as the last tick saw it: a ref whose
+	// creation time changes belongs to another project now (deleted and created again with --ref).
+	created time.Time
 	// own is true for a project this node samples itself, false for one whose samples were reported
 	// by the node it is homed on (Ingest).
 	own bool
@@ -188,16 +196,26 @@ func (s *Service) Tick(ctx context.Context) {
 		s.o.Log.Warn("metrics: cannot list the projects", "error", err)
 		return
 	}
-	live := map[string]bool{}
+	live := map[string]time.Time{} // ref -> creation time
+	away := map[string]bool{}      // homed on another node
 	var todo []registry.Project
 	for _, p := range ps {
-		live[p.Ref] = true
-		if p.Ref == config.SystemRef || !p.Status.Running() || (s.o.Local != nil && !s.o.Local(&p)) {
+		live[p.Ref] = p.CreatedAt
+		local := s.o.Local == nil || s.o.Local(&p)
+		if !local {
+			away[p.Ref] = true
+		}
+		if p.Ref == config.SystemRef || !p.Status.Running() || !local {
 			continue
 		}
 		todo = append(todo, p)
 	}
-	s.forgetStale(live, todo)
+	for _, ref := range s.forgetStale(live, away, todo) {
+		s.forgetHistory(ref)
+		if s.o.Gone != nil {
+			s.o.Gone(ref)
+		}
+	}
 	if len(todo) > 0 && !s.o.Cgroup.SliceExists() {
 		s.warn("cgroup-slice", "metrics: there is no control group for supavise.slice, so no project can be measured (the host needs the unified cgroup v2 hierarchy under /sys/fs/cgroup)")
 	}
@@ -227,7 +245,7 @@ func (s *Service) Tick(ctx context.Context) {
 	}
 	s.mu.Unlock()
 	if due && s.o.Store != nil {
-		if n, err := s.o.Store.Sweep(func(ref string) bool { return live[ref] }); err != nil {
+		if n, err := s.o.Store.Sweep(func(ref string) bool { _, ok := live[ref]; return ok }); err != nil {
 			s.o.Log.Warn("metrics: cannot remove the history of deleted projects", "error", err)
 		} else if n > 0 {
 			s.o.Log.Info("metrics: removed the history of deleted projects", "projects", n)
@@ -236,8 +254,10 @@ func (s *Service) Tick(ctx context.Context) {
 }
 
 // forgetStale drops the in-memory state of projects that are gone, paused or homed elsewhere now,
-// and keeps the names of those that run here.
-func (s *Service) forgetStale(live map[string]bool, running []registry.Project) {
+// and keeps the names of those that run here. It returns the refs of the projects that are gone
+// (deleted, or created again under the same ref since the last tick), whose history on disk is
+// theirs to remove.
+func (s *Service) forgetStale(live map[string]time.Time, away map[string]bool, running []registry.Project) (gone []string) {
 	here := map[string]string{}
 	for _, p := range running {
 		here[p.Ref] = p.Name
@@ -245,22 +265,76 @@ func (s *Service) forgetStale(live map[string]bool, running []registry.Project) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for ref, st := range s.proj {
+		created, isLive := live[ref]
+		if isLive && !created.IsZero() && !st.created.IsZero() && !created.Equal(st.created) {
+			delete(s.proj, ref)
+			gone = append(gone, ref)
+			continue
+		}
+		if isLive {
+			st.created = created
+		}
 		if name, ok := here[ref]; ok {
 			st.name = name
 			continue
 		}
-		if !live[ref] {
+		if !isLive {
 			delete(s.proj, ref)
+			gone = append(gone, ref)
 			continue
 		}
 		// Paused or moved: its counters are meaningless when it comes back, but what was sampled
-		// stays for the warnings until it ages out.
+		// stays for the warnings until it ages out. A project homed on another node now is judged
+		// there: this node stops raising alerts for it (a paused one stays this node's).
 		st.prevAt, st.prevUnits, st.prevIO = time.Time{}, nil, nil
+		if away[ref] {
+			st.own = false
+		}
+	}
+	for _, ref := range gone {
+		s.dropRaisedLocked(ref)
 	}
 	for k := range s.raised {
-		if ref, ok := raisedRef(k); ok && !live[ref] {
+		if ref, ok := raisedRef(k); ok {
+			if _, isLive := live[ref]; !isLive {
+				delete(s.raised, k)
+			}
+		}
+	}
+	return gone
+}
+
+// dropRaisedLocked forgets the alerts raised for a project. s.mu must be held.
+func (s *Service) dropRaisedLocked(ref string) {
+	for k := range s.raised {
+		if r, ok := raisedRef(k); ok && r == ref {
 			delete(s.raised, k)
 		}
+	}
+}
+
+// Forget drops everything the service keeps of a project that was deleted: its samples in memory, its
+// history on disk, the alerts raised for it and the cached size of its files. The Management API calls
+// it when it deletes a project, so that a project created again under the same ref (the CLI's
+// --ref) starts with no history; a delete made elsewhere is found by the next tick (Options.Gone).
+func (s *Service) Forget(ref string) {
+	s.mu.Lock()
+	delete(s.proj, ref)
+	s.dropRaisedLocked(ref)
+	s.mu.Unlock()
+	s.forgetHistory(ref)
+}
+
+// forgetHistory removes what a project left outside the service's memory: the ring file and the
+// disk source's cache.
+func (s *Service) forgetHistory(ref string) {
+	if s.o.Store != nil {
+		if err := s.o.Store.Forget(ref); err != nil {
+			s.warn("forget/"+ref, "metrics: cannot remove the history of a deleted project (logged once in a while)", "ref", ref, "error", err)
+		}
+	}
+	if f, ok := s.o.Disk.(interface{ Forget(string) }); ok {
+		f.Forget(ref)
 	}
 }
 
@@ -537,6 +611,10 @@ func (s *Service) Ingest(ref, name string, smp Sample) error {
 		st = &projState{name: name}
 		s.proj[ref] = st
 	}
+	// A sample that another node took says the project is homed there, whatever this node sampled
+	// of it before it moved: it is not this node's to judge any more. sampleProject sets it again
+	// if the project comes back.
+	st.own = false
 	if n := len(st.recent); n > 0 && !smp.At.After(st.recent[n-1].At) {
 		s.mu.Unlock()
 		return nil

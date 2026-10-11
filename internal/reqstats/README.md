@@ -19,7 +19,7 @@ Each project has two rings of 32-byte slots, one per bucket, that hold one `uint
 
 That is 12 KB per project, so 35 projects take about 430 KB. The hour ring is longer than 7 days (168 hours) because the first UTC day of a seven-day range begins up to 24 hours before the range does. A slot is reused when its bucket is 181 minutes or 200 hours old (a `3hr` range is 181 minute buckets, and the ring holds all of them); a count with an older time than the bucket in its slot is dropped rather than overwriting newer counts. `Series` returns at most 240 buckets, so a request for a year of minutes costs the same as one for three hours.
 
-A project that has counted nothing for eight days is dropped. `Add` checks for such projects when a project first appears, at most once an hour, so the counts of branches that were created and deleted do not pile up.
+A project that has counted nothing for eight days is dropped. `Add` checks for such projects when a project first appears, at most once an hour, so the counts of branches that were created and deleted do not pile up. `Forget` drops one project at once: the Management API calls it when it deletes a project, and the metrics collector when its tick finds a project deleted or created again under the same ref (`internal/app/serve.go`), so that a ref used again starts at zero.
 
 ## Concurrency
 

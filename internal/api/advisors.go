@@ -248,6 +248,25 @@ func (s *Server) lintsByName(r *http.Request, p *registry.Project, names []strin
 // invalidateAdvisors drops what is kept of p's lints after a change of its schema through the API.
 func (s *Server) invalidateAdvisors(ref string) { s.advisorRunner.Invalidate(ref) }
 
+// forgetUsage drops what is kept in memory and on disk of a deleted project's usage: the request
+// counts of the proxy, and the utilization samples and history (internal/metrics). A project created
+// again under the same ref (the CLI's --ref) then starts with nothing of the deleted one's.
+func (s *Server) forgetUsage(ref string) {
+	if s.requests != nil {
+		s.requests.Forget(ref)
+	}
+	if s.metrics != nil {
+		s.metrics.Forget(ref)
+	}
+}
+
+// projectGone drops what the API keeps of a project it has deleted.
+func (s *Server) projectGone(ctx context.Context, ref string) {
+	s.invalidateAdvisors(ref) // nothing of a deleted project stays in memory
+	s.functionsGone(ctx, ref)
+	s.forgetUsage(ref)
+}
+
 // schemaChangeRe finds the statements that change what the advisors read: definitions, grants and
 // ownership. A word inside a string or a comment matches too, which costs one more run of the lints
 // and nothing else.
