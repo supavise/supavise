@@ -554,3 +554,38 @@ func (s *Service) mustRuns(t *testing.T, owner string) []registry.BranchRun {
 	}
 	return runs
 }
+
+func TestBranchRunsGathersTheMergesToo(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	a, b := h.create("a", nil), h.create("b", nil)
+	h.db.migs[a.Ref] = append(h.db.migs[a.Ref], mig("20260110000000", "feature", "create table f (id int)"))
+	merge, err := h.svc.Merge(ctx, a.Ref, ActionInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.wait(a.Ref)
+	if _, err := h.svc.Push(ctx, a.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	h.wait(a.Ref)
+	got, err := h.svc.BranchRuns(ctx, a, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ops []string
+	for _, r := range got {
+		ops = append(ops, r.Op)
+	}
+	// Newest first: the push and the create are listed under the branch, the merge under its parent.
+	if strings.Join(ops, ",") != "push,merge,create" || got[1].ID != merge {
+		t.Fatalf("runs of a = %v", ops)
+	}
+	// Another branch's runs do not show up.
+	if other, _ := h.svc.BranchRuns(ctx, b, 10); len(other) != 1 || other[0].Op != "create" {
+		t.Fatalf("runs of b = %+v", other)
+	}
+	if limited, _ := h.svc.BranchRuns(ctx, a, 2); len(limited) != 2 {
+		t.Fatalf("limit: %d", len(limited))
+	}
+}

@@ -7,7 +7,9 @@ package branching_test
 //	SUPAVISE_BRANCH_SERVE_FILE=$PWD/stack.json SUPAVISE_TEST_UNPACKED=~/.cache/sbctl/unpacked \
 //	  go test ./internal/branching -run TestServe -timeout 60m
 //
-// The file gets {api_url, pat, parent_ref, state_dir}; delete it to stop everything.
+// The file gets {api_url, pat, parent_ref, state_dir, config, notify_secret}; delete it to stop
+// everything. SUPAVISE_BRANCH_SERVE_PRIVATE_NOTIFY=1 lets a branch's notify_url point at loopback, for
+// a receiver the test script runs (tests/linux/branching/runs.sh).
 
 import (
 	"context"
@@ -91,6 +93,7 @@ func TestServe(t *testing.T) {
 	cfg.Ports.PGMeta = base + 36 // and +1 for its admin app
 	cfg.API.PGMetaCryptoKey = "serve-test-key"
 	cfg.Branching.SweepIntervalSeconds = 5
+	cfg.Branching.AllowPrivateNotifyURLs = os.Getenv("SUPAVISE_BRANCH_SERVE_PRIVATE_NOTIFY") != ""
 	cfgPath := filepath.Join(state, "config.toml")
 	b, _ := toml.Marshal(cfg)
 	if err := os.WriteFile(cfgPath, b, 0o600); err != nil {
@@ -178,8 +181,13 @@ func TestServe(t *testing.T) {
 	if err := n.Registry.CreateAccessToken(ctx, &registry.AccessToken{UserID: "11111111-2222-4333-8444-555555555555", Name: "serve", Hash: secrets.HashToken(pat), Prefix: pat[:8]}); err != nil {
 		t.Fatal(err)
 	}
+	notifySecret, err := svc.NotifySecret(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	info, _ := json.MarshalIndent(map[string]any{
 		"api_url": "http://" + ln.Addr().String(), "pat": pat, "parent_ref": parent.Ref, "state_dir": cfg.StateDir, "config": cfgPath,
+		"notify_secret": notifySecret,
 	}, "", "  ")
 	if err := os.WriteFile(out, info, 0o600); err != nil {
 		t.Fatal(err)

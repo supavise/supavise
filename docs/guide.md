@@ -122,6 +122,16 @@ supabase --profile ./supavise-profile.yaml branches get agent-task-42 --project-
 
 The same branch is one call to `POST /v1/projects/<ref>/branches` with `{"branch_name": "agent-task-42", "with_data": true}`. The Supabase MCP server's branch tools work when you start it with `--api-url https://api.<domain>` and without `--project-ref`.
 
+### See what a branch operation did
+
+Creating a branch, updating it from its parent, merging it into the parent and resetting it are each one *run* with seven steps (`clone`, `pull`, `health`, `configure`, `migrate`, `seed`, `deploy`). `clone` and `configure` belong to the Git flow, so a run you start from Studio, the CLI or the MCP server shows them as skipped.
+
+- **In Studio.** **View Logs** on the Branches page lists the runs of a branch, with the steps of each and its log. The merge page shows the run of a merge while it works and offers **Close branch** when it succeeded. A merge is listed under the parent project, the other operations under the branch.
+- **The branch's status** ends at `FUNCTIONS_DEPLOYED` when the operation worked, and at `MIGRATIONS_FAILED` or `FUNCTIONS_FAILED` when it did not. The reason is in the run's log and in `supavise_detail` of the branch (`GET /v1/projects/<ref>/branches/<name>`). A merge that the histories do not allow (production changed since the branch was made) is accepted by the API and then fails: the `migrate` step is `DEAD` and the log says why.
+- **On the node.** `supavise branches runs <branch>` lists the runs, `supavise branches logs <branch> [run-id]` prints a log, and `supavise branches get <branch>` prints why the last operation failed. Through the API the same data is `GET /v1/projects/<ref>/actions`, `.../actions/<run-id>` and `.../actions/<run-id>/logs`.
+- **A notification.** `supabase branches update <branch> --notify-url https://example.com/hook --project-ref <ref>` makes the node `POST` to that URL when a run ends. The body is the one Supabase documents (`type: "run.completed"`, `data.action_run` with the steps in lowercase and, after a failure, `failure`), plus a `supavise` object with the branch and the outcome. The call carries the [Standard Webhooks](https://www.standardwebhooks.com) headers `webhook-id`, `webhook-timestamp` and `webhook-signature`; verify them with the secret `supavise branches notify-secret` prints (`--rotate` replaces it). The node refuses to call private addresses unless `allow_private_notify_urls` is set in `[branching]`.
+- **Merge requests.** **Close merge request** in Studio clears the branch's review mark, and a successful merge clears it too, whether it came from Studio, the CLI or the MCP server.
+
 ## Connect an AI tool to a project
 
 An MCP client such as Claude Code, Cursor, VS Code, Codex or the Claude desktop connector signs in to your node with OAuth, so you don't create a personal access token. In Studio, open **Connect**, then **MCP**. The panel shows the URL of your node's MCP server:

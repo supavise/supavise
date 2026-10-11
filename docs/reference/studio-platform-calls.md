@@ -195,6 +195,19 @@ These are the documented routes for which an empty stub is not enough: the page 
 | P1 | GET | `/v1/projects/{ref}/types/typescript` | 200 `TypescriptResponse_Output` |
 | P1 | POST | `/v2/projects/{ref}/advisors/run` | 200 `V2ProjectAdvisorsResponse_Output`; Studio sends it for the health advisor only when its `healthAdvisor` flag is on, and the MCP server for `get_advisors` with type `health` |
 
+## Branch pages and action runs
+
+The Branches page, the merge page (`/project/{ref}/merge`) and "View Logs" read the action runs of branch operations (`internal/branching/README.md`, "Action runs"). Studio derives a run's status from its steps (`data/actions/action-detail-query.ts`): no steps, or a step that is `CREATED` or `RUNNING`, is running; every step `EXITED` or `PAUSED` is a success; a `DEAD` step is a failure. A run without steps therefore reads as running for ever, so every run is stored with its seven steps before the call that starts it returns.
+
+| Prio | Method | Path | What Studio needs |
+|---|---|---|---|
+| P1 | GET | `/v1/projects/{ref}/actions` | the runs listed under `{ref}`, newest first (`View Logs` on a branch lists them with `{ref}` = the branch's `project_ref`); a run whose `id` equals the project ref renders specially in `WorkflowLogs.tsx`, which Supavise never produces |
+| P1 | GET | `/v1/projects/{ref}/actions/{run_id}` | polled every 2 s by `useWorkflowManagement` until it answers 404, for **both** the branch ref and the parent ref with the same `workflow_run_id`. The owner answers 200 (a merge: the parent; create, push and reset: the branch) and the other ref 404, which stops its polling |
+| P1 | GET | `/v1/projects/{ref}/actions/{run_id}/logs` | `text/plain`; Studio splits it on `\n` and `\r` and trims it |
+| P2 | PATCH | `/v1/branches/{id}` with `request_review` | `true` puts the branch on the merge-request list, `false` removes it (Studio toasts "Merge request closed"); after a merge Studio sends `false` itself when the run finishes under the parent ref, and the node clears the mark as well, so the CLI and MCP merges agree |
+| P1 | POST | `/v1/branches/{id}/merge`, `/push` | `201 {workflow_run_id}`; the page adds it to the query string, shows "Processing" while the run is running and offers "Close branch" when it succeeded. A refusal found while the run works (divergence) is a failed run, not an error status |
+| P1 | POST, PATCH | `/v1/projects/{ref}/branches`, `/v1/branches/{id}` of the default branch | the Production branch form (GitHub integration settings) creates the default branch with `is_default: true` and later patches `git_branch` and `branch_name`; both are accepted and the answer is the default branch with the Git branch stored |
+
 ## Advisors
 
 The Security Advisor, the Performance Advisor, the advisor panel and the project home widget, the table editor's RLS badge and Studio's "project needs securing" banner all read `GET /platform/projects/{ref}/run-lints` (`data/lint/lint-query.ts`). Studio filters the array itself: a page keeps the lints whose `categories` include `SECURITY` or `PERFORMANCE`, groups them by `level`, and picks the selected one by `cache_key`, so the answer carries every lint of both categories. Studio runs the same lints in its own self-hosted mode (`lib/api/self-hosted/lints.ts`, `getLintsSQL` of `packages/pg-meta`, as `supabase_admin`, with `PGRST_DB_SCHEMAS` as `pgrst.db_schemas`), which is where Supavise's SQL comes from (`internal/advisors/README.md`).

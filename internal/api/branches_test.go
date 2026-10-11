@@ -259,6 +259,10 @@ func TestBranchRequestsThatCannotBeHonoredAreRefused(t *testing.T) {
 	}
 	br := f.waitBranch(t, "x", "FUNCTIONS_DEPLOYED")
 	id := br["id"].(string)
+	// The create-body secrets are the branch's own, and the parent's are not copied.
+	if sec, err := f.srv.store.ListFunctionSecrets(context.Background(), br["project_ref"].(string)); err != nil || len(sec) != 1 || sec[0].Name != "STRIPE_KEY" {
+		t.Fatalf("the branch's secrets = %v, %v", sec, err)
+	}
 	if rec := f.do("PATCH", "/v1/branches/"+id, map[string]any{"status": "MIGRATIONS_PASSED", "reset_on_push": true, "persistent": true}); rec.Code != 200 {
 		t.Errorf("a status and the deprecated reset_on_push are accepted: %d %s", rec.Code, rec.Body)
 	}
