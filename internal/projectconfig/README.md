@@ -50,7 +50,7 @@ Every setting has the GoTrue variable it renders to (`GOTRUE_<NAME>` except wher
 differs: `refresh_token_rotation_enabled` is `GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED`,
 `mailer_templates_*_content` is `GOTRUE_MAILER_TEMPLATES_*`, the seconds-valued ones are Go
 durations, `sessions_timebox` is hours, `sms_test_otp` uses `:` where the API uses `=`).
-`testdata/gotrue-env-names.txt` lists every variable GoTrue v2.195.0 reads, generated from the
+`testdata/gotrue-env-names.txt` lists every variable GoTrue v2.197.0 reads, generated from the
 structs of `internal/conf` the way `envconfig` names them (`testdata/genenv`), and a test pins
 every name the schema renders to that list. Regenerate it when `internal/versions/versions.yaml`
 bumps auth:
