@@ -209,12 +209,14 @@ if not m:
 print(m.group(1))
 PY
 }
-# guide NAME [DIR]: runs the guide's block of that name in DIR (default $WORK/hosted).
+# guide NAME [DIR]: runs the guide's block of that name in DIR (default $WORK/hosted). The output is kept in
+# $WORK/guide-NAME-DIR.out (GUIDE_OUT) and printed when the block fails.
 guide() {
-  local block
-  block=$(guide_block "$1") || fail "$block"
-  log "guide: $1"
-  (cd "${2:-$WORK/hosted}" && bash -euo pipefail -c "$block") || fail "the guide's $1 commands failed"
+  local name=$1 dir=${2:-$WORK/hosted} block
+  block=$(guide_block "$name") || fail "docs/guide.md has no block for $name"
+  GUIDE_OUT=$WORK/guide-$name-$(basename "$dir").out
+  log "guide: $name"
+  (cd "$dir" && bash -euo pipefail -c "$block") >"$GUIDE_OUT" 2>&1 || { tail -60 "$GUIDE_OUT" >&2; fail "the guide's $name commands failed"; }
 }
 
 guide jwt-secret
@@ -222,8 +224,8 @@ guide jwt-secret
 guide legacy-keys
 [[ $(<"$WORK/hosted/anon-key.txt") == "$OLD_ANON" && $(<"$WORK/hosted/service-role-key.txt") == "$OLD_SVC" ]] || fail "api-keys?reveal=true did not return the legacy keys"
 host_alias "$NEW_REF"
-guide create >"$WORK/create.out" 2>&1 || { cat "$WORK/create.out" >&2; fail "projects create"; }
-cat "$WORK/create.out" >&2
+guide create
+sed 's/\(db password: *\).*/\1[hidden]/' "$GUIDE_OUT" >&2
 [[ $(project_field "$NEW_REF" 'd["keys"]["jwt_secret"]' --show-keys) == "$HOSTED_SECRET" ]] || fail "the new project has another JWT secret"
 [[ $(project_field "$NEW_REF" 'd["keys"]["anon_key"]' --show-keys) == "$OLD_ANON" ]] || fail "the new project's anon key is not the given one"
 [[ $(project_field "$NEW_REF" 'd["keys"]["service_role_key"]' --show-keys) == "$OLD_SVC" ]] || fail "the new project's service_role key is not the given one"
@@ -255,13 +257,13 @@ for ((i = 0; i < 90; i++)); do
 done
 [[ $(psql "$NEW_DB_URL" -Atc "select to_regclass('storage.objects') is not null") == t ]] || fail "Storage did not set up the new project's schema"
 
-guide dump >"$WORK/dump.out" 2>&1 || { tail -40 "$WORK/dump.out" >&2; fail "supabase db dump"; }
+guide dump
 for f in roles schema data; do [[ -s $WORK/hosted/$f.sql ]] || fail "$f.sql is empty"; done
 grep -q 'CREATE TABLE IF NOT EXISTS "public"."todos"' "$WORK/hosted/schema.sql" || fail "the schema dump has no todos table"
 grep -q 'COPY "public"."todos"' "$WORK/hosted/data.sql" || fail "the data dump has no COPY of todos (--use-copy)"
 grep -q 'COPY "auth"."users"' "$WORK/hosted/data.sql" || fail "the data dump has no Auth users"
 grep -q 'CREATE ROLE "app_user"' "$WORK/hosted/roles.sql" || fail "the role dump has no app_user"
-guide restore >"$WORK/restore.out" 2>&1 || { tail -40 "$WORK/restore.out" >&2; fail "the restore"; }
+guide restore
 
 nq() { psql "$NEW_DB_URL" -Atc "$1"; }
 [[ $(nq 'select count(*) from public.todos') == 10 ]] || fail "rows of todos after the restore"
@@ -277,8 +279,8 @@ guide cron
 nq "alter role app_user with password 'a-new-password-for-app-user'" >/dev/null || fail "setting a role password (step 4)"
 
 # ---- step 5: Storage ---------------------------------------------------------------------------
-guide storage >"$WORK/storage.out" 2>&1 || { cat "$WORK/storage.out" >&2; fail "the Storage loop"; }
-grep -q 'copied avatars/docs/hello world.txt' "$WORK/storage.out" || { cat "$WORK/storage.out" >&2; fail "the Storage loop copied nothing"; }
+guide storage
+grep -q 'copied avatars/docs/hello world.txt' "$GUIDE_OUT" || { cat "$GUIDE_OUT" >&2; fail "the Storage loop copied nothing"; }
 got=$(curl -fsS -m 30 -D "$WORK/storage.headers" -H "apikey: $OLD_SVC" -H "Authorization: Bearer $OLD_SVC" \
   "$NEW_URL/storage/v1/object/authenticated/avatars/docs/hello%20world.txt") || fail "reading the object on the new project"
 [[ $got == 'hello from the hosted project' ]] || fail "the copied object holds '$got'"
@@ -288,7 +290,7 @@ tr -d '\r' <"$WORK/storage.headers" | grep -qi '^content-type: text/plain' || fa
   || fail "the copied object lost its cache control"
 
 # ---- step 7: settings --------------------------------------------------------------------------
-guide settings >"$WORK/settings.out" 2>&1 || { cat "$WORK/settings.out" >&2; fail "the settings loop"; }
+guide settings
 [[ $(papi GET "/v1/projects/$NEW_REF/config/auth" | json_get 'd["site_url"]') == https://app.example.test ]] || fail "site_url was not copied"
 [[ $(papi GET "/v1/projects/$NEW_REF/config/auth" | json_get 'd["uri_allow_list"]') == 'https://app.example.test/**' ]] || fail "uri_allow_list was not copied"
 [[ $(papi GET "/v1/projects/$NEW_REF/postgrest" | json_get 'd["max_rows"]') == 777 ]] || fail "max_rows was not copied"
@@ -327,13 +329,18 @@ for ((i = 0; i < 60; i++)); do
   sleep 2
 done
 psql "$THIRD_DB_URL" -Atc 'select 1' >/dev/null || fail "the pooler does not serve the third project"
+for ((i = 0; i < 90; i++)); do
+  [[ $(psql "$THIRD_DB_URL" -Atc "select to_regclass('storage.objects') is not null") == t ]] && break
+  sleep 2
+done
+[[ $(psql "$THIRD_DB_URL" -Atc "select to_regclass('storage.objects') is not null") == t ]] || fail "Storage did not set up the third project's schema"
 cp -r "$WORK/hosted/supabase" "$WORK/reverse/supabase"
 (
   export OLD_DB_URL=$NEW_DB_URL NEW_DB_URL=$THIRD_DB_URL
-  guide dump "$WORK/reverse" >"$WORK/reverse-dump.out" 2>&1 || { tail -40 "$WORK/reverse-dump.out" >&2; exit 1; }
-  grep -q 'COPY "public"."todos"' "$WORK/reverse/data.sql" || exit 2
-  guide restore "$WORK/reverse" >"$WORK/reverse-restore.out" 2>&1 || { tail -40 "$WORK/reverse-restore.out" >&2; exit 3; }
-) || fail "the reverse direction failed (status $?)"
+  guide dump "$WORK/reverse"
+  grep -q 'COPY "public"."todos"' "$WORK/reverse/data.sql" || fail "the dump of the new project has no todos"
+  guide restore "$WORK/reverse"
+)
 tq() { psql "$THIRD_DB_URL" -Atc "$1"; }
 [[ $(tq 'select count(*) from public.todos') == 10 && $(tq 'select count(*) from auth.users') == 2 && $(tq 'select public.add_numbers(2, 3)') == 5 ]] || fail "the third project does not hold what the second held"
 
