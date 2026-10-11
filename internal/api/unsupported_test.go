@@ -27,12 +27,26 @@ func TestHostedOnlyFeaturesAreRefused(t *testing.T) {
 		{"DELETE", p + "/config/auth/third-party-auth/11111111-2222-4333-8444-555555555555", 404, "not found"},
 		{"POST", "/platform/feedback/send", 400, "open an issue"},
 		{"GET", pp + "/analytics/endpoints/auth.metrics", 400, "supavise logs " + testRef + " --service auth"},
+		// The paused project's Download backups menu: a stub made Studio poll for ever behind a loading toast.
+		{"GET", "/platform/storage/" + testRef + "/archive", 400, "does not build storage archives"},
+		{"POST", "/platform/storage/" + testRef + "/archive", 400, "does not build storage archives"},
+		{"POST", "/platform/database/" + testRef + "/backups/download", 400, "supavise backups list"},
+		{"PUT", "/platform/update-email", 400, "supavise users invite"},
+		// Add-ons other than compute: a stub said "Successfully updated" and nothing changed.
+		{"POST", pp + "/billing/addons", 400, "Point-in-time recovery is included"},
+		{"DELETE", pp + "/billing/addons/pitr_7", 400, "Point-in-time recovery is included"},
+		{"DELETE", p + "/billing/addons/pitr_14", 400, "Point-in-time recovery is included"},
+		{"DELETE", pp + "/billing/addons/cd_default", 400, "Custom domains are included"},
+		{"DELETE", pp + "/billing/addons/something_else", 400, "only the compute size"},
 	}
 	for _, c := range cases {
 		t.Run(c.method+" "+c.path, func(t *testing.T) {
 			var body any
 			if c.method == "PUT" || c.method == "PATCH" || c.method == "POST" {
 				body = map[string]any{}
+				if strings.HasSuffix(c.path, "/billing/addons") {
+					body = map[string]any{"addon_type": "pitr", "addon_variant": "pitr_7"}
+				}
 			}
 			rec := f.do(c.method, c.path, body)
 			if rec.Code != c.status {
@@ -88,7 +102,9 @@ func TestProfileHidesWhatCannotWork(t *testing.T) {
 	for _, d := range prof.DisabledFeatures {
 		have[d] = true
 	}
-	for _, want := range []string{"storage:analytics", "storage:vectors"} {
+	// Hosted's own documents, the deletion request to Supabase's support desk and the project transfer have
+	// nothing behind them on a node (unsupported.go, identity.go).
+	for _, want := range []string{"storage:analytics", "storage:vectors", "organization:show_legal_documents", "profile:show_account_deletion", "projects:transfer"} {
 		if !have[want] {
 			t.Errorf("disabled_features lacks %s", want)
 		}
@@ -96,7 +112,9 @@ func TestProfileHidesWhatCannotWork(t *testing.T) {
 	// Logs and Reports stay: they say what is missing. Third-party Auth stays too: services could accept
 	// a JWKS (PostgREST, Storage and Realtime take one), hosted offers it to every project, and the page
 	// is not unbuildable, so its "Add provider" answers with the reason (unsupported.go) instead of vanishing.
-	for _, keep := range []string{"logs:all", "reports:all", "authentication:third_party_auth"} {
+	// The organization's SSO page works against sso_routes.go (one provider per organization, as Studio's page
+	// assumes), so it is not hidden.
+	for _, keep := range []string{"logs:all", "reports:all", "authentication:third_party_auth", "organization:show_sso_settings"} {
 		if have[keep] {
 			t.Errorf("disabled_features hides %s", keep)
 		}
