@@ -22,6 +22,7 @@ import (
 	"github.com/supavise/supavise/internal/projectconfig"
 	"github.com/supavise/supavise/internal/registry"
 	"github.com/supavise/supavise/internal/replicas"
+	"github.com/supavise/supavise/internal/reqstats"
 	"github.com/supavise/supavise/internal/secrets"
 	"github.com/supavise/supavise/internal/sso"
 )
@@ -115,6 +116,10 @@ type Deps struct {
 	// organization), Audit (registry events on the system project) and Log. A caller sets what it must
 	// provide itself, such as Alert, which internal/app wires to the alerts notifier.
 	OAuth *oauth.Service
+	// Requests holds the counts of the requests the edge proxy served to each project's API
+	// (internal/reqstats); the dashboard's request charts (usage.api-counts, usage.api-requests-count)
+	// are answered from it. Nil: those endpoints say that nothing counts requests here.
+	Requests *reqstats.Counter
 }
 
 // Server is the Management API. It implements http.Handler.
@@ -182,6 +187,9 @@ type Server struct {
 	disk DiskLimits
 	// diskUse caches the size of each project's directory for a few seconds (ref -> diskUse).
 	diskUse sync.Map
+
+	// requests is Deps.Requests (analytics.go).
+	requests *reqstats.Counter
 
 	handler http.Handler
 }
@@ -270,6 +278,7 @@ func NewServer(d Deps) (*Server, error) {
 		hc: d.HTTPClient, now: d.Now, fnHook: d.Functions, pgmetaURL: d.PGMetaURL, upstreamOverride: d.Upstream, createWait: d.CreateWait,
 		pgmetaKeyMu: make(chan struct{}, 1), roEnsured: map[string]readOnlyEnsured{},
 	}
+	s.requests = d.Requests
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
@@ -501,6 +510,7 @@ func (s *Server) implemented() map[string]route {
 	s.routesLogin(add)
 	s.routesHealth(add)
 	s.routesWebhooks(add)
+	s.routesAnalytics(add)
 	// Read replicas and failover: one registration function per file, so that each part of the
 	// work adds its routes without editing this one.
 	s.routesReplicas(add)

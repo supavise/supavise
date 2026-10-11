@@ -280,7 +280,7 @@ func TestStubsMatchSpec(t *testing.T) {
 		}
 	}
 	t.Logf("%d stubbed operations checked", n)
-	if n < 300 {
+	if n < 250 { // the floor drops as operations get handlers; it catches a route table that stopped serving stubs
 		t.Fatalf("only %d stubs were exercised", n)
 	}
 }

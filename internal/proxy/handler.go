@@ -182,6 +182,7 @@ func (s *Server) serveProject(w http.ResponseWriter, r *http.Request, m hostMatc
 		writeJSON(w, http.StatusNotFound, "no Route matched with those values")
 		return
 	}
+	s.countRequest(p.ref, rt, time.Now())
 	if rt.access == accessBlocked {
 		writeText(w, http.StatusForbidden, msgForbidden)
 		return

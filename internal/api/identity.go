@@ -21,6 +21,10 @@ var disabledFeatures = []string{
 	featureReadReplicas, "integrations:vercel", "integrations:aws_private_link", "integrations:partners",
 	"organization:show_sso_settings", "project_addons:dedicated_ipv4_address", "project_addons:show_compute_price",
 	"project_creation:show_high_availability", "project_settings:custom_domains", "project_settings:log_drains",
+	// Iceberg analytics buckets and vector buckets: Storage runs here without the catalog and vector
+	// services behind them (icebergCatalog and vectorBuckets stay off, internal/fleet/storage.go), so
+	// the pages would offer buckets that cannot work. Logs and Reports stay: they say what is missing.
+	"storage:analytics", "storage:vectors",
 }
 
 // featureReadReplicas is the key that hides Studio's read replica screens (the Infrastructure
