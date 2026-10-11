@@ -23,6 +23,7 @@ svc, err := branching.New(branching.Deps{
     Cfg: cfg, Registry: n.Registry, Secrets: n.Secrets,
     Engine: n.Engine,   // *lifecycle.Engine
     Backup: bk,         // optional *backup.Service (app.NewBackupService), with SetManager(n.Engine)
+    Functions: fns,     // optional api.NewBranchFunctions(store, secrets): copies Edge Functions between a branch and its parent
     Log:    log,
 })
 go svc.Run(ctx)                                  // the expiry sweeper

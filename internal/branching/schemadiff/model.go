@@ -153,17 +153,6 @@ func (s *Snapshot) index() map[string]*Object {
 	return m
 }
 
-// Count returns the number of objects of a kind.
-func (s *Snapshot) Count(kind string) int {
-	n := 0
-	for i := range s.Objects {
-		if s.Objects[i].Kind == kind {
-			n++
-		}
-	}
-	return n
-}
-
 // ---- identifiers -----------------------------------------------------------------------
 
 // QuoteIdent quotes a Postgres identifier.

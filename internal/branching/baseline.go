@@ -81,6 +81,17 @@ func (s *Service) baselineFor(ctx context.Context, j *createJob) ([]Migration, e
 		RoleExists:  func(n string) bool { return roles[n] },
 		TableExists: func(key string) bool { return have[key] },
 	})
+	if len(plan.Statements) == 0 {
+		// Never record an empty baseline as the parent's history.
+		if len(plan.Unsupported) > 0 {
+			return nil, fmt.Errorf("the parent's schema could not be turned into a baseline: %s", strings.Join(plan.Unsupported, "; "))
+		}
+		for _, n := range plan.Notes {
+			s.logRun(ctx, "%s", n)
+		}
+		s.logRun(ctx, "nothing of the parent's schema can be carried to the branch: it starts empty")
+		return nil, nil
+	}
 	for _, u := range plan.Unsupported {
 		s.logRun(ctx, "not captured in the baseline: %s", u)
 	}

@@ -138,7 +138,13 @@ type differ struct {
 
 // Diff plans the statements that take a database like from to one like to. A nil snapshot is an
 // empty database.
-func Diff(from, to *Snapshot, opt Options) *Result {
+func Diff(from, to *Snapshot, opt Options) (res *Result) {
+	// A bug in the planner must fail the one operation that hit it, loudly, not take the daemon down.
+	defer func() {
+		if r := recover(); r != nil {
+			res = &Result{Unsupported: []string{fmt.Sprintf("the schema engine failed while planning this change (%v); report it with the schemas involved", r)}}
+		}
+	}()
 	if from == nil {
 		from = &Snapshot{Version: FormatVersion}
 	}
@@ -216,12 +222,13 @@ func setOf(s []string) map[string]bool {
 func describe(o *Object) string {
 	name := o.Name
 	if o.Kind == KindColumn {
-		name = d2(o)
+		name = columnLabel(o)
 	}
 	return o.Kind + " " + name
 }
 
-func d2(o *Object) string {
+// columnLabel names a column as schema.table.column.
+func columnLabel(o *Object) string {
 	s, n := splitKey(o.Key)
 	p := strings.Split(o.Key, "|")
 	if len(p) >= 4 {
@@ -398,7 +405,11 @@ func (d *differ) dropSQL(o *Object) string {
 	case KindTable:
 		return "DROP TABLE " + o.Name
 	case KindColumn:
-		return "ALTER TABLE " + d.fi[o.Parent].Name + " DROP COLUMN " + o.Name
+		p := d.fi[o.Parent]
+		if p == nil {
+			return ""
+		}
+		return "ALTER TABLE " + p.Name + " DROP COLUMN " + o.Name
 	case KindDefault:
 		return "ALTER TABLE " + o.Attr["table"] + " ALTER COLUMN " + o.Name + " DROP DEFAULT"
 	case KindConstraint:
@@ -655,7 +666,7 @@ func (d *differ) createTable(t *Object) []string {
 		kw = "CREATE UNLOGGED TABLE "
 	}
 	var s string
-	if parent := t.Attr["partof"]; parent != "" {
+	if parent := t.Attr["partof"]; parent != "" && d.ti[parent] != nil {
 		s = kw + t.Name + " PARTITION OF " + d.ti[parent].Name + " " + t.Attr["bound"]
 	} else {
 		defs := make([]string, len(cols))
@@ -902,7 +913,7 @@ func (d *differ) columnAlters(f, t *Object) []string {
 		case b["gen"] != "" && d.to.PG >= 170000:
 			out = append(out, pre+"SET EXPRESSION AS ("+b["expr"]+")")
 		default:
-			d.res.Unsupported = append(d.res.Unsupported, "column "+d2(t)+": a generated expression cannot be changed in place here")
+			d.res.Unsupported = append(d.res.Unsupported, "column "+columnLabel(t)+": a generated expression cannot be changed in place here")
 		}
 	}
 	if a["notnull"] != b["notnull"] {
