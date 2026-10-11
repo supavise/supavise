@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/supavise/supavise/internal/backup"
 	"github.com/supavise/supavise/internal/config"
@@ -294,7 +295,7 @@ func TestBranchingConfig(t *testing.T) {
 		ok  bool
 		bad bool
 	}{
-		"default": {"", "168h0m0s", true, false}, "days": {"3d", "72h0m0s", true, false}, "hours": {"36h", "36h0m0s", true, false},
+		"default (hosted: never)": {"", "0s", false, false}, "days": {"3d", "72h0m0s", true, false}, "hours": {"36h", "36h0m0s", true, false},
 		"off": {"off", "0s", false, false}, "zero": {"0", "0s", false, false}, "junk": {"soon", "", false, true}, "neg": {"-1h", "", false, true},
 	}
 	for name, c := range cases {
@@ -303,11 +304,42 @@ func TestBranchingConfig(t *testing.T) {
 			t.Errorf("%s: %v %v %v", name, d, ok, err)
 		}
 	}
+	idle := map[string]struct {
+		v   string
+		d   string
+		ok  bool
+		bad bool
+	}{
+		"default": {"", "30m0s", true, false}, "minutes": {"45m", "45m0s", true, false}, "seconds": {"5s", "5s", true, false},
+		"days": {"1d", "24h0m0s", true, false}, "off": {"off", "0s", false, false}, "zero": {"0", "0s", false, false},
+		"junk": {"soon", "", false, true}, "neg": {"-5m", "", false, true},
+	}
+	for name, c := range idle {
+		d, ok, err := config.Branching{IdlePauseAfter: c.v}.IdlePause()
+		if (err != nil) != c.bad || (!c.bad && (d.String() != c.d || ok != c.ok)) {
+			t.Errorf("idle %s: %v %v %v", name, d, ok, err)
+		}
+	}
+	if got := (config.Branching{}).IdleWakeTimeout(); got != time.Minute {
+		t.Errorf("wake timeout default = %v", got)
+	}
+	if got := (config.Branching{ExpiryWarningHours: 6}).ExpiryWarning(); got != 6*time.Hour {
+		t.Errorf("expiry warning = %v", got)
+	}
 	cfg := config.Default()
 	cfg.Branching.DefaultTTL = "soon"
 	if err := cfg.Validate(); err == nil {
 		t.Error("bad ttl accepted by Validate")
 	}
+	cfg.Branching.DefaultTTL, cfg.Branching.IdlePauseAfter = "", "soon"
+	if err := cfg.Validate(); err == nil {
+		t.Error("bad idle_pause_after accepted by Validate")
+	}
+	cfg.Branching.IdlePauseAfter, cfg.Branching.IdleWakeTimeoutSeconds = "", -1
+	if err := cfg.Validate(); err == nil {
+		t.Error("negative wake timeout accepted by Validate")
+	}
+	cfg.Branching.IdleWakeTimeoutSeconds = 0
 	cfg.Branching.DefaultTTL, cfg.Branching.Clone = "", "magic"
 	if err := cfg.Validate(); err == nil {
 		t.Error("bad clone mode accepted by Validate")
