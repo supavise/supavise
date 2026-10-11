@@ -449,6 +449,7 @@ var authzMCPCalls = []string{
 	"GET /v1/projects/{ref}/analytics/endpoints/logs.all",
 	"GET /v1/projects/{ref}/advisors/security",
 	"GET /v1/projects/{ref}/advisors/performance",
+	"POST /v2/projects/{ref}/advisors/run", // get_advisors with type health
 	"GET /v1/projects/{ref}/api-keys",
 	"GET /v1/projects/{ref}/api-keys/legacy",
 	"GET /v1/projects/{ref}/types/typescript",
@@ -495,7 +496,7 @@ func TestMCPCallsAreCoveredByAdvertisedScopes(t *testing.T) { // U2
 			t.Errorf("%s is advertised but no call of the MCP server needs it", s)
 		}
 	}
-	if n := len(authzMCPCalls); n != 31 {
+	if n := len(authzMCPCalls); n != 32 {
 		t.Errorf("the list holds %d calls; update it together with the MCP server's tools and this count", n)
 	}
 }

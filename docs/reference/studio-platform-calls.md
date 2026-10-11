@@ -177,11 +177,29 @@ These are the documented routes for which an empty stub is not enough: the page 
 | P1 | GET | `/v1/projects/{ref}/functions/{function_slug}` | 200 `FunctionSlugResponse_Output` |
 | P1 | PATCH | `/v1/projects/{ref}/functions/{function_slug}` | 200 `FunctionSlugResponse_Output` |
 | P1 | DELETE | `/v1/projects/{ref}/functions/{function_slug}` | 200 no body |
+| P1 | GET | `/platform/projects/{ref}/notifications/advisor/exceptions` | 200 `ListNotificationExceptionsResponse_Output`; the Advisor Rules page, a feature preview (see Advisors) |
+| P1 | POST | `/platform/projects/{ref}/notifications/advisor/exceptions` | 201 `CreateNotificationExceptionsResponse_Output`; Studio then reads `run-lints` again, so the rule must already hide its lints |
+| P1 | DELETE | `/platform/projects/{ref}/notifications/advisor/exceptions` | 200 no body; the rule ids are the comma-separated `ids` query |
+| P1 | PATCH | `/platform/projects/{ref}/notifications/advisor/exceptions/{id}` | 200 no body |
+| P1 | GET | `/platform/projects/{ref}/run-lints` | 200 array of `GetProjectLintsResponse_Output` items: every lint, both categories (see Advisors) |
 | P1 | GET | `/v1/projects/{ref}/functions/{function_slug}/body` | 200 `StreamableFile` |
+| P1 | GET | `/v1/projects/{ref}/advisors/performance` | 200 `V1ProjectAdvisorsResponse_Output`; the CLI and the MCP server, not Studio |
+| P1 | GET | `/v1/projects/{ref}/advisors/security` | 200 `V1ProjectAdvisorsResponse_Output`; the same |
 | P1 | GET | `/v1/projects/{ref}/secrets` | 200 array of `SecretResponse_Output` (requires `name`, `value`) |
 | P1 | POST | `/v1/projects/{ref}/secrets` | 201 no body |
 | P1 | DELETE | `/v1/projects/{ref}/secrets` | 200 no body |
 | P1 | GET | `/v1/projects/{ref}/types/typescript` | 200 `TypescriptResponse_Output` |
+| P1 | POST | `/v2/projects/{ref}/advisors/run` | 200 `V2ProjectAdvisorsResponse_Output`; Studio sends it for the health advisor only when its `healthAdvisor` flag is on, and the MCP server for `get_advisors` with type `health` |
+
+## Advisors
+
+The Security Advisor, the Performance Advisor, the advisor panel and the project home widget, the table editor's RLS badge and Studio's "project needs securing" banner all read `GET /platform/projects/{ref}/run-lints` (`data/lint/lint-query.ts`). Studio filters the array itself: a page keeps the lints whose `categories` include `SECURITY` or `PERFORMANCE`, groups them by `level`, and picks the selected one by `cache_key`, so the answer carries every lint of both categories. Studio runs the same lints in its own self-hosted mode (`lib/api/self-hosted/lints.ts`, `getLintsSQL` of `packages/pg-meta`, as `supabase_admin`, with `PGRST_DB_SCHEMAS` as `pgrst.db_schemas`), which is where Supavise's SQL comes from (`internal/advisors/README.md`).
+
+- **Names outside the spec.** The lint `name` enum of `GetProjectLintsResponse_Output` is shorter than what hosted returns (its own recorded `auth_db_connections_absolute`) and than the names Studio's `lintInfoMap` knows (`sensitive_columns_exposed`, `rls_policy_always_true`, `public_bucket_allows_listing`, the GraphQL exposure lints and the two security-definer-function lints). The CLI reads `name` as a plain string and Studio does not check it, so Supavise returns the names it has. Four lints of the vendored SQL are in neither the enum nor `lintInfoMap`: `table_bloat`, `fkey_to_auth_unique`, `extension_versions_outdated` and `insecure_queue_exposed_in_api`. Studio lists their rows without a type title, and its detail panel says "Unknown", as it does for its own self-hosted runner at this commit. Supavise keeps them because they are findings, one of them an error.
+- **`metadata`.** Studio reads `metadata.schema` and `metadata.name` to link a lint to its object, and `metadata.bucket_id` for `public_bucket_allows_listing`; the rows keep their whole `metadata`.
+- **Lints from the Auth settings.** Hosted adds a few findings computed from the project's configuration to the same answer; the CLI's recorded response of a new project (v2.120.0) holds `auth_db_connections_absolute` (INFO, `PERFORMANCE`, `metadata` `{"type": "auth", "entity": "Auth"}`) and no security finding, although `password_hibp_enabled` and every MFA method are off. Supavise reports `auth_db_connections_absolute` and `auth_otp_long_expiry`. It does not report `auth_leaked_password_protection` or `auth_insufficient_mfa_options`, because nothing recorded says what triggers them, nor the compliance lints of the spec's name list (`ssl_not_enforced`, `log_connections_not_enabled`, `network_restrictions_not_set`, `pitr_not_enabled` and the others; `internal/advisors/config.go` gives the reason for each). A new Supavise project starts at `mailer_otp_exp` 86400 and `db_max_pool_size` 5, where a new hosted project starts at 3600 and 10, so it also answers `auth_otp_long_expiry`.
+- **Health lints.** `POST /v2/projects/{ref}/advisors/run` asks for lints by name (1 to 10). `useProjectHealthLintsQuery` drops `project_not_active` and `advisor_check_unavailable` from what it shows, and so does the MCP server, which is how Supavise answers the checks it cannot run.
+- **Advisor Rules.** The "Disable Advisor rules" feature preview lists, creates, edits and deletes `notifications/advisor/exceptions`. Studio sends `{"lint_name": ..., "is_disabled": true}` with no member for a rule of the whole project, and reads `run-lints` again afterwards. A GET answers `{"exceptions": []}` when nothing is set; every field of a rule except `id`, `project_ref`, `is_disabled`, `last_updated_by` and `inserted_at` is null when unset.
 
 ## Read replicas
 

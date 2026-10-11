@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/supavise/supavise/internal/advisors"
 	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/diskquota"
@@ -153,6 +154,10 @@ type Server struct {
 	studioMu      sync.Mutex
 
 	fnHook FunctionsHook
+
+	// advisorRunner runs the lint SQL of the Security and Performance Advisors (advisors.go); its
+	// zero value is usable.
+	advisorRunner advisors.Runner
 
 	pgmetaURL        string
 	upstreamOverride func(p *registry.Project, svc string) string
@@ -498,6 +503,7 @@ func (s *Server) implemented() map[string]route {
 	s.routesKeys(add)
 	s.routesConfig(add)
 	s.routesDatabase(add)
+	s.routesAdvisors(add)
 	s.routesFunctions(add)
 	s.routesPlatformProject(add)
 	s.routesBackups(add)

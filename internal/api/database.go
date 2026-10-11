@@ -23,8 +23,6 @@ func (s *Server) routesDatabase(add func(string, handlerFunc)) {
 	add("GET /v1/projects/{ref}/types/typescript", s.typescriptTypes)
 	add("POST /v1/projects/{ref}/cli/login-role", s.createLoginRole)
 	add("DELETE /v1/projects/{ref}/cli/login-role", s.deleteLoginRoles)
-	add("GET /v1/projects/{ref}/advisors/security", s.advisors)
-	add("GET /v1/projects/{ref}/advisors/performance", s.advisors)
 	add("GET /v1/projects/{ref}/secrets", s.listSecrets)
 	add("POST /v1/projects/{ref}/secrets", s.createSecrets)
 	add("DELETE /v1/projects/{ref}/secrets", s.deleteSecrets)
@@ -83,6 +81,9 @@ func (s *Server) dbQuery(readOnlyRoute bool) handlerFunc {
 		}
 		if err != nil {
 			return err
+		}
+		if role != roleReadOnly && mayChangeSchema([]byte(in.Query)) {
+			s.invalidateAdvisors(p.Ref)
 		}
 		writeRaw(w, http.StatusCreated, "application/json", rows)
 		return nil
@@ -192,6 +193,7 @@ select greatest(to_char(now() at time zone 'utc', 'YYYYMMDDHH24MISS')::bigint,
 		}
 		return err
 	}
+	s.invalidateAdvisors(p.Ref)
 	w.WriteHeader(http.StatusOK)
 	return nil
 }
@@ -334,16 +336,6 @@ end $$;`
 		return err
 	}
 	writeJSON(w, http.StatusOK, &v1.DeleteRolesResponseOutput{Message: v1.DeleteRolesResponseOutputMessageOk})
-	return nil
-}
-
-// advisors reports no lints: the security and performance advisors of the hosted
-// platform run Supabase's splinter queries, which supavise does not run yet.
-func (s *Server) advisors(w http.ResponseWriter, r *http.Request) error {
-	if _, err := s.loadProject(r.Context(), r.PathValue("ref")); err != nil {
-		return err
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"lints": []any{}})
 	return nil
 }
 

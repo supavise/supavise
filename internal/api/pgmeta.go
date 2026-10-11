@@ -307,12 +307,25 @@ func (s *Server) pgmetaProxy(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	body := http.MaxBytesReader(w, r.Body, maxBody)
+	var body io.Reader = http.MaxBytesReader(w, r.Body, maxBody)
+	// Studio makes every change through POST /query. The advisors read the schema, so a statement
+	// that may change it makes them look again.
+	schemaChange := false
+	if r.Method == http.MethodPost && rest == "/query" {
+		b, err := io.ReadAll(body)
+		if err != nil {
+			return err
+		}
+		schemaChange, body = mayChangeSchemaBody(b), bytes.NewReader(b)
+	}
 	resp, err := s.pgmetaDoOn(r.Context(), replica, ref, role, false, r.Method, rest, r.URL.RawQuery, body, r.Header)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	if schemaChange && resp.StatusCode < 300 {
+		s.invalidateAdvisors(ref)
+	}
 	for _, h := range []string{"Content-Type", "Content-Length"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
