@@ -346,6 +346,11 @@ func (s *Service) projectMeta(ctx context.Context, p *registry.Project) (*Manife
 		}
 		mp.OrgSlug = o.Slug
 	}
+	if st := registry.DataAPIOf(s.opt.Registry); st != nil {
+		if d, err := st.GetDataAPI(ctx, p.Ref); err == nil {
+			mp.DefaultPrivileges = string(d.DefaultPrivileges)
+		}
+	}
 	return mp, nil
 }
 

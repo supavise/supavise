@@ -291,6 +291,7 @@ func (s *Service) restoreAsNew(ctx context.Context, plan *RestorePlan, src *secr
 	if mp := plan.Manifest.Project; mp != nil {
 		req.Name = mp.Name + " (restored)"
 		req.OrgSlug, req.Region, req.Class = mp.OrgSlug, mp.Region, mp.Class
+		req.DataAPI.CopyChoice = registry.DefaultPrivileges(mp.DefaultPrivileges)
 		if !lifecycle.StandardLimits(mp.Class, mp.Limits) {
 			// Hand-set limits stay; the standard ones follow the size, which an earlier version's
 			// manifest may name differently from what its limits were.

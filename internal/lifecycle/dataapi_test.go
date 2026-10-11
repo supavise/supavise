@@ -175,6 +175,15 @@ func TestSeededCreateCopiesTheSourceDecision(t *testing.T) {
 	if got := h.dp.ran(); len(got) != 0 {
 		t.Fatalf("a seeded create ran %v", got)
 	}
+	// A source that is gone but whose backup remembered the decision still passes it on.
+	remembered, err := h.e.Create(ctx, CreateRequest{Name: "remembered", Seed: seed, Keys: keys,
+		DataAPI: DataAPIOptions{CopyFrom: "yyyyyyyyyyyyyyyyyyyy", CopyChoice: registry.PrivilegesGranted}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := choiceOf(t, h.reg, remembered.Ref); d.DefaultPrivileges != registry.PrivilegesGranted || d.Source != registry.DataAPICopy {
+		t.Fatalf("choice = %+v", d)
+	}
 	// A source with nothing recorded (a project from before, or a deleted one) leaves the copy to the next pass.
 	other, err := h.e.Create(ctx, CreateRequest{Name: "other", Seed: seed, Keys: keys, DataAPI: DataAPIOptions{CopyFrom: "zzzzzzzzzzzzzzzzzzzz"}})
 	if err != nil {

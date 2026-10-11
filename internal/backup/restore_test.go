@@ -173,7 +173,7 @@ func (e *testEnv) storeBase(t *testing.T, ref, src string, stop time.Time, keys 
 	m := Manifest{Version: manifestVersion, ID: backupID(stop.Add(-time.Minute)), Ref: ref, Reason: ReasonManual, Timeline: 1,
 		StartLSN: "0/2000028", StopLSN: "0/2000100", StartWAL: walName(1, 2), StopWAL: walName(1, 2),
 		StartTime: stop.Add(-time.Minute), StopTime: stop, Data: dataName,
-		Project: &ManifestProject{Name: "src project", Region: "local"}}
+		Project: &ManifestProject{Name: "src project", Region: "local", DefaultPrivileges: e.defaultPrivileges}}
 	if _, err := e.svc.streamTar(ctx, m.Dir()+"/"+dataName, func(tw *tar.Writer) error {
 		if _, err := writeDataDirTar(ctx, src, tw); err != nil {
 			return err
@@ -513,5 +513,33 @@ func TestSourceKeysNeedsDatabaseCredentials(t *testing.T) {
 	e.svc.opt.Secrets = other
 	if _, err := e.svc.sourceKeys(ctx, &m); err == nil || !strings.Contains(err.Error(), "master key") {
 		t.Fatalf("wrong master key = %v", err)
+	}
+}
+
+// A restore as new of a project the registry no longer knows still gets the decision the backup remembers.
+func TestRestoreAsNewTakesTheDecisionOfTheManifest(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	src := e.addProject(t, testRef)
+	if err := e.reg.PutDataAPI(ctx, registry.DataAPI{Ref: testRef, DefaultPrivileges: registry.PrivilegesGranted}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := e.reg.GetProject(ctx, testRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mp, err := e.svc.projectMeta(ctx, p)
+	if err != nil || mp.DefaultPrivileges != "granted" {
+		t.Fatalf("the manifest of a base backup: %+v, %v", mp, err)
+	}
+	e.defaultPrivileges = "granted"
+	e.storeBase(t, testRef, fakeDataDir(t), e.now.Add(-time.Hour), src)
+	fm := &fakeManager{e: e, dataDir: filepath.Join(t.TempDir(), "restored")}
+	e.svc.opt.Manager = fm
+	if _, err := e.svc.RestoreWith(ctx, testRef, e.now.Add(-time.Minute), testRef2, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fm.created[0].DataAPI; got.CopyFrom != testRef || got.CopyChoice != registry.PrivilegesGranted {
+		t.Fatalf("DataAPI = %+v", got)
 	}
 }
