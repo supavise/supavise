@@ -28,9 +28,11 @@ defaults:
   run:
     shell: bash
 
-# A newer push to a branch cancels that branch's older run; main keeps every run (the release gate reads them).
+# A newer push to a branch cancels that branch's older run. On main each commit has a group of its own, so that no push, nightly
+# or manual run is cancelled by a newer one (GitHub cancels a run that is still pending when another of its group arrives, even
+# with cancel-in-progress off) and the release gate (deploy/release-gate.sh) finds a finished run on whichever commit is tagged.
 concurrency:
-  group: studio-crawl-${{ github.ref }}
+  group: studio-crawl-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
