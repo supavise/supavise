@@ -198,8 +198,8 @@
   },
   {
    "op": "GET /platform/notifications",
-   "reach": "crawl",
-   "reason": "Studio's notification panel asks on every page; a node has no notifications, and the stub's empty answer says so."
+   "reach": "static",
+   "reason": "Studio's notification panel asks when it is opened; a node has no notifications, and the stub's empty answer says so."
   },
   {
    "op": "PATCH /platform/notifications",

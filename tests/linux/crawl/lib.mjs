@@ -282,6 +282,8 @@ const READ_POSTS = [
   /^\/v2\/projects\/[^/]+\/advisors\/run$/,
   /^\/platform\/auth\/[^/]+\/validate\/spam$/,
   /^\/platform\/projects\/[^/]+\/health$/,
+  // the sign-in form posts the login event after every sign-in; the crawl signs in once per context
+  /^\/platform\/profile\/audit-login$/,
 ]
 
 // guardVerdict: 'allow' for a call that cannot change state, otherwise 'abort'. postData is the request body.
