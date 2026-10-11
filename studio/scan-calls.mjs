@@ -20,8 +20,9 @@
 //     /platform, /v1 or /v2 (the method comes from the `method` member of the options, GET without one).
 // The first argument is resolved to a path when it is a string, a template literal (a `${x}` becomes {x}), a
 // conditional (both branches, with IS_PLATFORM folded to true), a sum of strings, or a const of this file or a
-// member of a const object of this file. A path that cannot be resolved (a parameter, a call) goes to
-// `unresolved`, and the runtime crawl (tests/linux/crawl) is the authority on it. A leading ${API_URL} is the
+// member of a const object of this file. A path that cannot be resolved (a parameter, a call, or more than 16
+// different strings from the alternatives of its parts) goes to `unresolved`, and the runtime crawl
+// (tests/linux/crawl) is the authority on it. A leading ${API_URL} is the
 // /platform prefix of the platform build. Strings that look like an API path and are not the argument of a
 // call go to `mentions`, so a wrapper the scan does not know shows up there and not nowhere.
 import { execFileSync } from 'node:child_process'
@@ -177,11 +178,20 @@ function fold(n) {
   return null
 }
 
+// cross: every string of a followed by every string of b, or null when that is more than MAX_VALUES different strings. A path
+// built from that many alternatives is not fixed by the source, and cutting the list would drop calls without a trace, so
+// the caller reports the call as unresolved (the crawl is the authority on it). capHit counts the overflows so that a call
+// site can tell "the source does not fix it" from "it has too many alternatives".
 const MAX_VALUES = 16
+let capHit = 0
 function cross(a, b) {
-  const out = []
-  for (const x of a) for (const y of b) out.push(x + y)
-  return out.length > MAX_VALUES ? out.slice(0, MAX_VALUES) : out
+  const out = new Set()
+  for (const x of a) for (const y of b) out.add(x + y)
+  if (out.size > MAX_VALUES) {
+    capHit++
+    return null
+  }
+  return [...out]
 }
 
 function placeholder(expr) {
@@ -326,7 +336,8 @@ class Project {
       for (const span of n.templateSpans) {
         const inner = this.resolve(span.expression, depth + 1, seen)
         acc = cross(acc, inner ?? [placeholder(span.expression)])
-        acc = cross(acc, [span.literal.text])
+        if (acc) acc = cross(acc, [span.literal.text])
+        if (!acc) return null
       }
       return acc
     }
@@ -527,7 +538,9 @@ function scanFile(project, scope, out) {
       const info = methodFor(n)
       if (info && n.arguments.length > 0) {
         const arg = n.arguments[0]
+        const capBefore = capHit
         const values = project.resolve(arg)
+        const capped = capHit !== capBefore
         const paths = values ? [...new Set(values.map(toPath).filter(Boolean))] : []
         const method = info.form === 'fetch' ? optionMethod(n) : info.method
         if (paths.length > 0 && method) {
@@ -541,7 +554,7 @@ function scanFile(project, scope, out) {
             mark(arg)
             out.unresolved.push({ file: rel, line: lineOf(n), method: info.method, arg: argText(arg), candidates: values ? [...new Set(values)].sort() : [] })
           }
-        } else if (!values && /API_URL/.test(argText(arg))) {
+        } else if (!values && (capped || /API_URL/.test(argText(arg)))) {
           out.unresolved.push({ file: rel, line: lineOf(n), method: method ?? '?', arg: argText(arg), candidates: [] })
         }
       }

@@ -69,6 +69,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --no-audit --no-fund --prefix studio/scan
+      - run: node --test studio/scan/scan.test.mjs
       - run: node studio/scan-calls.mjs --fetch --check
 
   # The logic of the crawl (routes, allow-list, mutation guard, report) and the shape of its files, without a node.
