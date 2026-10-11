@@ -264,9 +264,10 @@ type Result struct {
 // metadata is missing. An attribute with no source is zero in every row, and listed in Errors
 // with its reason unless the metric is not applicable here (iowait). An attribute that is not in
 // the catalog is treated the same way, with a reason that names it. missing, when not empty,
-// replaces the reason of every attribute that no row carries a value of (the read replicas,
-// which have nothing but their lag). The lag of a primary is the one attribute that has no point
-// at all, and a row that holds none of the attributes asked for is dropped.
+// replaces the reason of every attribute but the lag that no row carries a value of (the read
+// replicas, which have nothing but their lag). The lag with no sample, of a primary or of a replica
+// that has not reported yet, is the one attribute that has no point at all, and a row that holds
+// none of the attributes asked for is dropped.
 func Assemble(attrs []string, rows []Row, missing string) Result {
 	res := Result{Series: map[string]Meta{}, Errors: map[string]string{}}
 	for _, name := range attrs {
@@ -283,9 +284,10 @@ func Assemble(attrs []string, rows []Row, missing string) Result {
 		case !known:
 			res.Errors[name], fill = "Supavise does not know the attribute "+name, true
 		case has:
+		case name == LagAttribute:
+			// No samples yet: no point and no error, whether this is a primary or a replica.
 		case missing != "":
 			res.Errors[name], fill = missing, true
-		case name == LagAttribute:
 		case a.val == nil && a.why != "":
 			res.Errors[name], fill = a.why, true
 		case a.zero:

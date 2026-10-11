@@ -46,13 +46,15 @@ var infraIntervals = map[string]time.Duration{
 }
 
 // infraAttributes are the attributes a request names: attributes (repeated, with or without the
-// brackets, or comma-separated) and the older single attribute.
+// brackets, or comma-separated) and the older single attribute, each once.
 func infraAttributes(r *http.Request) []string {
 	var out []string
+	seen := map[string]bool{}
 	q := r.URL.Query()
 	for _, v := range slices.Concat(q["attributes"], q["attributes[]"], q["attribute"]) {
 		for _, a := range strings.Split(v, ",") {
-			if a = strings.TrimSpace(a); a != "" && !slices.Contains(out, a) {
+			if a = strings.TrimSpace(a); a != "" && !seen[a] {
+				seen[a] = true
 				out = append(out, a)
 			}
 		}
@@ -68,6 +70,15 @@ func (s *Server) infraMonitoring(w http.ResponseWriter, r *http.Request) error {
 	attrs := infraAttributes(r)
 	if len(attrs) == 0 {
 		return errf(http.StatusBadRequest, "attributes is required: name at least one metric")
+	}
+	// Hosted accepts the names of its enum and refuses the rest; so does this route, which also
+	// keeps a request from making the response as large as its query string allows.
+	if i := slices.IndexFunc(attrs, func(a string) bool { return !metrics.Known(a) }); i >= 0 {
+		name := attrs[i]
+		if len(name) > 64 {
+			name = name[:64] + "..."
+		}
+		return errf(http.StatusBadRequest, "attributes must be metric names Supavise knows: %q is not one", name)
 	}
 	q := r.URL.Query()
 	start, err1 := time.Parse(time.RFC3339, q.Get("startDate"))

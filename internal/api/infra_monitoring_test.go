@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -312,7 +313,7 @@ func TestInfraMonitoringSingleAttributeShape(t *testing.T) {
 // attribute and no points.
 func TestInfraMonitoringWithoutHistory(t *testing.T) {
 	f := newFixture(t)
-	attrs := []string{"cpu_usage_busy_user", "network_receive_bytes", "no_such_attribute"}
+	attrs := []string{"cpu_usage_busy_user", "network_receive_bytes", "realtime_channel_joins"}
 	for _, withCollector := range []bool{false, true} {
 		if withCollector {
 			f.srv.metrics = metrics.New(metrics.Options{Cfg: f.cfg, Projects: f.reg, Store: metrics.NewStore(t.TempDir())})
@@ -328,18 +329,39 @@ func TestInfraMonitoringWithoutHistory(t *testing.T) {
 	}
 }
 
-// A name the catalog does not know is answered with a series and an error, not refused: the chart
-// that asked still draws.
+// A name the catalog does not know is refused, as hosted refuses a name outside its enum, and a
+// request that names thousands of them is refused before anything is built for them: the answer
+// has a series entry per name and a value per name and row, so its size follows the request's.
 func TestInfraMonitoringUnknownAttribute(t *testing.T) {
+	repeated := func(q url.Values, names []string) url.Values { q["attributes"] = names; return q }
 	f := newFixture(t)
 	f.withMetrics(t, healthyProject)
 	rec := f.do("GET", infraPath(metricsQuery("1m", "cpu_usage", "brand_new_metric")), nil)
-	var got multiBody
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != 200 {
-		t.Fatalf("%d %v: %s", rec.Code, err, rec.Body)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "brand_new_metric") {
+		t.Fatalf("one unknown name: %d %s", rec.Code, rec.Body)
 	}
-	if _, ok := got.Series["brand_new_metric"]; !ok || !strings.Contains(got.Errors["brand_new_metric"].Message, "brand_new_metric") || got.Data[0].Values["brand_new_metric"] != "0" {
-		t.Fatalf("%s", rec.Body)
+	names := make([]string, 0, 1000)
+	for i := 0; i < cap(names); i++ {
+		names = append(names, fmt.Sprintf("made_up_metric_%d", i))
+	}
+	for name, q := range map[string]url.Values{
+		"repeated":      repeated(metricsQuery("1m"), names),
+		"comma list":    metricsQuery("1m", strings.Join(names, ",")),
+		"known + 1000":  metricsQuery("1m", append([]string{"cpu_usage"}, names...)...),
+		"single (old)":  url.Values{"attribute": {names[0]}, "startDate": {"2026-10-08T00:00:00Z"}, "endDate": {"2026-10-08T01:00:00Z"}},
+		"very long one": metricsQuery("1m", strings.Repeat("x", 5000)),
+	} {
+		rec := f.do("GET", infraPath(q), nil)
+		if rec.Code != 400 || rec.Body.Len() > 1000 {
+			t.Errorf("%s: %d, %d bytes: %.200s", name, rec.Code, rec.Body.Len(), rec.Body)
+		}
+	}
+	// Every name the catalog has is accepted at once, and a repeated name counts once.
+	all := metrics.Attributes()
+	rec = f.do("GET", infraPath(metricsQuery("1m", append(all, all...)...)), nil)
+	var got multiBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != 200 || len(got.Series) != len(all) {
+		t.Fatalf("every attribute: %d %v, %d series: %.300s", rec.Code, err, len(got.Series), rec.Body)
 	}
 }
 
