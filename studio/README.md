@@ -48,7 +48,7 @@ The upstream dotenv file is not shipped; configuration is environment only.
 | `OPENAI_BASE_URL` | no | The root of an OpenAI-compatible API, for example `https://openrouter.ai/api/v1` or `http://127.0.0.1:11434/v1`. Default OpenAI's. Must not be empty when set. Maps from `[studio.ai] base_url`. |
 | `SUPAVISE_AI_MODEL` | no | The model of the Assistant's chat. Replaces the three OpenAI names upstream fixes in code, and the model picker shows it (patch 0006). Maps from `[studio.ai] model`. |
 | `SUPAVISE_AI_COMPLETION_MODEL` | no | The model of the small calls (titles, filters, cron and policy suggestions, inline completion). Default `SUPAVISE_AI_MODEL`. |
-| `SUPAVISE_AI_API` | no | `chat` sends `/chat/completions`, which every gateway offers; anything else keeps upstream's `/responses`. Supavise sets `chat` whenever `OPENAI_BASE_URL` is set. |
+| `SUPAVISE_AI_API` | no | `chat` sends `/chat/completions`, which every gateway offers; anything else keeps upstream's `/responses`. Supavise sets `chat` when `OPENAI_BASE_URL` is set, unless `[studio.ai] api` is `responses`. |
 | `SUPAVISE_AI_REASONING_EFFORT` | no | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`, sent with every request. A model named by the variables above gets no effort otherwise. |
 | `SUPAVISE_STUDIO_SKIP_RUNTIME_CONFIG=1` | no | Start without substitution (debugging). |
 

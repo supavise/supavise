@@ -25,7 +25,7 @@ Supabase never open-sourced the management API, the per-machine agent or the edg
 | `supavise-realtime` | 1 | tenants by first host label |
 | `supavise-storage` | 1 | `MULTI_TENANT=true`, tenants by `x-forwarded-host`, file backend or S3 |
 | `supavise-pgmeta` | 1 | stateless; per-request encrypted connection string from `supavise` |
-| `supavise-studio` | 1 | our build of the upstream tag; platform mode, four small patches; it also serves the remote MCP route behind `api.<domain>/mcp` (section 13) |
+| `supavise-studio` | 1 | our build of the upstream tag; platform mode, small patches (section 10); it also serves the remote MCP route behind `api.<domain>/mcp` (section 13) |
 | `supavise-postgres@<ref>` | per project | the project's cluster, full extension set, own Vault key |
 | `supavise-gotrue@<ref>` | per project | about 12 MB |
 | `supavise-postgrest@<ref>` | per project | about 9 MB |
@@ -59,7 +59,7 @@ Creation takes well under a minute. Delete is the reverse, with a final base bac
 
 | Tool | How it connects | Patch needed |
 |---|---|---|
-| Studio | our platform-mode build; `NEXT_PUBLIC_API_URL` = `supavise`; sign-in via `supavise-gotrue@system` | three upstreamable patches: hCaptcha only with a site key, env-overridable `dashboard_auth:*` flags, extra project hosts in CSP; and a fourth that only Supavise needs, which serves Studio's MCP route in platform mode (section 13.5) |
+| Studio | our platform-mode build; `NEXT_PUBLIC_API_URL` = `supavise`; sign-in via `supavise-gotrue@system` | three upstreamable patches: hCaptcha only with a site key, env-overridable `dashboard_auth:*` flags, extra project hosts in CSP; and the patches that only Supavise needs: one serves Studio's MCP route in platform mode (section 13.5), one points the AI features at the operator's model provider (section 10) |
 | Supabase CLI | `--profile` file written by `supavise` with `api_url`, `dashboard_url`, `project_host`, `pooler_host`; PATs in `sbp_` format | none |
 | Supabase MCP server (stdio) | `--api-url`; project-URL and logs-dialect overrides | none |
 | Remote MCP clients: Claude Code, Cursor, VS Code, Codex, Claude desktop | `https://api.<domain>/mcp?project_ref=<ref>`; OAuth 2.1 sign-in (section 13) | none on the client |
@@ -84,7 +84,7 @@ Laptops are not a target: `supabase start --runtime native` covers local develop
 
 ## 8. Staying in sync
 
-`internal/versions/versions.yaml` pins every artifact release and the Studio tag; a nightly job opens a bump pull request per newer upstream release, and the conformance suite (two projects, the upstream client test suites, Studio smoke tests) gates it. The four Studio patches are rebased on each tag by the Studio build; the first three are general fixes Supabase could take upstream (none has been submitted), and the fourth is specific to Supavise (section 13.5). A nightly job diffs the `v1`, `v2` and `platform` OpenAPI specs against the server. Projects upgrade one at a time with per-project version pinning (`internal/lifecycle/README.md`, "Service versions and project upgrades"). The jobs are listed in [development.md](development.md).
+`internal/versions/versions.yaml` pins every artifact release and the Studio tag; a nightly job opens a bump pull request per newer upstream release, and the conformance suite (two projects, the upstream client test suites, Studio smoke tests) gates it. The Studio patches are rebased on each tag by the Studio build; the first three are general fixes Supabase could take upstream (none has been submitted), and the others are specific to Supavise (section 13.5 and the rows of section 10). A nightly job diffs the `v1`, `v2` and `platform` OpenAPI specs against the server. Projects upgrade one at a time with per-project version pinning (`internal/lifecycle/README.md`, "Service versions and project upgrades"). The jobs are listed in [development.md](development.md).
 
 ## 9. In v1 and reserved
 
