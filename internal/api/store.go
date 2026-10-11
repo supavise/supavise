@@ -61,6 +61,17 @@ type Store interface {
 	CreateFolder(ctx context.Context, f *ContentFolder) error
 	RenameFolder(ctx context.Context, ref, id, name string) error
 	DeleteFolders(ctx context.Context, ref string, ids []string) error
+
+	// FunctionFileHashes returns, per slug, the SHA-256 of each stored file of the project's
+	// functions (slugs nil: all of them), without reading the file bodies out of the store. It is
+	// how a function's digest is made (functionDigest).
+	FunctionFileHashes(ctx context.Context, ref string, slugs []string) (map[string][]FunctionFileHash, error)
+}
+
+// FunctionFileHash is the SHA-256 (lowercase hex) of one stored function file.
+type FunctionFileHash struct {
+	Path   string
+	SHA256 string
 }
 
 // ErrNotFound is returned by Store lookups that find nothing.

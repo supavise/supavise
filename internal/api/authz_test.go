@@ -249,6 +249,8 @@ func matrixCases() []routeCase {
 		rc("YYYYYN", "GET", "/platform/pg-meta/"+testRef+"/tables", nil),
 		rc("YYYYYN", "GET", p+"/database/migrations", nil),
 		rc("YYYNYN", "POST", p+"/database/migrations", map[string]any{"query": "select 1", "name": "m"}),
+		// recording a migration without running it takes the same right as running one
+		rc("YYYNYN", "PUT", p+"/database/migrations", map[string]any{"query": "select 1", "name": "m"}),
 		rc("YYYYYN", "GET", p+"/types/typescript", nil),
 		rc("YYYYYN", "POST", p+"/cli/login-role", map[string]any{"read_only": false}),
 		// dropping the project's login roles drops every member's, so it needs the right to change roles

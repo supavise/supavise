@@ -163,9 +163,12 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 	}
 	// Branches: the Management API's branch endpoints and the expiry sweeper (internal/branching).
 	store := api.NewPGStore(pg.Pool()) // explicit: the API's state must survive restarts
+	// A branch gets its parent's Edge Functions and a merge deploys the branch's back: the carrier
+	// copies deployments in the API's store and tells the Edge Functions syncer (below) after.
+	branchFns := api.NewBranchFunctions(store, node.Secrets)
 	bsvc, err := branching.New(branching.Deps{
 		Cfg: cfg, Registry: node.Registry, Secrets: node.Secrets, Engine: node.Engine,
-		Backup: backups(node), Functions: api.FunctionDigests(store), Log: log.With("component", "branching"),
+		Backup: backups(node), Functions: branchFns, Log: log.With("component", "branching"),
 	})
 	if err != nil {
 		return err
@@ -239,6 +242,7 @@ func Serve(ctx context.Context, cfg *config.Config, o Options) error {
 			return err
 		}
 		apiDeps.Functions = fnSyncer
+		branchFns.SetHook(fnSyncer)
 	}
 	// The hooks of the cluster work (wire.go) see the node and the options the Management API and
 	// the edge proxy are built from, before either exists.

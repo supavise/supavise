@@ -424,3 +424,24 @@ func (s *PGStore) DeleteFolders(ctx context.Context, ref string, ids []string) e
 	_, err := s.pool.Exec(ctx, `delete from supavise.api_content_folders where ref = $1 and id = any($2::uuid[])`, ref, ids)
 	return err
 }
+
+// FunctionFileHashes implements Store: the hashes are made in the database, so a bundle of
+// megabytes is not read out to be hashed.
+func (s *PGStore) FunctionFileHashes(ctx context.Context, ref string, slugs []string) (map[string][]FunctionFileHash, error) {
+	rows, err := s.pool.Query(ctx, `select slug, path, encode(sha256(content), 'hex') from supavise.api_function_files
+		where ref = $1 and ($2::text[] is null or slug = any($2::text[])) order by slug, path`, ref, slugs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]FunctionFileHash{}
+	for rows.Next() {
+		var slug string
+		var h FunctionFileHash
+		if err := rows.Scan(&slug, &h.Path, &h.SHA256); err != nil {
+			return nil, err
+		}
+		out[slug] = append(out[slug], h)
+	}
+	return out, rows.Err()
+}
