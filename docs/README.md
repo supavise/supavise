@@ -7,6 +7,7 @@
 - [reference/studio-platform-calls.md](reference/studio-platform-calls.md): what the dashboard asks of the Management API.
 - [release-notes/v0.2.0.md](release-notes/v0.2.0.md): what the v0.2.0 release adds, and what to know before you upgrade to it.
 - [release-notes/v0.2.1.md](release-notes/v0.2.1.md): what the v0.2.1 release fixes: Studio moves when only its patches change, and the AWS stack update of a stack made in the CloudFormation console runs under a temporary stack policy.
+- [release-notes/v0.3.0.md](release-notes/v0.3.0.md): what the v0.3.0 release adds (Advisors, usage reports, resource warnings and alerts, Database Webhooks, `supavise logs`, moving a project from hosted Supabase), the Data API change for new tables, what to do before you upgrade, and what still differs from hosted.
 - [reference/footprint.md](reference/footprint.md): measured memory, cold start and disk use at 10, 25 and 50 projects, and the follower profile of a second server.
 
 Each package documents itself in its own `README.md`.
