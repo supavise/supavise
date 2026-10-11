@@ -42,7 +42,8 @@ function makeApp() {
     `let API_URL="${ph.NEXT_PUBLIC_API_URL.placeholder}",G="${ph.NEXT_PUBLIC_GOTRUE_URL.placeholder}",` +
       `S=\`${ph.NEXT_PUBLIC_SITE_URL.placeholder}/x\`,K="${ph.NEXT_PUBLIC_HCAPTCHA_SITE_KEY.placeholder}",` +
       `D="${ph.NEXT_PUBLIC_DISABLED_FEATURES.placeholder}".split(","),` +
-      `M="${ph.NEXT_PUBLIC_MCP_URL.placeholder}";`
+      `M="${ph.NEXT_PUBLIC_MCP_URL.placeholder}";` +
+      `GA="${ph.NEXT_PUBLIC_GITHUB_INTEGRATION_APP_NAME.placeholder}",GC="${ph.NEXT_PUBLIC_GITHUB_INTEGRATION_CLIENT_ID.placeholder}";`
   )
   writeFileSync(
     join(app, 'apps/studio/.next/server/pages/sign-in.html'),
@@ -110,8 +111,11 @@ test('apply substitutes values, origins and CSP hosts', () => {
       NEXT_PUBLIC_HCAPTCHA_SITE_KEY: 'abc-123',
       NEXT_PUBLIC_MCP_URL: 'https://api.example.com/mcp/',
       CSP_EXTRA_PROJECT_HOSTS: '*.api.example.com, db.example.net:8443',
+      NEXT_PUBLIC_GITHUB_INTEGRATION_APP_NAME: 'supavise-example',
+      NEXT_PUBLIC_GITHUB_INTEGRATION_CLIENT_ID: 'Iv1.abc123',
     })
     const js = readFileSync(join(app, 'apps/studio/.next/static/chunks/a.js'), 'utf8')
+    assert.match(js, /GA="supavise-example",GC="Iv1\.abc123"/)
     assert.match(js, /API_URL="https:\/\/api\.example\.com\/platform"/)
     assert.match(js, /G="https:\/\/api\.example\.com\/auth\/v1"/)
     assert.match(js, /`https:\/\/studio\.example\.com\/x`/)
@@ -144,6 +148,9 @@ test('empty optional values: no captcha, default feature list, no extra CSP host
     assert.match(js, /D="dashboard_auth:sign_up,dashboard_auth:sign_in_with_github/)
     // an install that does not set the MCP URL (an older unit) keeps the value Studio always had
     assert.match(js, /M="http:\/\/localhost:8080\/mcp"/)
+    // a server without a GitHub App still gives Studio a name and a client id, because Studio reads an
+    // empty one as "use Supabase's own App"
+    assert.match(js, /GA="supavise-github-app-not-configured",GC="supavise-github-client-not-configured"/)
     const csp = JSON.parse(readFileSync(join(app, 'apps/studio/.next/routes-manifest.json'), 'utf8'))
       .headers[0].value
     assert.ok(!csp.includes('placeholder'))
