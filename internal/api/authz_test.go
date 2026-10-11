@@ -104,6 +104,8 @@ func matrixCases() []routeCase {
 		// organization
 		rc("YYYYYN", "GET", org, nil),
 		rc("YNNNNN", "PATCH", org, map[string]any{"name": "Renamed"}),
+		// Studio's AI setting: which parts of the database the Assistant may send to the model provider.
+		rc("YNNNNN", "PATCH", org, map[string]any{"opt_in_tags": []string{"AI_SQL_GENERATOR_OPT_IN"}}),
 		rd("YNNNNN", "DELETE", org, nil),
 		rc("YYYYYN", "GET", org+"/members", nil),
 		rc("YYYYYN", "GET", org+"/roles", nil),

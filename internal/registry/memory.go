@@ -77,9 +77,10 @@ func (m *Memory) CreateOrganization(_ context.Context, slug, name string) (*Orga
 			return nil, ErrConflict
 		}
 	}
-	o := Organization{ID: m.id(), Slug: slug, Name: name, CreatedAt: time.Now()}
+	o := Organization{ID: m.id(), Slug: slug, Name: name, CreatedAt: time.Now(), OptInTags: []string{}}
 	m.orgs = append(m.orgs, o)
-	return &o, nil
+	c := o
+	return &c, nil
 }
 
 func (m *Memory) GetOrganization(_ context.Context, slug string) (*Organization, error) {
@@ -87,6 +88,7 @@ func (m *Memory) GetOrganization(_ context.Context, slug string) (*Organization,
 	defer m.mu.Unlock()
 	for _, o := range m.orgs {
 		if o.Slug == slug {
+			o.OptInTags = append([]string{}, o.OptInTags...)
 			return &o, nil
 		}
 	}
@@ -98,6 +100,7 @@ func (m *Memory) GetOrganizationByID(_ context.Context, id int64) (*Organization
 	defer m.mu.Unlock()
 	for _, o := range m.orgs {
 		if o.ID == id {
+			o.OptInTags = append([]string{}, o.OptInTags...)
 			return &o, nil
 		}
 	}
@@ -107,7 +110,11 @@ func (m *Memory) GetOrganizationByID(_ context.Context, id int64) (*Organization
 func (m *Memory) ListOrganizations(context.Context) ([]Organization, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]Organization(nil), m.orgs...), nil
+	out := append([]Organization(nil), m.orgs...)
+	for i := range out {
+		out[i].OptInTags = append([]string{}, out[i].OptInTags...)
+	}
+	return out, nil
 }
 
 func (m *Memory) UpdateOrganization(_ context.Context, o *Organization) error {
@@ -116,6 +123,9 @@ func (m *Memory) UpdateOrganization(_ context.Context, o *Organization) error {
 	for i := range m.orgs {
 		if m.orgs[i].ID == o.ID {
 			m.orgs[i].Slug, m.orgs[i].Name = o.Slug, o.Name
+			if o.OptInTags != nil {
+				m.orgs[i].OptInTags = append([]string{}, o.OptInTags...)
+			}
 			return nil
 		}
 	}
