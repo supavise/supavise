@@ -71,19 +71,16 @@ func (s *Service) checkIdle(ctx context.Context, b *Branch) error {
 	if op, ok := s.running(b.Ref); ok {
 		return conflict("branch %s is busy with %s", b.Name, op)
 	}
-	if busy(b.State) && !s.abandoned(ctx, b) {
+	if s.inFlight(ctx, b) && !s.unattended(ctx, b) {
 		return conflict("branch %s is busy (%s)", b.Name, b.State)
 	}
 	return nil
 }
 
-// abandoned reports whether a branch whose registry state is busy has no process working on
-// it: no operation runs here, and either its state has not changed for staleAfter, or the
-// process that started the operation (recorded in its started event) is gone.
-func (s *Service) abandoned(ctx context.Context, b *Branch) bool {
-	if !busy(b.State) {
-		return false
-	}
+// unattended reports whether a branch that the registry shows as in flight (inFlight) has no
+// process working on it: no operation runs here, and either its state has not changed for
+// staleAfter, or the process that started the operation (recorded in its started event) is gone.
+func (s *Service) unattended(ctx context.Context, b *Branch) bool {
 	if _, ok := s.running(b.Ref); ok {
 		return false
 	}
@@ -140,7 +137,7 @@ func (s *Service) WaitIdle(ctx context.Context, ref string) (*Branch, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !busy(b.State) || s.now().Sub(b.UpdatedAt) >= s.staleAfter {
+		if !s.inFlight(ctx, b) || s.now().Sub(b.UpdatedAt) >= s.staleAfter {
 			return b, nil
 		}
 		if r == nil {

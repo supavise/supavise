@@ -319,6 +319,34 @@ func busy(st registry.BranchState) bool {
 	return st == registry.BranchCreatingProject || st == registry.BranchRunningMigration
 }
 
+// inFlight reports whether the registry says an operation is at work on b, here or in another
+// process: its state is busy, or it is MIGRATIONS_PASSED and a run is still going on it. An
+// operation moves the branch to MIGRATIONS_PASSED for the deploy step, so the state alone does not
+// tell that step from a branch at rest (the end of a branch made before FUNCTIONS_DEPLOYED
+// existed, or a status set through the API).
+func (s *Service) inFlight(ctx context.Context, b *Branch) bool {
+	if busy(b.State) {
+		return true
+	}
+	if b.State != registry.BranchMigrationsPassed {
+		return false
+	}
+	st := s.runStore()
+	if st == nil {
+		return false
+	}
+	runs, err := st.RunningBranchRuns(ctx)
+	if err != nil {
+		return false
+	}
+	for i := range runs {
+		if runs[i].BranchRef == b.Ref {
+			return true
+		}
+	}
+	return false
+}
+
 // ---- helpers shared by the operations ---------------------------------------------------
 
 // activeParent loads the parent of b and checks it can take part in an operation.
