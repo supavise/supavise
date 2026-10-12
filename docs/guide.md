@@ -7,6 +7,8 @@ This guide picks up after the install in the [README](../README.md#get-started).
   - [New tables need a grant](#new-tables-need-a-grant)
 - [Use the Supabase CLI](#use-the-supabase-cli)
 - [Give an agent or a preview its own branch](#give-an-agent-or-a-preview-its-own-branch)
+  - [What a branch starts with, and what a merge brings back](#what-a-branch-starts-with-and-what-a-merge-brings-back)
+  - [See what a branch operation did](#see-what-a-branch-operation-did)
 - [Build a preview branch from every pull request](#build-a-preview-branch-from-every-pull-request)
 - [Connect an AI tool to a project](#connect-an-ai-tool-to-a-project)
 - [Use the AI Assistant](#use-the-ai-assistant)
@@ -588,12 +590,14 @@ By default every move is yours to start. `[failover] mode = "project"` or `"serv
 | Dashboard | Studio for a single project | Supabase Studio in its hosted, multi-project mode | Supabase Studio |
 | Management API and `supabase link` | Not available | Yes: the parts that Studio, the Supabase CLI and the MCP server call | Yes |
 | Remote MCP server with OAuth sign-in | No OAuth: the stack's MCP route stays closed to outside connections until you open it | Yes, at `api.<domain>/mcp`, one organization per sign-in | Yes |
+| AI Assistant | Optional: add your own OpenAI API key to the stack's environment file (`OPENAI_API_KEY`) | Yes, with a provider and key you bring: `supavise studio ai set` takes OpenAI or any OpenAI-compatible API (OpenRouter, LiteLLM, Vercel AI Gateway, Azure OpenAI's v1 endpoint, vLLM, Ollama) and your model names. Documentation search, advisors and logs are not available to it ([details](#use-the-ai-assistant)) | Yes; sending database information to the model provider is an opt-in setting of the organization |
 | Logs pages | Logflare and Vector, with an override file | No log store. `supavise logs <ref>` on the server reads the journal; the dashboard says so | Yes |
-| Branching | Not available | Yes, schema-only or with data | Yes |
+| Branching | Not available | Yes, as on hosted: a branch starts with its parent's schema, Edge Functions and saved settings (and its data, if you ask). A merge page in the dashboard shows the schema diff, and update, reset, delete and restore work. Each operation is a recorded run with logs, and `notify_url` gets a signed webhook. On a single server, a branch that nobody uses pauses and wakes on the next request ([details](#give-an-agent-or-a-preview-its-own-branch)) | Yes, schema-only or with data, with persistent branches |
+| GitHub integration | Not available: it builds branches, which this setup lacks | Yes, through a GitHub App that you create on your own server (`supavise github app create`). Each pull request gets a preview branch, a `Supabase Preview` check and one comment, and with Deploy to production on, a push to the production branch deploys migrations and Edge Functions. GitHub must reach `api.<domain>/hooks/github`; for a server it can't reach, use an Actions workflow ([details](#build-a-preview-branch-from-every-pull-request)) | Yes, through Supabase's own GitHub App |
 | Security and Performance Advisors | Studio's advisor pages for its one project; `supabase db advisors --db-url` checks a database by its URL | Yes: Studio, `supabase db advisors --linked` and the MCP server's `get_advisors`, with the database checks Studio runs and checks from the Auth settings; the health checks answer "unavailable" | Yes, with health checks too, and the Management API |
 | Data API exposure of new tables | New tables in `public` keep the default grants to `anon`, `authenticated` and `service_role` unless you revoke them (the change is a platform default); `pg_graphql` is off in new installs | New projects expose no new `public` table until you grant it, and `pg_graphql` is off; an upgrade revokes the default grants of existing projects once, and existing tables keep their grants | New projects follow it from 2026-05-30 (`pg_graphql` off from 2026-05-18); existing projects are scheduled for 2026-10-30 |
 | Database Webhooks | Yes: the stack's database setup creates `pg_net` and the `supabase_functions` schema | Yes: **Enable webhooks** sets them up for a project; it refuses a `supabase_functions` schema that a project created itself | Yes |
-| Point-in-time restore | Not included; you set up backups yourself | Yes, in the dashboard (in place) or with `supavise backups restore` on the server | Yes |
+| Point-in-time restore | Not included; you set up backups yourself | Yes, in the dashboard (in place, or as a new project) or with `supavise backups restore` on the server | Yes |
 | Move a project from hosted Supabase | Supabase's restore guide covers the database only; Storage files, Edge Functions, settings and keys are yours to move | Yes: [a guide](#move-a-project-from-hosted-supabase) moves the database, users, Storage files, Edge Functions, settings and legacy keys, and [back](#move-a-project-off-supavise) | Between hosted projects, with Supabase's backup and restore guide |
 | Edge Functions | Yes | Yes, on by default | Yes |
 | Team roles and SSO | One shared dashboard login | Owner, Administrator, Developer and Read-only roles; SAML SSO | Yes |
@@ -666,7 +670,6 @@ No. Supavise is an independent open-source project and is not affiliated with or
 Not entirely. You get organizations, projects, the dashboard, the CLI, branching and backups on a server you run. The differences:
 
 - High availability needs a second server. On one server, if the server stops, its projects stop. With two, you move a project or the whole server by hand, and on AWS the servers can do it on their own. [Read replicas and failover](#read-replicas-and-failover) has the steps.
-- The dashboard restores a project in place. "Restore to new project" is missing: restore a copy with `supavise backups restore --as` on the server.
 - Management API operations that Studio, the CLI and the MCP server don't call, such as billing and log drains, answer with empty placeholders.
 
 **Do my apps need to change?**
