@@ -2194,7 +2194,7 @@
    "method": "GET",
    "path": "/v1/projects/{ref}/health",
    "form": "literal",
-   "files": ["apps/studio/data/service-status/service-status-query.ts"]
+   "files": ["apps/studio/data/service-status/edge-functions-status-query.ts", "apps/studio/data/service-status/service-status-query.ts"]
   },
   {
    "method": "GET",
