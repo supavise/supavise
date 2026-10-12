@@ -53,6 +53,16 @@ type fakeEngine struct {
 	// onDelete when DeleteWith has removed the cluster (before the row goes, if it goes).
 	onCreate func(req lifecycle.CreateRequest)
 	onDelete func(ref string, o lifecycle.DeleteOptions)
+
+	// The PostgREST schemas (SchemaExposer): exposed is the db_schema saved per project, missingSchemas the
+	// names no branch has a schema of, savedAtCreate what a project had saved when Create ran, and trace,
+	// when set, is told every call in order.
+	exposed         map[string]string
+	missingSchemas  map[string]bool
+	savedAtCreate   map[string]string
+	exposeErr       error
+	schemaTrace     func(format string, a ...any)
+	exposeCallCount int
 }
 
 func newFakeEngine(reg registry.Registry, sec secrets.Secrets) *fakeEngine {
@@ -85,6 +95,20 @@ func (f *fakeEngine) Create(ctx context.Context, req lifecycle.CreateRequest) (*
 	} else if err := f.reg.CreateProject(ctx, p); err != nil {
 		return nil, err
 	}
+	// What the real Engine does with the settings of a new project: a seeded one takes its parent's
+	// exposed schemas, an empty one starts on the default (copyInitialSettings).
+	f.mu.Lock()
+	if f.savedAtCreate == nil {
+		f.savedAtCreate = map[string]string{}
+	}
+	if req.SettingsFrom != "" && req.Seed != nil && !req.Recreate && f.exposed[req.SettingsFrom] != "" {
+		if f.exposed == nil {
+			f.exposed = map[string]string{}
+		}
+		f.exposed[req.Ref] = f.exposed[req.SettingsFrom]
+	}
+	f.savedAtCreate[req.Ref] = f.exposed[req.Ref]
+	f.mu.Unlock()
 	if f.onCreate != nil {
 		f.onCreate(req)
 	}
@@ -407,3 +431,58 @@ func (h *harness) mustState(b *Branch, want registry.BranchState) {
 var _ = fmt.Sprint
 
 func slogDiscard() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+func (f *fakeEngine) note(format string, a ...any) {
+	if f.schemaTrace != nil {
+		f.schemaTrace(format, a...)
+	}
+}
+
+// SavedExposedSchemas, SetExposedSchemas and ExposeSchemasThatExist make the fake a SchemaExposer.
+func (f *fakeEngine) SavedExposedSchemas(_ context.Context, ref string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.exposed[ref], nil
+}
+
+func (f *fakeEngine) SetExposedSchemas(_ context.Context, ref, list string) error {
+	f.mu.Lock()
+	if f.exposed == nil {
+		f.exposed = map[string]string{}
+	}
+	f.exposed[ref] = list
+	f.mu.Unlock()
+	f.note("set-schemas %s %q", ref, list)
+	return nil
+}
+
+func (f *fakeEngine) ExposeSchemasThatExist(_ context.Context, ref, list string) ([]string, []string, error) {
+	f.mu.Lock()
+	f.exposeCallCount++
+	err := f.exposeErr
+	var exposed, missing []string
+	for _, n := range strings.Split(list, ",") {
+		if f.missingSchemas[n] {
+			missing = append(missing, n)
+		} else {
+			exposed = append(exposed, n)
+		}
+	}
+	if err == nil && len(exposed) > 0 {
+		if f.exposed == nil {
+			f.exposed = map[string]string{}
+		}
+		f.exposed[ref] = strings.Join(exposed, ",")
+	}
+	f.mu.Unlock()
+	f.note("expose-schemas %s %s", ref, list)
+	return exposed, missing, err
+}
+
+func (f *fakeEngine) exposedOf(ref string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.exposed[ref]
+}
+
+var _ SchemaExposer = (*fakeEngine)(nil)
