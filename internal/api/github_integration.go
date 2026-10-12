@@ -104,10 +104,10 @@ func (s *Server) routesGitHub(add func(string, handlerFunc)) {
 	add("GET /platform/integrations/github/repositories/{repository_id}/branches/{branch_name}", s.ghCheckBranch)
 	add("GET /v2/organizations/{slug}/integrations/github/connections", s.ghListConnectionsV2)
 
-	// The operator's side: the server's own GitHub App.
+	// The operator's side: the server's own GitHub App. Only reading it is an HTTP route: the App is
+	// one object for the whole node, so creating, replacing and removing it (`supavise github app
+	// create|remove`) stay with the operator at the node and are not open to an organization's Owner.
 	add("GET /supavise/v1/github/app", s.ghAppStatus)
-	add("POST /supavise/v1/github/app", s.ghAppBegin)
-	add("DELETE /supavise/v1/github/app", s.ghAppRemove)
 	// These carry no credentials: the manifest page and GitHub's redirect are visited by a browser
 	// that holds only the one-time state, and GitHub posts the webhooks.
 	add("GET "+github.ManifestPath, s.ghManifestPage)

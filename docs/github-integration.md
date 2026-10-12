@@ -29,6 +29,8 @@ The command prints a link. It is good once, for 30 minutes.
 
 The server restarts Studio so that its install and authorize windows name your App. `supavise github app status` shows the App; `supavise github app remove` forgets it (the App stays on GitHub; delete it there too when you no longer need it). `supavise github app create --replace` replaces the App. The users' authorizations and every project's connection to a repository go with the old one, because they name its installations: connect the projects again afterwards. The preview branches stay and stop following their pull requests; `supavise github app remove` does the same.
 
+Only the operator, at the node, creates, replaces or removes the App: the server has one App for all its organizations, and no Owner or Administrator of an organization can change it through the dashboard or the API (they can read how it is set up with `GET /supavise/v1/github/app`).
+
 The App is private to its owner. It asks for read access to contents and metadata, and write access to pull requests, checks and issues (the comment on a pull request is an issue comment). It subscribes to `pull_request`, `push`, `create` and `delete`; GitHub sends the installation events to every App on its own.
 
 ### An App you made yourself

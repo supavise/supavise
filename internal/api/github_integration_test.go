@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 	v2 "github.com/supavise/supavise/internal/api/gen/v2"
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/github"
+	"github.com/supavise/supavise/internal/members"
 	"github.com/supavise/supavise/internal/registry"
 )
 
@@ -258,12 +260,6 @@ func TestGitHubWithoutAnAppAnswersTruthfully(t *testing.T) {
 	check()
 	if rec := f.do("GET", "/supavise/v1/github/app", nil); rec.Code != 404 {
 		t.Fatalf("app status with no service: %d", rec.Code)
-	}
-	if rec := f.do("POST", "/supavise/v1/github/app", map[string]any{}); rec.Code != 404 {
-		t.Fatalf("app create with no service: %d", rec.Code)
-	}
-	if rec := f.do("DELETE", "/supavise/v1/github/app", nil); rec.Code != 404 {
-		t.Fatalf("app delete with no service: %d", rec.Code)
 	}
 	// A service with no App on it answers the same, and says so when asked about the App.
 	withGitHub(t, f, false)
@@ -556,15 +552,12 @@ func TestGitHubManifestFlow(t *testing.T) {
 		t.Fatalf("status: %d %s", rec.Code, rec.Body)
 	}
 
-	rec = f.do("POST", "/supavise/v1/github/app", map[string]any{"owner": "acme"})
-	var begin struct {
-		URL string `json:"url"`
+	// The operator starts the flow at the node (`supavise github app create`): there is no route for it.
+	link, err := svc.BeginManifest(context.Background(), github.ManifestRequest{Owner: "acme", CreatedBy: "cli"})
+	if err != nil || !strings.Contains(link, github.ManifestPath+"?state=") {
+		t.Fatalf("begin: %q, %v", link, err)
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &begin)
-	if rec.Code != 200 || !strings.Contains(begin.URL, github.ManifestPath+"?state=") {
-		t.Fatalf("begin: %d %s", rec.Code, rec.Body)
-	}
-	state := begin.URL[strings.Index(begin.URL, "state=")+6:]
+	state := link[strings.Index(link, "state=")+6:]
 
 	// The page a browser opens: a form to GitHub, with the manifest, and a CSP that allows nowhere else.
 	page := httptest.NewRecorder()
@@ -633,20 +626,20 @@ func TestGitHubManifestFlow(t *testing.T) {
 		t.Fatalf("the status leaks a secret: %s", rec.Body)
 	}
 	// A second App is refused unless it replaces the first.
-	if rec := f.do("POST", "/supavise/v1/github/app", map[string]any{}); rec.Code != 409 {
-		t.Fatalf("a second App: %d %s", rec.Code, rec.Body)
+	if _, err := svc.BeginManifest(context.Background(), github.ManifestRequest{CreatedBy: "cli"}); !errors.Is(err, github.ErrConflict) {
+		t.Fatalf("a second App: %v", err)
 	}
-	if rec := f.do("POST", "/supavise/v1/github/app", map[string]any{"replace": true}); rec.Code != 200 {
-		t.Fatalf("replace: %d %s", rec.Code, rec.Body)
+	if _, err := svc.BeginManifest(context.Background(), github.ManifestRequest{CreatedBy: "cli", Replace: true}); err != nil {
+		t.Fatalf("replace: %v", err)
 	}
-	if rec := f.do("POST", "/supavise/v1/github/app", map[string]any{"owner": "bad owner!"}); rec.Code != 400 {
-		t.Fatalf("a bad owner: %d", rec.Code)
+	if _, err := svc.BeginManifest(context.Background(), github.ManifestRequest{Owner: "bad owner!", CreatedBy: "cli"}); !errors.Is(err, github.ErrInvalid) {
+		t.Fatalf("a bad owner: %v", err)
 	}
-	if rec := f.do("DELETE", "/supavise/v1/github/app", nil); rec.Code != 204 {
-		t.Fatalf("remove: %d %s", rec.Code, rec.Body)
+	if had, err := svc.RemoveApp(context.Background()); err != nil || !had {
+		t.Fatalf("remove: %v, %v", had, err)
 	}
-	if rec := f.do("DELETE", "/supavise/v1/github/app", nil); rec.Code != 404 {
-		t.Fatalf("remove again: %d", rec.Code)
+	if had, err := svc.RemoveApp(context.Background()); err != nil || had {
+		t.Fatalf("remove again: %v, %v", had, err)
 	}
 	if !hasString(profileDisabled(t, f), featureGitHub) {
 		t.Fatal("the profile shows GitHub after the App was removed")
@@ -868,8 +861,6 @@ func TestGitHubRoleMatrix(t *testing.T) {
 		rc("YYNNNN", "POST", "/platform/integrations/github/connections", map[string]any{"project_ref": testRef, "installation_id": 1, "repository_id": 2}),
 		rc("YYYYYN", "GET", "/v2/organizations/default/integrations/github/connections", nil),
 		rc("YYNNNN", "GET", "/supavise/v1/github/app", nil),
-		rc("YNNNNN", "POST", "/supavise/v1/github/app", map[string]any{}),
-		rd("YNNNNN", "DELETE", "/supavise/v1/github/app", nil),
 	} {
 		for i, role := range roleNames {
 			rec := rf.as(role, c.method, c.path, c.body)
@@ -877,6 +868,51 @@ func TestGitHubRoleMatrix(t *testing.T) {
 			if want := c.want[i] == 'Y'; denied == want {
 				t.Errorf("%s as %s: %d %s, want allowed=%v", c, role, rec.Code, rec.Body, want)
 			}
+		}
+	}
+}
+
+// The App is one object for the whole node: the Owner of any organization, however many projects it
+// holds, can neither start a replacement of it nor remove it, and what the Owner of another
+// organization connected stays. The operator does both at the node (`supavise github app`).
+func TestAnotherOrganizationsOwnerCannotCreateReplaceOrRemoveTheServersApp(t *testing.T) {
+	rf := newRolesFixture(t)
+	ctx := context.Background()
+	svc, _ := withGitHub(t, rf.fixture, true)
+	conn := registry.GitHubConnection{OrgID: rf.org.ID, ProjectRef: testRef, InstallationID: tInstID, RepositoryID: tRepoID, RepositoryName: tRepoName,
+		BranchLimit: 50, NewBranchPerPR: true, CreatedBy: "owner"}
+	if err := rf.reg.CreateGitHubConnection(ctx, &conn); err != nil {
+		t.Fatal(err)
+	}
+	// "stranger" owns an organization of their own: Owner somewhere, and nothing here.
+	other, err := rf.reg.CreateOrganization(ctx, "other", "Other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rf.srv.members.EnsureOwner(ctx, members.OrgRef{ID: other.ID, Slug: other.Slug}, rf.ids["stranger"]); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"stranger", "owner", "admin"} {
+		for _, c := range []struct {
+			method string
+			body   any
+		}{{"POST", map[string]any{"replace": true, "owner": "evil"}}, {"POST", map[string]any{}}, {"DELETE", nil}, {"PUT", map[string]any{}}, {"PATCH", map[string]any{}}} {
+			rec := rf.as(role, c.method, "/supavise/v1/github/app", c.body)
+			if rec.Code >= 200 && rec.Code < 300 {
+				t.Errorf("%s: %s /supavise/v1/github/app answered %d %s", role, c.method, rec.Code, rec.Body)
+			}
+		}
+	}
+	if _, err := rf.reg.GetGitHubConnectionByProject(ctx, testRef); err != nil {
+		t.Fatalf("the connection of the other organization went with a request that was refused: %v", err)
+	}
+	if !svc.Configured(ctx) {
+		t.Fatal("the server's App was removed")
+	}
+	// The one thing an Owner or Administrator may do with the App is read how it is set up.
+	for _, role := range []string{"stranger", "owner", "admin"} {
+		if rec := rf.as(role, "GET", "/supavise/v1/github/app", nil); rec.Code != 200 {
+			t.Errorf("%s: status %d %s", role, rec.Code, rec.Body)
 		}
 	}
 }

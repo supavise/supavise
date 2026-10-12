@@ -86,44 +86,6 @@ func (s *Server) ghAppStatus(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// ghAppBegin starts GitHub's manifest flow and answers the link the operator opens in a browser
-// that is signed in to GitHub.
-func (s *Server) ghAppBegin(w http.ResponseWriter, r *http.Request) error {
-	if s.gh == nil {
-		return errf(http.StatusNotFound, "%s", ghNotConfiguredMsg)
-	}
-	var in struct {
-		Owner   string `json:"owner"`
-		Name    string `json:"name"`
-		Replace bool   `json:"replace"`
-	}
-	if err := decode(r, &in); err != nil {
-		return err
-	}
-	link, err := s.gh.BeginManifest(r.Context(), github.ManifestRequest{Owner: in.Owner, Name: in.Name, Replace: in.Replace,
-		CreatedBy: principalFrom(r.Context()).UserID})
-	if err != nil {
-		return s.ghErr(r, err)
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"url": link})
-	return nil
-}
-
-func (s *Server) ghAppRemove(w http.ResponseWriter, r *http.Request) error {
-	if s.gh == nil {
-		return errf(http.StatusNotFound, "%s", ghNotConfiguredMsg)
-	}
-	had, err := s.gh.RemoveApp(r.Context())
-	if err != nil {
-		return s.ghErr(r, err)
-	}
-	if !had {
-		return errf(http.StatusNotFound, "This server has no GitHub App to remove.")
-	}
-	writeNoContent(w)
-	return nil
-}
-
 var manifestTmpl = template.Must(template.New("manifest").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Create the GitHub App</title>
