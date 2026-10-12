@@ -1,0 +1,354 @@
+{
+ "_comment": "Which pages the route pass visits (tests/linux/studio-crawl.sh, crawl.mjs). The pages come from the Studio artifact's routes-manifest.json; this file says where each parameter's values come from (the fixtures seed.mjs makes), which pages are not visited and why, and which pages sit behind a hidden feature key (they are visited in the informational pass: their findings are listed and do not fail the run). A page with a parameter and no values is a failure of the run (\"no fixture\"), so a new Studio page cannot go unvisited without a line here.",
+ "defaultRefs": [
+  "A",
+  "B"
+ ],
+ "defaults": {
+  "functionSlug": "functions",
+  "bucketId": "buckets",
+  "templateId": "templates"
+ },
+ "params": [
+  {
+   "route": "/project/[ref]/editor/[id]",
+   "param": "id",
+   "from": "tables"
+  },
+  {
+   "route": "/project/[ref]/database/tables/[id]",
+   "param": "id",
+   "from": "tables"
+  },
+  {
+   "route": "/project/[ref]/database/publications/[id]",
+   "param": "id",
+   "from": "publications"
+  },
+  {
+   "route": "/project/[ref]/sql/[id]",
+   "param": "id",
+   "from": "snippets"
+  }
+ ],
+ "refs": {
+  "/project/[ref]/merge": [
+   "B",
+   "pending"
+  ],
+  "/project/[ref]/branches/merge-requests": [
+   "A"
+  ],
+  "/project/[ref]/branches": [
+   "A",
+   "B"
+  ]
+ },
+ "catchAll": {
+  "/org/_/[[...routeSlug]]": [
+   "",
+   "general"
+  ],
+  "/project/_/[[...routeSlug]]": [
+   "",
+   "editor"
+  ]
+ },
+ "urls": [
+  {
+   "route": "/project/[ref]/integrations/[id]",
+   "urls": [
+    "/project/{ref}/integrations/queues",
+    "/project/{ref}/integrations/cron",
+    "/project/{ref}/integrations/vault",
+    "/project/{ref}/integrations/webhooks",
+    "/project/{ref}/integrations/data_api",
+    "/project/{ref}/integrations/graphiql",
+    "/project/{ref}/integrations/wrappers"
+   ]
+  },
+  {
+   "route": "/project/[ref]/integrations/[id]/[pageId]",
+   "urls": [
+    "/project/{ref}/integrations/queues/queues",
+    "/project/{ref}/integrations/queues/settings",
+    "/project/{ref}/integrations/cron/jobs",
+    "/project/{ref}/integrations/vault/secrets",
+    "/project/{ref}/integrations/webhooks/webhooks",
+    "/project/{ref}/integrations/data_api/settings",
+    "/project/{ref}/integrations/data_api/docs",
+    "/project/{ref}/integrations/graphiql/graphiql",
+    "/project/{ref}/integrations/wrappers/wrappers"
+   ]
+  }
+ ],
+ "states": {
+  "_comment": "Extra visits for the branch states the fixtures make: the project home and the Branches page of each.",
+  "routes": [
+   "/project/[ref]",
+   "/project/[ref]/branches"
+  ],
+  "projects": [
+   "paused",
+   "idle",
+   "scheduled",
+   "pending",
+   "other"
+  ]
+ },
+ "skip": [
+  {
+   "route": "/aws-marketplace-onboarding",
+   "reason": "Hosted marketplace onboarding; no link of a node leads to it."
+  },
+  {
+   "route": "/stripe-atlas-application",
+   "reason": "Hosted Stripe Atlas flow; no link of a node leads to it."
+  },
+  {
+   "route": "/partners/stripe/projects/login",
+   "reason": "Hosted Stripe partner sign-in; no link of a node leads to it."
+  },
+  {
+   "route": "/sign-in-partner",
+   "reason": "Hosted partner sign-in; the Supavise build shows e-mail sign-in only."
+  },
+  {
+   "route": "/claim-project",
+   "reason": "Hosted project-claim flow for marketplace projects; it needs a claim token."
+  },
+  {
+   "route": "/integrations/vercel/*",
+   "reason": "Vercel is a hosted integration (integrations:vercel is disabled); the pages need an installation."
+  },
+  {
+   "route": "/integrations/github/authorize",
+   "reason": "The landing page of GitHub's OAuth redirect: it needs the code and state GitHub appends. The github lane's flow reaches it (tests/linux/github)."
+  },
+  {
+   "route": "/authorize",
+   "reason": "The OAuth consent page needs an authorization request id; the OAuth walk of oauth-smoke.sh covers it."
+  },
+  {
+   "route": "/cli/login",
+   "reason": "The CLI login page needs a session id and a device code; the CLI login smoke covers it."
+  },
+  {
+   "route": "/logout",
+   "reason": "Ends the session; the probe pass signs out through the menu."
+  },
+  {
+   "route": "/org/[slug]/webhooks/[endpointId]",
+   "reason": "Needs a webhook endpoint; platform webhooks are a hosted feature."
+  },
+  {
+   "route": "/project/[ref]/settings/webhooks/[endpointId]",
+   "reason": "Needs a webhook endpoint; platform webhooks are a hosted feature."
+  },
+  {
+   "route": "/project/[ref]/settings/infrastructure/replica/[replicaId]",
+   "reason": "Needs a read replica; the cluster tests (tests/linux/multi) cover replicas, and this job runs one node."
+  },
+  {
+   "route": "/project/[ref]/database/pipelines/[pipelineId]",
+   "reason": "Needs a replication pipeline; replication is a hosted add-on (database:replication is disabled)."
+  },
+  {
+   "route": "/project/[ref]/integrations/[id]/[pageId]/[childId]",
+   "reason": "Child pages open from a row of the page above (a queue, a cron job); the integration pages are visited."
+  },
+  {
+   "route": "/project/[ref]/observability/[id]",
+   "reason": "Needs a saved custom report; the content lane's report fixtures are not part of this job."
+  },
+  {
+   "route": "/project/[ref]/compute/[name]",
+   "reason": "Compute instances are an experimental hosted feature without a fixture."
+  },
+  {
+   "route": "/project/[ref]/explorer/*/[id]",
+   "reason": "The Explorer is a feature preview behind a hidden flag; its list page is visited in the informational pass."
+  },
+  {
+   "route": "/project/[ref]/storage/analytics/buckets/[bucketId]",
+   "reason": "Analytics buckets are hidden (storage:analytics is disabled): there is no bucket to open."
+  },
+  {
+   "route": "/project/[ref]/storage/vectors/buckets/[bucketId]",
+   "reason": "Vector buckets are hidden (storage:vectors is disabled): there is no bucket to open."
+  },
+  {
+   "route": "/verify-email",
+   "reason": "Needs the token of a verification e-mail; a node sends none."
+  },
+  {
+   "route": "/reset-password",
+   "reason": "Needs the recovery session of an e-mail link; the Auth tests cover the flow."
+  },
+  {
+   "route": "/forgot-password-mfa",
+   "reason": "Reached from the recovery flow with a session."
+  },
+  {
+   "route": "/sign-in-recovery-code",
+   "reason": "Reached from the MFA sign-in step with a session."
+  },
+  {
+   "route": "/join",
+   "reason": "Needs an invitation token; the roles smoke covers invitations."
+  },
+  {
+   "route": "/redeem",
+   "reason": "Hosted coupon redemption; billing is disabled."
+  }
+ ],
+ "hidden": [
+  {
+   "route": "/org/[slug]/billing",
+   "feature": "billing:all"
+  },
+  {
+   "route": "/org/[slug]/integrations",
+   "feature": "integrations:vercel"
+  },
+  {
+   "route": "/org/[slug]/audit-log-drains",
+   "feature": "project_settings:log_drains"
+  },
+  {
+   "route": "/org/[slug]/webhooks",
+   "feature": "platform webhooks"
+  },
+  {
+   "route": "/org/[slug]/private-apps",
+   "feature": "private apps"
+  },
+  {
+   "route": "/project/[ref]/settings/billing/usage",
+   "feature": "billing:all"
+  },
+  {
+   "route": "/project/[ref]/settings/log-drains",
+   "feature": "project_settings:log_drains"
+  },
+  {
+   "route": "/project/[ref]/settings/webhooks",
+   "feature": "platform webhooks"
+  },
+  {
+   "route": "/project/[ref]/settings/infrastructure",
+   "feature": "infrastructure:read_replicas"
+  },
+  {
+   "route": "/project/[ref]/database/pipelines",
+   "feature": "database:replication"
+  },
+  {
+   "route": "/project/[ref]/storage/analytics",
+   "feature": "storage:analytics"
+  },
+  {
+   "route": "/project/[ref]/storage/vectors",
+   "feature": "storage:vectors"
+  },
+  {
+   "route": "/project/[ref]/explorer",
+   "feature": "feature preview"
+  },
+  {
+   "route": "/project/[ref]/compute",
+   "feature": "compute"
+  },
+  {
+   "route": "/project/[ref]/compute/secrets",
+   "feature": "compute"
+  },
+  {
+   "route": "/support/new",
+   "feature": "billing:all"
+  },
+  {
+   "route": "/support/link",
+   "feature": "billing:all"
+  },
+  {
+   "route": "/new/*",
+   "feature": "organization creation"
+  },
+  {
+   "route": "/org",
+   "feature": "organization creation"
+  }
+ ],
+ "expect": [
+  {
+   "route": "/project/[ref]/editor",
+   "project": "A",
+   "text": "crawl_items",
+   "why": "the seeded table must be listed in the table editor"
+  },
+  {
+   "route": "/project/[ref]/database/tables",
+   "project": "A",
+   "text": "crawl_items",
+   "why": "the seeded table must be listed on the Tables page"
+  },
+  {
+   "route": "/project/[ref]/auth/users",
+   "project": "A",
+   "text": "crawl-user@example.com",
+   "why": "the seeded user must be listed"
+  },
+  {
+   "route": "/project/[ref]/storage/files",
+   "project": "A",
+   "text": "crawl-bucket",
+   "why": "the seeded bucket must be listed"
+  },
+  {
+   "route": "/project/[ref]/functions",
+   "project": "A",
+   "text": "hello",
+   "why": "the deployed function must be listed"
+  },
+  {
+   "route": "/project/[ref]/functions",
+   "project": "B",
+   "text": "hello",
+   "why": "the branch must have the parent's function"
+  },
+  {
+   "route": "/project/[ref]/database/policies",
+   "project": "A",
+   "text": "crawl read policy",
+   "why": "the seeded RLS policy must be listed"
+  },
+  {
+   "route": "/project/[ref]/integrations/cron/jobs",
+   "project": "A",
+   "text": "crawl-job",
+   "why": "the seeded pg_cron job must be listed"
+  },
+  {
+   "route": "/project/[ref]/integrations/queues/queues",
+   "project": "A",
+   "text": "crawl_queue",
+   "why": "the seeded pgmq queue must be listed"
+  },
+  {
+   "route": "/org/[slug]",
+   "text": "crawl-a",
+   "why": "the project list must show the seeded project",
+   "match": {
+    "slug": "@org"
+   }
+  }
+ ],
+ "anonymous": [
+  "/sign-in",
+  "/sign-up",
+  "/forgot-password",
+  "/sign-in-sso",
+  "/maintenance"
+ ]
+}

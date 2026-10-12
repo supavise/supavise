@@ -1,0 +1,147 @@
+name: studio-crawl
+
+# The real Studio against the real daemon, in a headless Chromium (tests/linux/studio-crawl.sh, tests/linux/crawl/): every
+# page of the build with fixtures (projects, branches in each state, a second organization, custom hostnames), then probes
+# of the user flows judged by the state of the server. It fails on a stub answer nobody listed, a 5xx, a 4xx without a
+# reason, a page or console error, a failed probe, a page without a fixture and an allow-list entry no page hit
+# (tests/linux/crawl/allowlist.json), so the dashboard cannot gain a dead end, or lose a fix, unnoticed.
+#
+# It does not build Studio: the crawl takes the amd64 build of studio.yml (tests/linux/crawl/fetch-studio.sh), the newest
+# green one of this branch or of main that pins the same Studio file, or, when the push changed Studio, the one studio.yml
+# builds for this commit. The path filter of
+# studio.yml is Studio's alone, which is why a change of the API server alone never started a browser run: this
+# workflow starts on pushes that touch the server, the proxy, the fleet, branching, domains or GitHub (the paths below)
+# and runs on every push to main, so that the release gate (deploy/release-gate.sh) always finds a run on the tagged
+# commit. A nightly run and a manual run (workflow_dispatch) cover the rest.
+on:
+  push:
+    branches: [main, "ws/**", "integrate/**"]
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read   # gh run download of the Studio build
+
+defaults:
+  run:
+    shell: bash
+
+# A newer push to a branch cancels that branch's older run. On main each commit has a group of its own, so that no push, nightly
+# or manual run is cancelled by a newer one (GitHub cancels a run that is still pending when another of its group arrives, even
+# with cancel-in-progress off) and the release gate (deploy/release-gate.sh) finds a finished run on whichever commit is tagged.
+concurrency:
+  group: studio-crawl-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.c.outputs.run }}
+      studio: ${{ steps.c.outputs.studio }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: c
+        env:
+          EVENT_BEFORE: ${{ github.event.before }}
+        run: |
+          tests/linux/crawl/changes.sh \
+            'studio=^(studio/|internal/versions/versions\.yaml$|\.github/workflows/studio\.yml$)' \
+            'server=^(internal/(api|proxy|fleet|projectconfig|branching|domains|github|lifecycle|registry|reqstats)/|tests/linux/(crawl/|studio-crawl\.sh|lib\.sh)|\.github/workflows/studio-crawl\.yml$)' \
+            | tee -a "$GITHUB_OUTPUT"
+
+  # The scan of Studio's source behind internal/api/studio_calls_test.go: studio/calls.json must be what the scan of the
+  # pinned, patched source gives. A Studio bump or a patch that changes the calls fails here until the file is regenerated
+  # (node studio/scan-calls.mjs --fetch).
+  calls:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund --prefix studio/scan
+      - run: node --test studio/scan/scan.test.mjs
+      - run: node studio/scan-calls.mjs --fetch --check
+
+  # The logic of the crawl (routes, allow-list, mutation guard, report) and the shape of its files, without a node.
+  selftest:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund --prefix tests/linux/crawl
+      # With the runner's Chrome the self-test also runs the crawl driver against its stand-in node (two browser tests).
+      - run: node --test tests/linux/crawl/selftest.mjs
+        env:
+          CRAWL_STANDIN_CHROME: /usr/bin/google-chrome
+
+  # The job the release gate reads (deploy/release-gate.sh: studio-crawl.yml:crawl).
+  crawl:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      CRAWL_OUT: /tmp/supavise-crawl-out
+      LOG_DIR: /tmp/supavise-crawl-logs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: prepare runner
+        run: sudo env SUPAVISE_CI=1 studio/ci-prepare.sh   # sudo drops GITHUB_ACTIONS from the environment
+      - name: Studio build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FRESH: ${{ needs.changes.outputs.studio == 'true' && github.event_name == 'push' && '--fresh' || '' }}
+        run: |
+          # shellcheck disable=SC2086
+          f=$(tests/linux/crawl/fetch-studio.sh /tmp/studio-dist $FRESH | tail -n 1)
+          ls -l "$f"
+          echo "STUDIO_TARBALL=$f" >> "$GITHUB_ENV"
+      - name: build supavise
+        run: CGO_ENABLED=0 go build -trimpath -o /tmp/supavise ./cmd/supavise
+      - name: crawl
+        run: |
+          sudo env "PATH=$PATH" LOG_DIR="$LOG_DIR" CRAWL_OUT="$CRAWL_OUT" SUPAVISE_BIN=/tmp/supavise GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
+            tests/linux/studio-crawl.sh --studio-artifact "$STUDIO_TARBALL"
+      - if: always()
+        name: collect logs
+        run: sudo chmod -R a+rX "$LOG_DIR" "$CRAWL_OUT" || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-crawl
+          path: |
+            /tmp/supavise-crawl-out/crawl-report.json
+            /tmp/supavise-crawl-out/summary.md
+            /tmp/supavise-crawl-out/calls.jsonl
+            /tmp/supavise-crawl-out/fixtures.json
+            /tmp/supavise-crawl-out/screenshots
+          if-no-files-found: ignore
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-crawl-logs
+          path: /tmp/supavise-crawl-logs
+          if-no-files-found: ignore

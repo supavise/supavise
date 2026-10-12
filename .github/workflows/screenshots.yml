@@ -35,25 +35,17 @@ jobs:
         with:
           node-version: 22
 
-      # The platform build of Studio takes 10 minutes; the newest successful one from main is the same code.
+      # The platform build of Studio takes 10 minutes; the newest successful one from main is the same code. The script
+      # (tests/linux/crawl/fetch-studio.sh) skips the runs that built nothing and refuses a build other than the one
+      # versions.yaml pins (a newer patch set merged before its studio run finished): the step below builds that one.
       - name: Studio build from the newest successful studio run on main
         id: studio_dl
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          run=$(gh run list --workflow studio.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')
-          [[ -n $run ]]
-          echo "studio run: $run"
-          gh run download "$run" --name studio-linux-amd64 --dir "$RUNNER_TEMP/studio"
-          f=$(ls "$RUNNER_TEMP"/studio/*.tar.zst)
+          f=$(tests/linux/crawl/fetch-studio.sh "$RUNNER_TEMP/studio" | tail -n 1)
           ls -l "$f"
-          # The binary refuses a build other than the one versions.yaml pins (a newer patch set merged
-          # before its studio run finished): build that one instead.
-          tag=$(awk '/^studio:/{s=1;next} s&&/^[^ ]/{s=0} s&&/^[ ]+tag:/{print $2; exit}' internal/versions/versions.yaml)
-          ps=$(awk '/^studio:/{s=1;next} s&&/^[^ ]/{s=0} s&&/^[ ]+patchset:/{print $2; exit}' internal/versions/versions.yaml)
-          want="supavise-studio-${tag}${ps:+-p$ps}-linux-amd64.tar.zst"
-          [[ $(basename "$f") == "$want" ]] || { echo "the newest Studio build on main is $(basename "$f"), and this checkout pins $want"; exit 1; }
           echo "STUDIO_TARBALL=$f" >> "$GITHUB_ENV"
       - name: build Studio (when no run could be downloaded)
         if: steps.studio_dl.outcome != 'success'

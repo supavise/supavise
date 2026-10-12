@@ -12,7 +12,7 @@
 //
 // Config fields: domain, issuer, dashboard, proxy {host, port}, admin_url, org, org2, ref, ref2,
 // owner {email, password}, owner_pat, password (for the users the walk creates), cli (argv prefix of
-// the supavise command), mcp (bool), stdio {smoke, roles} (paths of the stdio MCP scripts, optional).
+// the supavise command), mcp (bool), stdio {smoke, roles, branches} (paths of the stdio MCP scripts, optional).
 import crypto from "node:crypto";
 import http from "node:http";
 import { execFileSync, spawn } from "node:child_process";
@@ -588,7 +588,18 @@ await step("L-06b", "the stdio MCP server and the CLI's calls with an OAuth toke
     return;
   }
   // Every call these scripts make has to be inside the 13 scopes (the token holds exactly those).
-  for (const [name, script, extra] of [["mcp-roles", cfg.stdio.roles, ["owner"]], ["mcp-smoke", cfg.stdio.smoke, []]]) {
+  const scripts = [["mcp-roles", cfg.stdio.roles, ["owner"]], ["mcp-smoke", cfg.stdio.smoke, []]];
+  if (cfg.stdio.branches) {
+    // The branch script starts from public.items in the parent. It is made by a migration, so that every way of
+    // creating a branch (replaying the parent's history, or dumping its schema) gives the branch the table.
+    const m = await call("POST", `/v1/projects/${ref}/database/migrations`, {
+      token: tok.access_token,
+      json: { name: "walk_items", query: "create table if not exists public.items (id int primary key, note text); insert into public.items values (1, 'parent') on conflict do nothing" },
+    });
+    ok(m.status < 300, `the migration for the branch script answered ${m.describe()}`);
+    scripts.push(["mcp-branches", cfg.stdio.branches, []]);
+  }
+  for (const [name, script, extra] of scripts) {
     const args = [script, cfg.admin_url, ref, ...extra];
     const code = await new Promise((resolve) => {
       const child = spawn(process.execPath, args, { stdio: "inherit", env: { ...process.env, SUPABASE_ACCESS_TOKEN: tok.access_token } });
@@ -735,6 +746,74 @@ if (cfg.mcp) {
     const cp = await rpc(t, "", "tools/call", { name: "create_project", arguments: { name: "walk-must-not-exist", organization_id: org, region: "us-east-1", confirm_cost_id: "none" } });
     log(`      create_project without a confirmed cost -> ${cp.error ? "error " + JSON.stringify(cp.error).slice(0, 120) : (cp.result?.isError ? "tool error: " : "result: ") + text(cp).replace(/\s+/g, " ").slice(0, 160)}`);
     ok(cp.error || cp.result?.isError, "create_project went through without a confirmed cost");
+
+    // The six branch tools. An account-scoped URL offers them, and create_branch needs a confirmed cost (get_cost and
+    // confirm_cost are account tools, which a project-scoped URL hides). The branch is a project of its own: a
+    // project-scoped URL bound to its ref reads and changes it, and the parent stays as it was until merge_branch.
+    const jsonOf = (s) => {
+      const m = s.match(/(\[|\{)[\s\S]*(\]|\})/);
+      try { return JSON.parse(m[0]); } catch { return null; }
+    };
+    const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+    const call2 = async (url, name, args) => rpc(t, url, "tools/call", { name, arguments: args });
+    const BRANCH_TOOLS = ["create_branch", "list_branches", "delete_branch", "merge_branch", "reset_branch", "rebase_branch"];
+    for (const n of BRANCH_TOOLS) ok(names(acc).includes(n), `an account-scoped URL lacks the branch tool ${n}: ${names(acc).join(",")}`);
+    const bcost = jsonOf(text(await call2("", "get_cost", { type: "branch", organization_id: org }))) ?? {};
+    const bconf = jsonOf(text(await call2("", "confirm_cost", { type: "branch", recurrence: bcost.recurrence, amount: bcost.amount }))) ?? {};
+    ok(bconf.confirmation_id, `confirm_cost gave no confirmation id for a branch (get_cost: ${JSON.stringify(bcost)})`);
+    const noConfirm = await call2("", "create_branch", { project_id: ref, name: "walk-br-unconfirmed", confirm_cost_id: "none" });
+    ok(noConfirm.error || noConfirm.result?.isError, "create_branch went through without a confirmed cost");
+    const bname = `walk-br-${Date.now().toString(36)}`;
+    const made = await call2("", "create_branch", { project_id: ref, name: bname, confirm_cost_id: bconf.confirmation_id });
+    ok(!made.error && !made.result?.isError, `create_branch: ${JSON.stringify(made).slice(0, 300)}`);
+    const branches = async () => {
+      const o = jsonOf(text(await call2("", "list_branches", { project_id: ref })));
+      return Array.isArray(o) ? o : (o?.branches ?? []);
+    };
+    // An operation that runs as an action run answers before it ends; wait for the branch to leave and reach a terminal state.
+    const settled = async (what) => {
+      await pause(3000);
+      const end = Date.now() + 240000;
+      for (;;) {
+        const b = (await branches()).find((x) => x.name === bname);
+        if (b && ["MIGRATIONS_PASSED", "FUNCTIONS_DEPLOYED"].includes(b.status)) return b;
+        ok(!(b && /FAILED$/.test(b.status)), `branch ${bname} ended ${b?.status} after ${what}`);
+        ok(Date.now() < end, `branch ${bname} did not finish ${what} (status ${b?.status})`);
+        await pause(2000);
+      }
+    };
+    const branch = await settled("create_branch");
+    const bproj = `?project_ref=${branch.project_ref}`;
+    log(`      branch ${bname}: ${branch.project_ref} ${branch.status}`);
+
+    // a URL bound to the branch
+    const btools = names(await rpc(t, bproj, "tools/list", {}));
+    ok(btools.includes("execute_sql") && btools.includes("apply_migration") && !btools.includes("create_project"), `a branch-bound URL offers: ${btools.join(",")}`);
+    ok(text(await call2(bproj, "get_project_url", {})).includes(`${branch.project_ref}.api.${domain}`), "get_project_url on a branch-bound URL does not name the branch's host");
+    const mig = await call2(bproj, "apply_migration", { name: "walk_branch_change", query: "create table public.walk_branch_table (id int primary key)" });
+    ok(!mig.error && !mig.result?.isError, `apply_migration on the branch: ${JSON.stringify(mig).slice(0, 300)}`);
+    ok(text(await call2(bproj, "list_tables", { schemas: ["public"] })).includes("walk_branch_table"), "the branch does not list the table its migration made");
+    ok(!text(await call2(proj, "list_tables", { schemas: ["public"] })).includes("walk_branch_table"), "the parent lists the branch's table before merge_branch");
+
+    // merge, rebase, reset, delete
+    const merged = await call2("", "merge_branch", { branch_id: branch.id });
+    ok(!merged.error && !merged.result?.isError, `merge_branch: ${JSON.stringify(merged).slice(0, 300)}`);
+    await settled("merge_branch");
+    ok(text(await call2(proj, "list_tables", { schemas: ["public"] })).includes("walk_branch_table"), "the parent lacks the branch's table after merge_branch");
+    for (const n of ["rebase_branch", "reset_branch"]) {
+      const r = await call2("", n, { branch_id: branch.id });
+      ok(!r.error && !r.result?.isError, `${n}: ${JSON.stringify(r).slice(0, 300)}`);
+      await settled(n);
+    }
+    const del = await call2("", "delete_branch", { branch_id: branch.id });
+    ok(!del.error && !del.result?.isError, `delete_branch: ${JSON.stringify(del).slice(0, 300)}`);
+    const gone = Date.now() + 120000;
+    while ((await branches()).some((x) => x.name === bname)) {
+      ok(Date.now() < gone, `branch ${bname} is still listed after delete_branch`);
+      await pause(2000);
+    }
+    // the parent keeps what the merge gave it
+    await call("POST", `/v1/projects/${ref}/database/query`, { token: t, json: { query: "drop table if exists public.walk_branch_table" } });
 
     // Studio's own route is not reachable on the dashboard host.
     const direct = await call("POST", "/api/mcp", { host: new URL(dashboard).host, token: t, json: { jsonrpc: "2.0", id: 1, method: "tools/list" } });

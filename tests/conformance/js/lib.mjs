@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import http from 'node:http'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { createClient } from '@supabase/supabase-js'
 
@@ -135,4 +136,31 @@ export async function waitForRest(project, key, table) {
     const r = await fetch(`${project.url}/rest/v1/${table}?select=*&limit=1`, { headers: { apikey: key, Authorization: `Bearer ${key}` } })
     return r.status === 200
   }, { timeout: 60_000 })
+}
+
+// proxyFetch is a fetch for a project host that has no DNS entry: it connects to the node's proxy on this machine
+// and sends the host of the URL as the Host header. The suites run on the machine of the node, and /etc/hosts holds
+// the projects the driver made, not a branch made later. A string, Buffer or empty body only.
+export function proxyFetch(input, init = {}) {
+  const req = input instanceof Request ? input : null
+  const url = new URL(req ? req.url : String(input))
+  const headers = new Headers(init.headers ?? req?.headers ?? {})
+  const body = init.body ?? null
+  if (body !== null && typeof body !== 'string' && !Buffer.isBuffer(body)) throw new Error('proxyFetch: only string bodies')
+  return new Promise((resolve, reject) => {
+    const out = http.request({ host: '127.0.0.1', port: Number(url.port) || 80, path: url.pathname + url.search, method: init.method ?? req?.method ?? 'GET', headers: { ...Object.fromEntries(headers), host: url.host } }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        const h = new Headers()
+        for (const [k, v] of Object.entries(res.headers)) for (const x of [].concat(v)) h.append(k, x)
+        const nullBody = [101, 204, 205, 304].includes(res.statusCode)
+        resolve(new Response(nullBody ? null : Buffer.concat(chunks), { status: res.statusCode, statusText: res.statusMessage, headers: h }))
+      })
+    })
+    out.on('error', reject)
+    if (init.signal) init.signal.addEventListener('abort', () => out.destroy(new Error('aborted')))
+    if (body !== null) out.write(body)
+    out.end()
+  })
 }
