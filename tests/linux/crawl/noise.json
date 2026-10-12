@@ -1,23 +1,53 @@
 {
- "_comment": "Browser output the crawl does not count. Third parties and library noise only: a pattern that hides a Supavise problem does not belong here. The ConfigCat 'flag key does not exist' lines are deliberately absent: the Studio build has no ConfigCat key (docs/reference/studio-platform-calls.md, Disable levers), so it never asks ConfigCat for a flag and such a line would mean the build changed, not that a flag is missing.",
+ "_comment": "Browser output the crawl does not count. Third parties and library noise only: a pattern that hides a Supavise problem does not belong here. The ConfigCat 'flag key does not exist' lines are deliberately absent: the Studio build has no ConfigCat key (docs/reference/studio-platform-calls.md, Disable levers), so it never asks ConfigCat for a flag and such a line would mean the build changed, not that a flag is missing. An entry may be narrower than its pattern: onPage (a regular expression over the pathname of the page when the line appeared), blockedHost (a host of externalHosts below: the line counts as noise only in a run that blocked it) and with (a regular expression over a console line that is noise itself: the line counts only together with such a line on the same record, one for one). externalHosts documents the third parties the crawl's sandbox blocks and what each one makes Studio print; a node with internet loads them, so those lines are the sandbox's and not the node's. A blocked host that is not listed here shows up in the job summary as undocumented.",
+ "externalHosts": [
+  {
+   "host": "js.stripe.com",
+   "reason": "Studio calls loadStripe at module scope in six billing components that sit in shared chunks, so the script is requested on pages that show no billing. The sandbox blocks it; with internet it loads and does nothing, and an air-gapped node prints the same line with nothing in the dashboard depending on it."
+  },
+  {
+   "host": "js.hcaptcha.com",
+   "reason": "Studio's billing components (credit top-up, credit code redemption, payment methods) load hCaptcha, which patch 0001 leaves as it is; the sign-in and account forms render it only when a site key is set. The sandbox blocks the script."
+  },
+  {
+   "host": "sentry.hcaptcha.com",
+   "reason": "hCaptcha's loader reports its own load failures to this host, so a blocked js.hcaptcha.com is followed by a blocked report."
+  }
+ ],
  "console": [
   {
-   "pattern": "usercentrics",
-   "reason": "Studio loads Usercentrics on every page even without a ruleset id; the proxy blocks the host (docs/reference/studio-platform-calls.md, Findings from running Studio, 3)."
+   "pattern": "[Uu]sercentrics",
+   "reason": "Studio starts Usercentrics on every page even without a ruleset id, and the proxy removes every usercentrics.eu source from Studio's content security policy so that a node contacts no third party (internal/proxy/README.md): the browser refuses the request on every node, online or not."
   },
   {
    "pattern": "^Canceled$|Canceled: Canceled",
    "reason": "Monaco rejects its pending requests when a page navigates away."
   },
   {
-   "pattern": "Minified React error #418",
-   "reason": "Hydration mismatch of the 'last used' badge on /sign-in (docs/reference/studio-platform-calls.md, Findings from running Studio, 8)."
+   "pattern": "^Failed to send event to Sentry",
+   "blockedHost": "sentry.hcaptcha.com",
+   "reason": "hCaptcha's loader could not report its own failure to sentry.hcaptcha.com, which the sandbox blocks (externalHosts). The line is not in Studio's source."
   }
  ],
  "pageerror": [
   {
    "pattern": "^Canceled$|Canceled: Canceled",
    "reason": "Monaco rejects its pending requests when a page navigates away."
+  },
+  {
+   "pattern": "^Event$",
+   "with": "[Uu]sercentrics",
+   "reason": "The rejection of the Usercentrics start that the console line above reports: Playwright shows the Event object it is rejected with as a page error. It counts only with a Usercentrics console line on the same record, one for one, so that a script that fails to load is still a finding."
+  },
+  {
+   "pattern": "^Failed to load Stripe\\.js",
+   "blockedHost": "js.stripe.com",
+   "reason": "The sandbox blocks js.stripe.com (externalHosts), which the billing components request at module scope on pages that show no billing."
+  },
+  {
+   "pattern": "^Minified React error #418",
+   "onPage": "^/(?:sign-in|sign-up|forgot-password|reset-password)(?:-[a-z]+)?/?$",
+   "reason": "Hydration mismatch of the 'last used' badge on the sign-in pages (docs/reference/studio-platform-calls.md, Findings from running Studio, 8). The browser raises it as a page error."
   }
  ],
  "requestfailed": [

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 import { chromium } from 'playwright-core'
 
-import { baseUrl, domFindings, guardVerdict, hostKind, judgeResponse, noiseMatch, safeToClick } from './lib.mjs'
+import { baseUrl, domFindings, guardNote, guardVerdict, hostKind, judgeResponse, noiseMatch, pairedLeftover, safeToClick } from './lib.mjs'
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -47,19 +47,58 @@ export class Tracker {
     this.noise = noise
     this.callsFile = callsFile
     this.mutationAttempts = []
-    this.externals = new Set()
+    this.externals = new Map() // host -> the labels of the records that asked for it
     this.totals = { calls: 0, stubs: 0, mutationAttempts: 0 }
     this.ours = new WeakSet() // requests this crawl aborted on purpose
     this.rec = this.fresh('')
   }
 
+  // phase: 'load' while the page loads and settles (Studio only reads then), 'click' once the safe clicks begin (a click can
+  // start a change, which the guard aborts). consoleNoise and paired are for noise entries that count only together with a
+  // console line (see noiseMatch); abortLogs is how many "Failed to fetch" console lines the guard's aborts can explain.
   fresh(label) {
-    return { label, calls: 0, stubs: 0, n4xx: 0, n5xx: 0, pageErrors: 0, findings: [], noise: 0, links: [] }
+    return { label, calls: 0, stubs: 0, n4xx: 0, n5xx: 0, pageErrors: 0, findings: [], noise: 0, links: [], phase: 'load', consoleNoise: [], paired: [], abortLogs: 0 }
   }
 
   begin(label) {
+    this.finish()
     this.rec = this.fresh(label)
     return this.rec
+  }
+
+  // finish settles the noise entries that count only with a console line: the ones that found none are findings.
+  finish() {
+    const rec = this.rec
+    if (rec.paired.length === 0) return
+    const left = pairedLeftover(rec.paired, rec.consoleNoise)
+    rec.noise += rec.paired.length - left.length
+    for (const p of left) this.add({ kind: 'pageerror', allowed: false, detail: p.text.slice(0, 300) })
+    rec.paired = []
+  }
+
+  // noteExternal: a third party the crawl blocked, and which record asked for it.
+  noteExternal(host) {
+    if (!this.externals.has(host)) this.externals.set(host, new Set())
+    this.externals.get(host).add(this.rec.label)
+  }
+
+  // noteAbort: the guard aborted a call. It is a finding when it happens while the page loads: Studio reads then, so the call
+  // is a read the guard does not know (teach it to lib.mjs), not a change. The aborted fetch makes Studio log "Failed to fetch"
+  // once, which is the guard's doing and not Studio's.
+  noteAbort(req, pathname) {
+    this.ours.add(req)
+    this.totals.mutationAttempts++
+    const entry = { page: this.rec.label, method: req.method(), path: pathname }
+    const query = guardNote(req.method(), pathname, req.postData())
+    if (query) entry.query = query
+    this.mutationAttempts.push(entry)
+    this.rec.abortLogs++
+    if (this.rec.phase === 'load') {
+      this.add({
+        kind: 'guard', op: `${entry.method} ${pathname}`, allowed: false,
+        detail: `the mutation guard aborted this call while the page loaded, so it is a read the guard does not know (lib.mjs)${query ? `: ${query}` : ''}`,
+      })
+    }
   }
 
   add(f) {
@@ -114,10 +153,20 @@ export class Tracker {
       if (noiseMatch(this.noise.requestfailed, text)) return void this.rec.noise++
       this.add({ kind: 'requestfailed', op: `${req.method()} ${u.pathname}`, allowed: false, detail: req.failure()?.errorText ?? 'failed' })
     })
+    // where the page is when a line appears, for the noise entries that name a page
+    const here = () => {
+      try {
+        return { pathname: new URL(page.url()).pathname, blocked: new Set(this.externals.keys()) }
+      } catch {
+        return { blocked: new Set(this.externals.keys()) }
+      }
+    }
     page.on('pageerror', (e) => {
       const text = String(e?.message ?? e)
       this.rec.pageErrors++
-      if (noiseMatch(this.noise.pageerror, text)) return void this.rec.noise++
+      const n = noiseMatch(this.noise.pageerror, text, here())
+      if (n?.with) return void this.rec.paired.push({ entry: n, text })
+      if (n) return void this.rec.noise++
       this.add({ kind: 'pageerror', allowed: false, detail: text.slice(0, 300) })
     })
     page.on('console', (m) => {
@@ -134,7 +183,15 @@ export class Tracker {
           /* not a URL */
         }
       }
-      if (noiseMatch(this.noise.console, text)) return void this.rec.noise++
+      if (noiseMatch(this.noise.console, text, here())) {
+        this.rec.consoleNoise.push(text)
+        return void this.rec.noise++
+      }
+      // Studio's fetch wrapper logs this for every request that is aborted: one line for each call the guard aborted
+      if (/^TypeError: Failed to fetch\b/.test(text) && this.rec.abortLogs > 0) {
+        this.rec.abortLogs--
+        return void this.rec.noise++
+      }
       this.add({ kind: 'console.error', allowed: false, detail: text.slice(0, 300) })
     })
   }
@@ -157,15 +214,13 @@ export async function openContext(browser, cfg, tracker, { guard = false } = {})
     }
     const kind = hostKind(u.host, domain)
     if (kind === 'external') {
-      tracker.externals.add(u.host)
+      tracker.noteExternal(u.host)
       tracker.ours.add(req)
       return route.abort('blockedbyclient')
     }
     if (guard && kind === 'api' && /^\/(?:platform|v1|v2)\//.test(u.pathname)) {
       if (guardVerdict(req.method(), u.pathname, req.postData()) === 'abort') {
-        tracker.ours.add(req)
-        tracker.totals.mutationAttempts++
-        tracker.mutationAttempts.push({ page: tracker.rec.label, method: req.method(), path: u.pathname })
+        tracker.noteAbort(req, u.pathname)
         return route.abort('blockedbyclient')
       }
     }

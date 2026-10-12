@@ -4,7 +4,7 @@
 //   node seed.mjs /path/crawl-config.json            (writes <out>/fixtures.json)
 //
 //   A         project "crawl-a": a table with an RLS policy and rows, a bucket with an object, a deployed function,
-//             a pg_cron job, a pgmq queue, a second user with a TOTP factor, a custom hostname
+//             a pg_cron job, a pgmq queue, GraphQL introspection on, a second user with a TOTP factor, a custom hostname
 //   B         branch "crawl-b" of A (schema only; the function is copied), with a custom hostname
 //   pending   branch of A with a table of its own and a merge request (request_review)
 //   paused    branch of A that was paused by hand
@@ -66,6 +66,9 @@ async function seedData(ref, { rich }) {
   if (!rich) return
   // pg_graphql is off in a new project, as on hosted; the GraphiQL page and the Data API docs need it
   await node.sql(ref, 'create extension if not exists pg_graphql')
+  // From 1.6.0 pg_graphql answers no introspection until the schema's comment asks for it (the directive Studio writes when a
+  // user presses "Enable introspection" on the GraphiQL page); the GraphiQL probe reads the schema through the page
+  await node.sql(ref, `comment on schema public is e'@graphql({"introspection": true})'`)
   await node.sql(ref, 'create extension if not exists pg_cron')
   await node.sql(ref, `select cron.schedule('crawl-job', '0 3 * * *', $$select 1$$)`)
   try {

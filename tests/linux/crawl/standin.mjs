@@ -67,6 +67,10 @@ export async function startStandin({ domain }) {
       if (path === `/project/${REF}/missing`) return doc('Missing', '<h1>Missing</h1>', call('/platform/missing'))
       if (path === `/project/${REF}/bad`) return doc('Bad', '<h1>Bad</h1><p>Failed to load the thing</p>')
       if (path === `/project/${REF}/mutate`) return doc('Mutate', '<h1>Mutate</h1>', call(`/platform/projects/${REF}`, "{method: 'DELETE'}") + call('/platform/pg-meta/x/query', "{method: 'POST', body: JSON.stringify({query: 'select 1'})}"))
+      // a read the guard does not know (a statement that sets a role first), as a fetch wrapper that logs the failure of a fetch
+      if (path === `/project/${REF}/guarded`) {
+        return doc('Guarded', '<h1>Guarded</h1>', `fetch(API + '/platform/pg-meta/x/query', {method: 'POST', headers: {authorization: 'Bearer t', 'content-type': 'application/json'}, body: JSON.stringify({query: 'set role postgres;\\nselect 1'})}).catch((e) => console.error(e));`)
+      }
       if (path === `/project/${REF}/console`) return doc('Console', '<h1>Console</h1>', "console.error('something broke'); console.error('usercentrics said no');")
       if (path === `/project/${REF}/throws`) return doc('Throws', '<h1>Throws</h1>', "setTimeout(() => { throw new Error('page exploded') }, 100);")
       if (path === `/project/${REF}/external`) {
