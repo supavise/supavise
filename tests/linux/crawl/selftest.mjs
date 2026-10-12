@@ -10,8 +10,9 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
-  Allowlist, DOM_ORACLES, domFindings, expandRoutes, failures, fillRoute, globRegExp, guardVerdict, hostKind, isReadOnlySQL,
-  judgeResponse, noiseMatch, opRegExp, pagesOf, readJSON, routeParams, safeToClick, stateVisits, summaryMarkdown,
+  Allowlist, DOM_ORACLES, domFindings, expandRoutes, failures, fillRoute, globRegExp, guardNote, guardVerdict, hostKind,
+  isReadOnlyGraphQL, isReadOnlySQL, judgeResponse, noiseMatch, opRegExp, pagesOf, pairedLeftover, readJSON,
+  routeParams, safeToClick, splitSQL, stateVisits, summaryMarkdown,
 } from './lib.mjs'
 import { awake, createBranch, Node, redact, Stop, totp, waitBranch, waitFor } from './node.mjs'
 import { REF, startStandin } from './standin.mjs'
@@ -108,16 +109,50 @@ test('judging a response', () => {
   assert.equal(j({ path: '/v1/projects/abcdefghijklmnopqrst/ssl-enforcement', status: 400 })[0].allowed, true)
   assert.equal(j({ path: '/v1/projects/abcdefghijklmnopqrst/health', status: 404 })[0].allowed, false)
   assert.equal(j({ path: '/platform/projects', status: 500 })[0].kind, '5xx')
+  assert.equal(j({ path: '/platform/projects', status: 500 })[0].allowed, false)
+  // an honest 5xx that "statuses" lists is allowed, by route and status only
+  const withFive = new Allowlist({ statuses: [{ op: 'POST /platform/pg-meta/{ref}/query', status: 503, reach: 'static', reason: 'not ready yet' }] })
+  const five = (status, path = '/platform/pg-meta/abcdefghijklmnopqrst/query') => judgeResponse({ host: 'api.supavise.test', method: 'POST', stub: false, status, path }, d, withFive)
+  assert.deepEqual(five(503).map((x) => [x.kind, x.allowed]), [['5xx', true]])
+  assert.deepEqual(five(500).map((x) => [x.kind, x.allowed]), [['5xx', false]])
+  assert.deepEqual(five(503, '/platform/projects').map((x) => [x.kind, x.allowed]), [['5xx', false]])
   assert.deepEqual(judgeResponse({ host: 'cdn.example.com', method: 'GET', path: '/x', status: 500, stub: false }, d, allow), [])
   // a stub header on a project host is not the Management API's business
   assert.deepEqual(judgeResponse({ host: 'a.api.supavise.test', method: 'GET', path: '/rest/v1/', status: 200, stub: true }, d, allow), [])
 })
 
 test('console noise', () => {
-  const noise = [{ pattern: 'usercentrics', reason: 'x' }, { pattern: '^Minified React error #418', reason: 'y' }]
+  const noise = [{ pattern: '[Uu]sercentrics', reason: 'x' }, { pattern: '^Minified React error #418', reason: 'y' }]
   assert.ok(noiseMatch(noise, 'Failed to load https://app.usercentrics.eu/x'))
+  assert.ok(noiseMatch(noise, 'Failed to initialize Usercentrics: TypeError: Failed to fetch'), 'the name is written with a capital in the line')
   assert.ok(noiseMatch(noise, 'Minified React error #418; visit'))
   assert.equal(noiseMatch(noise, 'TypeError: x is not a function'), null)
+})
+
+test('noise that names a page, a blocked host or a partner line', () => {
+  const list = [
+    { pattern: '^Minified React error #418', onPage: '^/(?:sign-in|sign-up)(?:-[a-z]+)?/?$', reason: 'badge' },
+    { pattern: '^Failed to load Stripe\\.js', blockedHost: 'js.stripe.com', reason: 'sandbox' },
+    { pattern: '^Sentry failed', blockedHost: ['a.example', 'b.example'], reason: 'sandbox' },
+    { pattern: '^Event$', with: 'Usercentrics', reason: 'pair' },
+  ]
+  const hit = (text, ctx) => noiseMatch(list, text, ctx)?.reason ?? null
+  assert.equal(hit('Minified React error #418; visit', { pathname: '/sign-in' }), 'badge')
+  assert.equal(hit('Minified React error #418; visit', { pathname: '/sign-in-sso' }), 'badge')
+  assert.equal(hit('Minified React error #418; visit', { pathname: '/project/x' }), null, 'the same error elsewhere is a finding')
+  assert.equal(hit('Minified React error #418; visit', {}), null, 'no page known')
+  assert.equal(hit('Failed to load Stripe.js', { blocked: new Set(['js.stripe.com']) }), 'sandbox')
+  assert.equal(hit('Failed to load Stripe.js', { blocked: new Set(['other.example']) }), null, 'the host was not blocked in this run')
+  assert.equal(hit('Failed to load Stripe.js', {}), null)
+  assert.equal(hit('Sentry failed: x', { blocked: new Set(['b.example']) }), 'sandbox')
+  // a partner line matches; whether it counts is decided against the console lines of the record
+  const pair = noiseMatch(list, 'Event')
+  assert.equal(pair.with, 'Usercentrics')
+  const ev = (text) => ({ entry: pair, text })
+  assert.deepEqual(pairedLeftover([ev('Event')], ['Failed to initialize Usercentrics']), [])
+  assert.equal(pairedLeftover([ev('Event')], []).length, 1)
+  assert.equal(pairedLeftover([ev('Event'), ev('Event')], ['Usercentrics']).length, 1, 'one console line pairs with one page error')
+  assert.equal(pairedLeftover([ev('Event')], ['something else']).length, 1)
 })
 
 test('page text oracles', () => {
@@ -136,6 +171,67 @@ test('read-only SQL', () => {
     assert.equal(isReadOnlySQL(q), false, String(q))
 })
 
+test('read-only SQL: what Studio puts around a read', () => {
+  // the statements that the reports, the advisors, the queue metrics, the row counts and the migrations list send
+  const reads = [
+    '-- reports-query-performance-unified\nset search_path to public, extensions;\n\n-- c\nwith g as (select 1) select * from g',
+    "set local search_path = ''; ( with fk as (select 1) select * from fk ) union all ( with x as (select 2) select * from x )",
+    "set local statement_timeout = '1s'; SELECT COUNT(*) AS row_count FROM pgmq.q_x;",
+    "set search_path to public, extensions; select * from index_advisor('select 1');",
+    "set session lock_timeout = '2s'; select 1",
+    `CREATE OR REPLACE FUNCTION pg_temp.count_estimate(query text) RETURNS integer LANGUAGE plpgsql AS $$
+     DECLARE plan jsonb;
+     BEGIN EXECUTE 'EXPLAIN (FORMAT JSON)' || query INTO plan; RETURN plan->0->'Plan'->'Plan Rows'; END;
+     $$;
+     select pg_temp.count_estimate('select 1')`,
+    "drop type if exists pg_temp.t cascade; create type pg_temp.t as enum ('A','B'); select 1",
+    `do $$ declare m text; begin if pg_catalog.to_regclass('supabase_migrations.schema_migrations') is not null then
+       select coalesce(pg_catalog.jsonb_agg(pg_catalog.to_jsonb(sm)), '[]'::pg_catalog.jsonb)::text into m from supabase_migrations.schema_migrations sm;
+       else m := '[]'; end if; perform pg_catalog.set_config('supabase.studio_migrations', m, true); end $$;
+     select 1`,
+    'select 1; select 2',
+    "select $a$ ; drop table t; $a$",
+  ]
+  for (const q of reads) assert.equal(isReadOnlySQL(q), true, q)
+  const writes = [
+    'select * into t2 from t',
+    'set role postgres; select 1',
+    'set search_path to public; drop table t',
+    'set search_path to (select 1)',
+    "set session_authorization x; select 1",
+    "do $$ begin delete from t; end $$",
+    "do $$ begin perform pg_terminate_backend(1); end $$",
+    "do $$ begin execute 'delete from t'; end $$; select 1",
+    "do $$ begin perform set_config('a', 'b', true); end $$; drop table t",
+    "create or replace function pg_temp.f() returns int language plpgsql as $$ begin delete from t; return 1; end $$",
+    "create or replace function public.f() returns int language sql as $$ select 1 $$",
+    "create or replace function pg_temp.f() returns int language sql set search_path = x as $$ select 1 $$",
+    "create type pg_temp.t as enum ('a'); create table x()",
+    "drop type if exists public.t",
+    'select 1; delete from t',
+    "select 'a' ; drop table t",
+    'select 1 /* never closed',
+    "select 'never closed",
+    '  ; ',
+    'begin; select 1; commit',
+    'alter system set x = 1',
+  ]
+  for (const q of writes) assert.equal(isReadOnlySQL(q), false, q)
+  // the pieces
+  const st = splitSQL("set a to 'x;y'; /* ; */ select \"a;b\" -- ;\n; do $f$ ; $f$")
+  assert.deepEqual(st.map((x) => x.code), ["set a to ''", 'select ""', 'do $$'])
+  assert.deepEqual(st[2].bodies, [' ; '])
+  assert.equal(splitSQL("select $1, 'it''s'")[0].code, "select $1, ''")
+  assert.equal(splitSQL("select 'open"), null)
+})
+
+test('read-only GraphQL', () => {
+  for (const q of ['query IntrospectionQuery { __schema { types { name } } }', '{ __typename }', 'query Q($x: Int) { items(first: $x) { edges { node { id } } } }', '# mutation in a comment\n{ a }', 'query { a(s: "mutation x") }'])
+    assert.equal(isReadOnlyGraphQL(q), true, q)
+  for (const q of ['mutation { deleteFromItemsCollection { affectedCount } }', 'query A { a } mutation B { b }', 'subscription { a }', '', '   ', null, 5])
+    assert.equal(isReadOnlyGraphQL(q), false, String(q))
+})
+
 test('the mutation guard', () => {
   assert.equal(guardVerdict('GET', '/platform/projects', null), 'allow')
   assert.equal(guardVerdict('HEAD', '/platform/projects/x/api/rest', null), 'allow')
@@ -151,6 +247,28 @@ test('the mutation guard', () => {
   assert.equal(guardVerdict('POST', '/platform/storage/x/buckets/b/objects/move', '{}'), 'abort')
   assert.equal(guardVerdict('POST', '/platform/profile/audit-login', '{}'), 'allow')
   assert.equal(guardVerdict('POST', '/v1/projects/x/branches', '{}'), 'abort')
+  // the reports send a set before their select; the new-project form asks which Postgres versions there are
+  assert.equal(guardVerdict('POST', '/platform/pg-meta/x/query', JSON.stringify({ query: 'set search_path to public, extensions;\nselect 1' })), 'allow')
+  assert.equal(guardVerdict('POST', '/platform/pg-meta/x/query', JSON.stringify({ query: 'set role postgres; select 1' })), 'abort')
+  assert.equal(guardVerdict('POST', '/platform/pg-meta/x/query', JSON.stringify({ query: 5 })), 'abort')
+  assert.equal(guardVerdict('POST', '/platform/organizations/default/available-versions', '{}'), 'allow')
+  assert.equal(guardVerdict('POST', '/platform/organizations/default/available-versions/x', '{}'), 'abort')
+  // GraphiQL posts to the project's GraphQL endpoint: a query goes through, a mutation does not
+  const gql = (query) => guardVerdict('POST', '/platform/projects/x/api/graphql', JSON.stringify({ query }))
+  assert.equal(gql('query IntrospectionQuery { __schema { queryType { name } } }'), 'allow')
+  assert.equal(gql('mutation { deleteFromItemsCollection(atMost: 1) { affectedCount } }'), 'abort')
+  assert.equal(guardVerdict('POST', '/platform/projects/x/api/graphql', 'not json'), 'abort')
+  assert.equal(guardVerdict('POST', '/platform/projects/x/api/rest', '{}'), 'abort')
+})
+
+test('what the guard records of an aborted call', () => {
+  const body = JSON.stringify({ query: `-- reports\nselect   1 ${'x'.repeat(200)}` })
+  const note = guardNote('POST', '/platform/pg-meta/x/query', body)
+  assert.equal(note.length, 120)
+  assert.ok(note.startsWith('-- reports select 1 xxx'), 'whitespace is folded')
+  assert.equal(guardNote('POST', '/platform/projects/x/api/graphql', JSON.stringify({ query: 'mutation { a }' })), 'mutation { a }')
+  assert.equal(guardNote('PUT', '/platform/projects/x/secrets', JSON.stringify({ query: 'secret' })), '', 'other bodies can hold secrets')
+  assert.equal(guardNote('POST', '/platform/pg-meta/x/query', 'not json'), '')
 })
 
 test('the click deny list', () => {
@@ -172,6 +290,7 @@ test('failures and the summary', () => {
     crashed: [{ where: "route pass, group 'A'", kind: 'crash', detail: 'sign-in timed out' }],
     allowlist: { unseen: { stubs: ['GET /platform/q'], statuses: [], dom: [] }, seenStatic: { stubs: ['GET /platform/w'], statuses: [], dom: [] } },
     totals: { calls: 5, stubs: 1, mutationAttempts: 0 },
+    externals: [{ host: 'js.stripe.com', pages: ['/new', '/org/x', '/a', '/b'], documented: 'the sandbox' }, { host: 'cdn.example.invalid', pages: ['/x'], documented: null }],
   }
   const f = failures(report)
   assert.deepEqual(f.map((x) => x.kind), ['5xx', '4xx', 'probe', 'crash', 'no-fixture', 'unseen'])
@@ -179,6 +298,108 @@ test('failures and the summary', () => {
   assert.match(md, /6 failure\(s\)/)
   assert.match(md, /\| p2 \| FAILED \|/)
   assert.match(md, /GET \/platform\/w/)
+  assert.match(md, /\| js\.stripe\.com \| \/new, \/org\/x, \/a and 1 more \| yes \|/)
+  assert.match(md, /\| cdn\.example\.invalid \| \/x \| \*\*no\*\* \|/, 'a blocked host that noise.json does not document stands out')
+  assert.ok(!f.some((x) => /external|cdn\.example/.test(`${x.kind} ${x.detail}`)), 'an undocumented host is shown, not a failure')
+})
+
+// ---- the tracker (browser.mjs) with a page that is only an event source ----------------------------
+// browser.mjs imports playwright-core (`npm ci --prefix tests/linux/crawl`); without it the test is skipped.
+test('the tracker pairs a page error with its console line, scopes noise and blames the guard for what it aborted', async (t) => {
+  let Tracker
+  try {
+    ;({ Tracker } = await import('./browser.mjs'))
+  } catch (e) {
+    if (e?.code !== 'ERR_MODULE_NOT_FOUND') throw e
+    return t.skip('playwright-core is not installed')
+  }
+  const cfg = { domain: 'supavise.test' }
+  const noise = {
+    console: [{ pattern: '[Uu]sercentrics', reason: 'x' }, { pattern: '^Failed to send event to Sentry', blockedHost: 'sentry.hcaptcha.com', reason: 'y' }],
+    pageerror: [
+      { pattern: '^Event$', with: '[Uu]sercentrics', reason: 'z' },
+      { pattern: '^Failed to load Stripe\\.js', blockedHost: 'js.stripe.com', reason: 'w' },
+      { pattern: '^Minified React error #418', onPage: '^/sign-in$', reason: 'v' },
+    ],
+    requestfailed: [],
+  }
+  const tracker = new Tracker({ cfg, allow: new Allowlist({}), noise, callsFile: null })
+  let url = 'http://studio.supavise.test/sign-in'
+  const on = {}
+  tracker.attach({ on: (ev, fn) => (on[ev] = fn), url: () => url })
+  const consoleError = (text) => on.console({ type: () => 'error', text: () => text, location: () => ({ url: 'http://studio.supavise.test/_next/static/chunks/a.js' }) })
+  const finding = (rec) => rec.findings.map((f) => `${f.kind}: ${f.op ?? ''}${f.detail}`)
+
+  // the Usercentrics start fails: a console line and a page error that is the rejection, in either order
+  let rec = tracker.begin('page 1')
+  on.pageerror(new Error('Event'))
+  consoleError('Failed to initialize Usercentrics: TypeError: Failed to fetch')
+  tracker.finish()
+  assert.deepEqual(finding(rec), [])
+  assert.equal(rec.noise, 2)
+  // a page error without such a console line stays a finding, and so does a second one
+  rec = tracker.begin('page 2')
+  on.pageerror(new Error('Event'))
+  tracker.finish()
+  assert.deepEqual(finding(rec), ['pageerror: Event'])
+  rec = tracker.begin('page 3')
+  consoleError('Failed to initialize Usercentrics: TypeError: Failed to fetch')
+  on.pageerror(new Error('Event'))
+  on.pageerror(new Error('Event'))
+  tracker.finish()
+  assert.deepEqual(finding(rec), ['pageerror: Event'])
+  // beginning the next record settles the one before it
+  rec = tracker.begin('page 4')
+  on.pageerror(new Error('Event'))
+  tracker.begin('page 5')
+  assert.deepEqual(finding(rec), ['pageerror: Event'])
+
+  // noise that depends on a host the crawl blocked
+  rec = tracker.begin('page 6')
+  on.pageerror(new Error('Failed to load Stripe.js'))
+  consoleError('Failed to send event to Sentry {status: 0, body: TypeError: Failed to fetch}')
+  assert.equal(finding(rec).length, 2, 'nothing was blocked yet')
+  tracker.noteExternal('js.stripe.com')
+  tracker.noteExternal('sentry.hcaptcha.com')
+  rec = tracker.begin('page 7')
+  tracker.noteExternal('js.stripe.com') // the request that the sandbox blocks again
+  on.pageerror(new Error('Failed to load Stripe.js'))
+  consoleError('Failed to send event to Sentry {status: 0, body: TypeError: Failed to fetch}')
+  assert.deepEqual(finding(rec), [])
+  assert.deepEqual([...tracker.externals.get('js.stripe.com')].sort(), ['page 6', 'page 7'])
+
+  // noise that names a page
+  rec = tracker.begin('page 8')
+  on.pageerror(new Error('Minified React error #418; visit'))
+  assert.deepEqual(finding(rec), [])
+  url = 'http://studio.supavise.test/project/abc'
+  on.pageerror(new Error('Minified React error #418; visit'))
+  assert.equal(finding(rec).length, 1)
+
+  // a call the guard aborts while the page loads is a finding of the guard; the "Failed to fetch" that follows is not Studio's
+  const req = (method, body) => ({ method: () => method, postData: () => body })
+  rec = tracker.begin('page 9')
+  tracker.noteAbort(req('POST', JSON.stringify({ query: 'set role x;\nselect 1' })), '/platform/pg-meta/abc/query')
+  tracker.noteAbort(req('POST', JSON.stringify({ query: 'set role x;\nselect 1' })), '/platform/pg-meta/abc/query') // a retry: the same finding
+  consoleError('TypeError: Failed to fetch\n    at fetchHandler (chunks/a.js:1:1)')
+  consoleError('TypeError: Failed to fetch\n    at fetchHandler (chunks/a.js:1:1)')
+  consoleError('TypeError: Failed to fetch\n    at fetchHandler (chunks/a.js:1:1)')
+  assert.deepEqual(rec.findings.map((f) => f.kind), ['guard', 'console.error'], 'two aborts explain two lines; the third is Studio\'s')
+  assert.match(rec.findings[0].detail, /set role x; select 1$/)
+  assert.equal(rec.findings[0].allowed, false)
+  assert.deepEqual(tracker.mutationAttempts.map((m) => [m.method, m.path, m.query]), [['POST', '/platform/pg-meta/abc/query', 'set role x; select 1'], ['POST', '/platform/pg-meta/abc/query', 'set role x; select 1']])
+  assert.equal(tracker.totals.mutationAttempts, 2)
+  // once the safe clicks begin, an aborted call may be the change that a click started: recorded, not a finding
+  rec = tracker.begin('page 10')
+  rec.phase = 'click'
+  tracker.noteAbort(req('DELETE'), '/platform/projects/abc')
+  consoleError('TypeError: Failed to fetch')
+  assert.deepEqual(rec.findings, [])
+  assert.deepEqual(tracker.mutationAttempts.at(-1), { page: 'page 10', method: 'DELETE', path: '/platform/projects/abc' })
+  // a "Failed to fetch" on a page the guard did not touch is Studio's
+  rec = tracker.begin('page 11')
+  consoleError('TypeError: Failed to fetch')
+  assert.deepEqual(rec.findings.map((f) => f.kind), ['console.error'])
 })
 
 // ---- the files next to lib.mjs ----------------------------------------------------------------
@@ -192,13 +413,32 @@ test('allowlist.json, noise.json and routes.json are well formed', () => {
     assert.ok(e.reason.split(/\s+/).length >= 3, e.op)
   }
   const noise = readJSON(join(HERE, 'noise.json'))
+  const hosts = new Set(noise.externalHosts.map((x) => x.host))
+  for (const x of noise.externalHosts) assert.ok(x.host && x.reason.split(/\s+/).length >= 5, `externalHosts ${x.host}`)
   for (const k of ['console', 'pageerror', 'requestfailed']) {
     assert.ok(Array.isArray(noise[k]), k)
     for (const n of noise[k]) {
       new RegExp(n.pattern)
       assert.ok(n.reason, `${k} ${n.pattern}`)
+      if (n.onPage) new RegExp(n.onPage)
+      if (n.with) {
+        assert.equal(k, 'pageerror', `${n.pattern}: only a page error pairs with a console line`)
+        assert.ok(noiseMatch(noise.console, n.with.replace(/\[Uu\]/g, 'U')), `${n.pattern}: nothing in console noise matches "${n.with}"`)
+      }
+      for (const h of [].concat(n.blockedHost ?? [])) assert.ok(hosts.has(h), `${k} ${n.pattern}: ${h} is not in externalHosts`)
     }
   }
+  // the lines the first full run saw, with the page and the run state they came with
+  const seen = (list, text, ctx) => noiseMatch(noise[list], text, ctx)?.reason ?? null
+  assert.ok(seen('console', 'Failed to initialize Usercentrics: TypeError: Failed to fetch'))
+  assert.ok(seen('pageerror', 'Event'), 'the Usercentrics rejection (counted only with its console line)')
+  assert.ok(seen('pageerror', 'Failed to load Stripe.js', { blocked: new Set(['js.stripe.com']) }))
+  assert.equal(seen('pageerror', 'Failed to load Stripe.js', { blocked: new Set() }), null)
+  assert.ok(seen('console', 'Failed to send event to Sentry {status: 0, body: TypeError: Failed to fetch}', { blocked: new Set(['sentry.hcaptcha.com']) }))
+  assert.ok(seen('pageerror', 'Minified React error #418; visit https://react.dev/errors/418?args[]=HTML&args[]=', { pathname: '/sign-in' }))
+  assert.equal(seen('pageerror', 'Minified React error #418; visit https://react.dev/errors/418', { pathname: '/project/abc' }), null)
+  assert.equal(seen('pageerror', 'ChunkLoadError: Loading chunk 12 failed'), null)
+  assert.equal(seen('pageerror', 'ErrorEvent'), null, 'the GraphiQL worker failure is not noise')
   const rules = readJSON(join(HERE, 'routes.json'))
   for (const s of [...rules.skip, ...rules.hidden]) globRegExp(s.route)
   for (const s of rules.skip) assert.ok(s.reason, s.route)
@@ -291,7 +531,7 @@ async function crawlStandin(pages, { allowlist, extraRules = {} }) {
 
 test('crawl.mjs finds what it should in a dirty stand-in', { skip: !chrome && 'set CRAWL_STANDIN_CHROME to a Chrome executable', timeout: 280_000 }, async () => {
   const pages = ['/organizations', '/org/[slug]', '/project/[ref]', '/project/[ref]/tabs', '/project/[ref]/stubbed', '/project/[ref]/boom', '/project/[ref]/missing', '/project/[ref]/bad',
-    '/project/[ref]/mutate', '/project/[ref]/console', '/project/[ref]/throws', '/project/[ref]/external', '/sign-in']
+    '/project/[ref]/mutate', '/project/[ref]/guarded', '/project/[ref]/console', '/project/[ref]/throws', '/project/[ref]/external', '/sign-in']
   const r = await crawlStandin(pages, {
     allowlist: {
       stubs: [{ op: 'GET /platform/notifications', reach: 'crawl', reason: 'a known stub' }, { op: 'GET /platform/never', reach: 'crawl', reason: 'a stub nobody calls' }],
@@ -313,11 +553,16 @@ test('crawl.mjs finds what it should in a dirty stand-in', { skip: !chrome && 's
   assert.ok(has('unseen', /\/platform\/never/), 'an allow-list entry that was never seen')
   assert.ok(!f.some((x) => x.kind === 'expect' || x.kind === 'signed-out' || x.kind === 'navigation'), `unexpected: ${JSON.stringify(f.filter((x) => ['expect', 'signed-out', 'navigation'].includes(x.kind)))}`)
   assert.ok(r.report.externalHosts.includes('cdn.example.invalid'))
-  assert.deepEqual(r.report.mutationAttempts.map((m) => `${m.method} ${m.path}`), [`DELETE /platform/projects/${REF}`])
+  assert.deepEqual(r.report.mutationAttempts.map((m) => `${m.method} ${m.path}`).sort(), [`DELETE /platform/projects/${REF}`, 'POST /platform/pg-meta/x/query'])
+  assert.equal(r.report.mutationAttempts.find((m) => m.method === 'POST').query, 'set role postgres; select 1', 'the head of the aborted query is recorded')
+  // both aborts happen while the page loads: the guard fails, and what Studio logs about the aborted fetch is not blamed on Studio
+  assert.ok(has('guard', /POST \/platform\/pg-meta\/x\/query.*set role postgres; select 1/), 'a read the guard aborted')
+  assert.ok(has('guard', /DELETE \/platform\/projects/), 'a change at load')
+  assert.ok(!has('console.error', /Failed to fetch/), 'the fetch the guard aborted is not a console error of the page')
   assert.ok(r.calls.some((c) => c.path === '/platform/clicked-tab'), 'a tab was clicked')
   assert.ok(!r.calls.some((c) => c.path === '/platform/clicked-delete'), 'a tab on the deny list was not clicked')
   assert.ok(r.calls.some((c) => c.path === '/platform/pg-meta/x/query'), 'a read-only POST went through the guard')
-  assert.equal(r.report.pages.filter((p) => p.url.includes(REF)).length, 10)
+  assert.equal(r.report.pages.filter((p) => p.url.includes(REF)).length, 11)
 })
 
 test('crawl.mjs passes a clean stand-in', { skip: !chrome && 'set CRAWL_STANDIN_CHROME to a Chrome executable', timeout: 200_000 }, async () => {

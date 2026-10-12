@@ -211,7 +211,7 @@ const API_PATH = /^\/(?:platform|v1|v2)\//
 
 // judgeResponse: the findings of one response. A finding is {kind, op, detail, allowed}. `stub` is the
 // X-Supavise-Stub header. Only the Management API is held to the stub rule; every host is held to the
-// 5xx and 4xx rules; a 4xx is allowed by a "statuses" entry.
+// 5xx and 4xx rules; a 4xx or a 5xx is allowed by a "statuses" entry.
 export function judgeResponse({ method, host, path, status, stub }, domain, allow) {
   const kind = hostKind(host, domain)
   if (kind === 'external') return []
@@ -221,7 +221,9 @@ export function judgeResponse({ method, host, path, status, stub }, domain, allo
     out.push({ kind: 'stub', op: `${method} ${path}`, allowed: !!e, detail: e ? e.reason : 'answered by a stub that is not in the allow-list' })
   }
   if (status >= 500) {
-    out.push({ kind: '5xx', op: `${method} ${path}`, status, allowed: false, detail: `${status}` })
+    // an honest 5xx of a handler (a 503 while a project comes up) is listed under "statuses" like a 4xx; any other fails
+    const e = allow.status(method, path, status)
+    out.push({ kind: '5xx', op: `${method} ${path}`, status, allowed: !!e, detail: e ? e.reason : `${status}` })
   } else if (status >= 400) {
     const e = allow.status(method, path, status)
     out.push({ kind: '4xx', op: `${method} ${path}`, status, allowed: !!e, detail: e ? e.reason : `${status} that is not in the allow-list` })
@@ -229,9 +231,40 @@ export function judgeResponse({ method, host, path, status, stub }, domain, allo
   return out
 }
 
-// A console line, page error or failed request is noise when a noise.json pattern matches it.
-export function noiseMatch(list, text) {
-  return (list ?? []).find((n) => new RegExp(n.pattern).test(text)) ?? null
+// A console line, page error or failed request is noise when a noise.json entry matches it. An entry is
+//   pattern      a regular expression over the text of the line
+//   reason       why the line does not count (required)
+//   onPage       a regular expression over the pathname of the page when the line appeared (default: any page)
+//   blockedHost  a third party host, or a list of them, that the crawl blocked: the line is a consequence of the block,
+//                so it is noise only in a run that blocked one of them (a node with internet does not show it)
+//   with         a regular expression over a console line that is noise itself: the entry counts only together with such
+//                a line on the same record, one for one (pairedLeftover decides at the end of the record)
+// ctx: { pathname, blocked } where blocked is the Set of the hosts the crawl has blocked so far.
+export function noiseMatch(list, text, ctx = {}) {
+  return (list ?? []).find((n) => noiseApplies(n, ctx) && new RegExp(n.pattern).test(text)) ?? null
+}
+
+function noiseApplies(n, { pathname, blocked } = {}) {
+  if (n.onPage && !(typeof pathname === 'string' && new RegExp(n.onPage).test(pathname))) return false
+  if (n.blockedHost) {
+    const hosts = [].concat(n.blockedHost)
+    if (!hosts.some((h) => blocked?.has(h))) return false
+  }
+  return true
+}
+
+// pairedLeftover: the deferred lines ({entry, text}) that found no console noise line to go with. Each console line pairs
+// with one deferred line.
+export function pairedLeftover(pending, consoleNoise) {
+  const free = [...consoleNoise]
+  const left = []
+  for (const p of pending) {
+    const re = new RegExp(p.entry.with)
+    const i = free.findIndex((t) => re.test(t))
+    if (i < 0) left.push(p)
+    else free.splice(i, 1)
+  }
+  return left
 }
 
 // The page texts that mean a dead end. text is a substring; the oracles of the lane spec.
@@ -255,22 +288,130 @@ export function domFindings(route, pageText, allow, extra = []) {
 // ---- the mutation guard --------------------------------------------------------------------------
 const MUTATING_SQL = /\b(?:insert|update|delete|drop|alter|create|truncate|grant|revoke|call|copy|vacuum|reindex|notify|set|reset|do)\b/i
 
-function stripSqlComments(sql) {
-  return sql.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ').trim()
+const DOLLAR_TAG = /\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/y
+
+// splitSQL cuts a script into its statements at the semicolons that are outside quotes, comments and dollar-quoted bodies.
+// A statement is { code, bodies }: `code` has its comments dropped, its strings written '', its quoted identifiers "" and
+// its dollar-quoted bodies $$; `bodies` holds the text of those bodies. Returns null when a quote or a comment stays open.
+export function splitSQL(sql) {
+  const s = String(sql ?? '')
+  const out = []
+  let code = ''
+  let bodies = []
+  const flush = () => {
+    if (code.trim() !== '' || bodies.length > 0) out.push({ code: code.trim(), bodies })
+    code = ''
+    bodies = []
+  }
+  const quoted = (i, q) => {
+    // the end of a '...' or "..." that starts at i; a doubled quote is part of it
+    for (let j = i + 1; j < s.length; j++) {
+      if (s[j] !== q) continue
+      if (s[j + 1] === q) j++
+      else return j
+    }
+    return -1
+  }
+  for (let i = 0; i < s.length; ) {
+    const c = s[i]
+    if (c === '-' && s[i + 1] === '-') {
+      const j = s.indexOf('\n', i)
+      code += ' '
+      i = j < 0 ? s.length : j
+    } else if (c === '/' && s[i + 1] === '*') {
+      let depth = 1
+      let j = i + 2
+      while (j < s.length && depth > 0) {
+        if (s[j] === '/' && s[j + 1] === '*') (depth++, (j += 2))
+        else if (s[j] === '*' && s[j + 1] === '/') (depth--, (j += 2))
+        else j++
+      }
+      if (depth > 0) return null
+      code += ' '
+      i = j
+    } else if (c === "'" || c === '"') {
+      const j = quoted(i, c)
+      if (j < 0) return null
+      code += c + c
+      i = j + 1
+    } else if (c === '$' && !/[\w$]/.test(s[i - 1] ?? ' ')) {
+      DOLLAR_TAG.lastIndex = i
+      const m = DOLLAR_TAG.exec(s)
+      if (!m) {
+        code += c
+        i++
+        continue
+      }
+      const j = s.indexOf(m[0], i + m[0].length)
+      if (j < 0) return null
+      bodies.push(s.slice(i + m[0].length, j))
+      code += '$$'
+      i = j + m[0].length
+    } else if (c === ';') {
+      flush()
+      i++
+    } else {
+      code += c
+      i++
+    }
+  }
+  flush()
+  return out
 }
 
-// isReadOnlySQL: a single read statement (select, with, explain, show, table), by its first word and the
-// absence of any word that changes state. A false negative aborts a harmless query and records it as a
+// What the dashboard sends before or around a read, none of which changes what the database holds:
+//   set [session|local] search_path | statement_timeout | lock_timeout ...   (the reports, the advisors, the queue metrics)
+//   the helpers it makes in pg_temp, which go with the connection: a function (the row count estimate, the index
+//   advisor's explain) and an enum type, whose body or text holds no word that changes state
+//   a do block that only reads a table and keeps the result with set_config (the migrations list)
+const SET_SAFE = /^set\s+(?:(?:session|local)\s+)?(?:search_path|statement_timeout|lock_timeout)\s*(?:=|to)\s*[\w\s'",.]+$/i
+const TEMP_FUNCTION = /^create\s+(?:or\s+replace\s+)?function\s+pg_temp\./i
+const TEMP_TYPE_DROP = /^drop\s+type\s+if\s+exists\s+pg_temp\.\w+(?:\s+cascade)?$/i
+const TEMP_TYPE = /^create\s+type\s+pg_temp\.\w+\s+as\s+enum\s*\((?:\s*''\s*,?)*\s*\)$/i
+const DO_BLOCK = /^do\s+(?:language\s+\w+\s+)?\$\$(?:\s+language\s+\w+)?$/i
+
+// plpgsqlReadsOnly: the body of a function or a do block holds no word that changes state, no nested body, and (a do block
+// runs at once) no dynamic SQL and no perform other than set_config.
+function plpgsqlReadsOnly(body, { immediate }) {
+  const parts = splitSQL(body)
+  if (parts === null || parts.some((p) => p.bodies.length > 0)) return false
+  const code = parts.map((p) => p.code).join(';')
+  if (MUTATING_SQL.test(code)) return false
+  if (/\bperform\b(?!\s+(?:pg_catalog\.)?set_config\s*\()/i.test(code)) return false
+  return !(immediate && /\bexecute\b/i.test(code))
+}
+
+function readsOnly(code) {
+  return /^\(*\s*(?:select|with|explain|show|table|values)\b/i.test(code) && !MUTATING_SQL.test(code.replace(/\bexplain\s*\(?\s*analyze\b/gi, 'explain')) && !/\binto\b/i.test(code)
+}
+
+// isReadOnlySQL: every statement of the script is a read (select, with, explain, show, table, values: no word that changes
+// state, no select into) or one of the statements above. A false negative aborts a harmless query and records it as a
 // mutation attempt; a false positive would let a write through, so the check errs on the first side.
 export function isReadOnlySQL(sql) {
-  const s = stripSqlComments(String(sql ?? ''))
-  if (!/^(?:select|with|explain|show|table)\b/i.test(s)) return false
-  const body = s.replace(/'(?:[^']|'')*'/g, "''").replace(/"(?:[^"]|"")*"/g, '""').replace(/\$([A-Za-z_]*)\$[\s\S]*?\$\1\$/g, "''")
-  if (/;\s*\S/.test(body)) return false
-  return !MUTATING_SQL.test(body.replace(/\bexplain\s*\(?\s*analyze\b/gi, 'explain'))
+  const stmts = splitSQL(sql)
+  if (!stmts || stmts.length === 0) return false
+  return stmts.every(({ code, bodies }) => {
+    if (bodies.length === 0) return SET_SAFE.test(code) || TEMP_TYPE_DROP.test(code) || TEMP_TYPE.test(code) || readsOnly(code)
+    if (DO_BLOCK.test(code)) return bodies.length === 1 && plpgsqlReadsOnly(bodies[0], { immediate: true })
+    if (TEMP_FUNCTION.test(code)) {
+      return !MUTATING_SQL.test(code.replace(/^create\s+(?:or\s+replace\s+)?function/i, '')) && bodies.every((b) => plpgsqlReadsOnly(b, { immediate: false }))
+    }
+    return readsOnly(code)
+  })
 }
 
-// READ_POSTS are the POST routes that only read: [method, path regexp].
+// isReadOnlyGraphQL: a query (or the shorthand {...}) and no mutation or subscription, whatever the strings and comments say.
+export function isReadOnlyGraphQL(doc) {
+  if (typeof doc !== 'string') return false
+  const code = doc.replace(/"""[\s\S]*?"""|"(?:[^"\\\n]|\\.)*"/g, '""').replace(/#[^\n]*/g, ' ')
+  return /\S/.test(code) && !/\b(?:mutation|subscription)\b/.test(code)
+}
+
+// sqlHead: the first n characters of a query on one line, to show what the guard aborted.
+export const sqlHead = (sql, n = 120) => String(sql ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
+
+// READ_POSTS are the POST routes that only read: path regexps.
 const READ_POSTS = [
   /^\/platform\/projects\/[^/]+\/api-keys\/temporary$/,
   /^\/platform\/projects\/[^/]+\/analytics\/endpoints\/[^/]+$/,
@@ -282,26 +423,40 @@ const READ_POSTS = [
   /^\/v2\/projects\/[^/]+\/advisors\/run$/,
   /^\/platform\/auth\/[^/]+\/validate\/spam$/,
   /^\/platform\/projects\/[^/]+\/health$/,
+  // the organization's available Postgres versions, asked by the new-project form
+  /^\/platform\/organizations\/[^/]+\/available-versions$/,
   // the sign-in form posts the login event after every sign-in; the crawl signs in once per context
   /^\/platform\/profile\/audit-login$/,
 ]
+
+const PG_META_QUERY = /^\/platform\/pg-meta\/[^/]+\/query$/
+const GRAPHQL = /^\/platform\/projects\/[^/]+\/api\/graphql$/
+
+function queryOf(postData) {
+  try {
+    const q = JSON.parse(postData ?? '{}')?.query
+    return typeof q === 'string' ? q : null
+  } catch {
+    return null
+  }
+}
 
 // guardVerdict: 'allow' for a call that cannot change state, otherwise 'abort'. postData is the request body.
 export function guardVerdict(method, path, postData) {
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return 'allow'
   if (method === 'POST') {
-    if (/^\/platform\/pg-meta\/[^/]+\/query$/.test(path)) {
-      let q = ''
-      try {
-        q = JSON.parse(postData ?? '{}').query
-      } catch {
-        return 'abort'
-      }
-      return isReadOnlySQL(q) ? 'allow' : 'abort'
-    }
+    if (PG_META_QUERY.test(path)) return isReadOnlySQL(queryOf(postData)) ? 'allow' : 'abort'
+    if (GRAPHQL.test(path)) return isReadOnlyGraphQL(queryOf(postData)) ? 'allow' : 'abort'
     if (READ_POSTS.some((re) => re.test(path))) return 'allow'
   }
   return 'abort'
+}
+
+// guardNote: what to record with an aborted call, so that a read the guard does not know can be taught to it: the head of the
+// SQL or GraphQL text. Other bodies are not recorded (they can hold secrets).
+export function guardNote(method, path, postData) {
+  if (method !== 'POST' || !(PG_META_QUERY.test(path) || GRAPHQL.test(path))) return ''
+  return sqlHead(queryOf(postData))
 }
 
 // ---- safe clicks --------------------------------------------------------------------------------
@@ -353,6 +508,10 @@ export function summaryMarkdown(report) {
   for (const p of report.pages) {
     const bad = p.findings.filter((f) => !f.allowed).length
     L.push(`| ${esc(p.url)}${p.informational ? ' (info)' : ''} | ${esc(p.project ?? '')} | ${p.calls} | ${p.stubs} | ${p.n4xx} | ${p.n5xx} | ${p.pageErrors} | ${bad === 0 ? '' : bad} |`)
+  }
+  if (report.externals?.length) {
+    L.push('', '### Third parties the crawl blocked', '', '| Host | Asked by | Documented in noise.json |', '|---|---|---|')
+    for (const x of report.externals) L.push(`| ${esc(x.host)} | ${esc(x.pages.slice(0, 3).join(', '))}${x.pages.length > 3 ? ` and ${x.pages.length - 3} more` : ''} | ${x.documented ? 'yes' : '**no**'} |`)
   }
   const seen = report.allowlist?.seenStatic
   if (seen && (seen.stubs.length || seen.statuses.length || seen.dom.length)) {
