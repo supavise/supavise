@@ -104,10 +104,10 @@ func (s *Server) routesGitHub(add func(string, handlerFunc)) {
 	add("GET /platform/integrations/github/repositories/{repository_id}/branches/{branch_name}", s.ghCheckBranch)
 	add("GET /v2/organizations/{slug}/integrations/github/connections", s.ghListConnectionsV2)
 
-	// The operator's side: the server's own GitHub App.
+	// The operator's side: the server's own GitHub App. Only reading it is an HTTP route: the App is
+	// one object for the whole node, so creating, replacing and removing it (`supavise github app
+	// create|remove`) stay with the operator at the node and are not open to an organization's Owner.
 	add("GET /supavise/v1/github/app", s.ghAppStatus)
-	add("POST /supavise/v1/github/app", s.ghAppBegin)
-	add("DELETE /supavise/v1/github/app", s.ghAppRemove)
 	// These carry no credentials: the manifest page and GitHub's redirect are visited by a browser
 	// that holds only the one-time state, and GitHub posts the webhooks.
 	add("GET "+github.ManifestPath, s.ghManifestPage)
@@ -606,10 +606,19 @@ func (s *Server) writeBranchPR(w http.ResponseWriter, r *http.Request, status in
 
 // pushBranch is the push of POST /v1/branches/{id}/push. On the production row of a project with
 // "Deploy to production" on, it deploys the production branch of the repository again (Resync);
-// elsewhere it is the service's push.
-func (s *Server) pushBranch(ctx context.Context, id string, ai branching.ActionInput) (string, error) {
+// elsewhere it is the service's push. The deployment reaches production, so it needs the right to
+// update the project's GitHub connection (Owner, Administrator), like setting the production branch.
+func (s *Server) pushBranch(r *http.Request, id string, ai branching.ActionInput) (string, error) {
+	ctx := r.Context()
 	if s.gh != nil && s.gh.Configured(ctx) {
 		if b, err := s.branches.Resolve(ctx, id); err == nil && b.IsDefault && s.gh.ProductionBranch(ctx, b.Ref) != "" {
+			p, perr := s.loadProject(ctx, b.Ref)
+			if perr != nil {
+				return "", errf(http.StatusNotFound, "Branch not found")
+			}
+			if err := s.requireProductionBranch(r, p); err != nil {
+				return "", err
+			}
 			run, derr := s.gh.DeployProduction(ctx, b.Ref)
 			if derr != nil {
 				return "", s.ghErr(&http.Request{Method: http.MethodPost}, derr)

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,7 @@ type fakeDB struct {
 	timeline  []string
 	unlocked  []string // ref/version of migrations applied without the project's apply lock
 	failAt    string   // a version whose migration fails
+	failMsg   string   // what its error says (a syntax error when empty)
 	failSeed  bool
 	bucketLag int // RunScripts that fail with "Storage schema is not ready" first
 	// gate holds the migration gateAt until it is closed, or until the context ends; entered is told
@@ -75,6 +77,9 @@ func (d *fakeDB) Apply(ctx context.Context, ref string, ms []branching.Migration
 	defer d.mu.Unlock()
 	for _, m := range ms {
 		if m.Version == d.failAt {
+			if d.failMsg != "" {
+				return branching.ApplyResult{}, errors.New(d.failMsg)
+			}
 			return branching.ApplyResult{}, fmt.Errorf("ERROR: syntax error at or near \"selec\" (SQLSTATE 42601)")
 		}
 		d.history[ref] = append(d.history[ref], m)
@@ -123,10 +128,30 @@ type fakeBranches struct {
 	maxPerProject int
 	paused        map[string]bool // refs of branches that are paused
 	woken         []string
+	// createHook, when set, runs in Create once the branch is registered (the row is visible) and before
+	// its schema is built: the real service returns to its caller at that point and goes on in the
+	// background. An error ends Create with the branch left as it is.
+	createHook func(ctx context.Context) error
 }
 
 func newFakeBranches(db *fakeDB) *fakeBranches {
 	return &fakeBranches{db: db, branches: map[string]*branching.Branch{}, runs: map[string]*registry.BranchRun{}}
+}
+
+// failRun ends a run as the service does: the step that failed is DEAD and its log says why.
+func failRun(run *registry.BranchRun, err error) {
+	run.Status = registry.RunFailed
+	step := "migrate"
+	if strings.Contains(err.Error(), "nope") {
+		step = "seed"
+	}
+	for i := range run.Steps {
+		if run.Steps[i].Name == step {
+			run.Steps[i].Status = registry.StepDead
+			run.Steps[i].Log += "FAILED: " + err.Error() + "\n"
+		}
+	}
+	run.Failure = step + ": " + err.Error()
 }
 
 func (f *fakeBranches) run(ref string) *registry.BranchRun {
@@ -162,12 +187,18 @@ func (f *fakeBranches) Create(ctx context.Context, ref string, in branching.Crea
 	}
 	f.creates = append(f.creates, in)
 	newRef := secrets.NewRef()
-	b := &branching.Branch{ID: secrets.NewUUID(), Name: in.Name, Ref: newRef, ParentRef: ref, GitBranch: in.GitBranch, Persistent: in.Persistent,
+	b := &branching.Branch{ID: secrets.NewUUID(), Name: in.Name, Ref: newRef, ParentRef: ref, GitBranch: in.GitBranch, Persistent: in.Persistent, WithData: in.WithData,
 		State: registry.BranchCreatingProject, ProjectStatus: registry.StatusActiveHealthy, CreatedAt: time.Now()}
 	run := f.run(newRef)
 	b.RunID = run.ID
 	f.branches[newRef] = b
+	hook := f.createHook
 	f.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx); err != nil {
+			return nil, err
+		}
+	}
 
 	state, detail := registry.BranchFunctionsDeployed, "schema only"
 	var err error
@@ -187,7 +218,7 @@ func (f *fakeBranches) Create(ctx context.Context, ref string, in branching.Crea
 	defer f.mu.Unlock()
 	if err != nil {
 		detail = err.Error()
-		run.Status = registry.RunFailed
+		failRun(run, err)
 	}
 	b.State, b.Detail = state, detail
 	c := *b
@@ -257,7 +288,7 @@ func (f *fakeBranches) Drive(ctx context.Context, idOrRef, op string, fn branchi
 	defer f.mu.Unlock()
 	if err != nil {
 		b.State, b.Detail = registry.BranchMigrationsFailed, err.Error()
-		run.Status = registry.RunFailed
+		failRun(run, err)
 	} else {
 		b.State, b.Detail = registry.BranchFunctionsDeployed, detail
 	}
@@ -432,6 +463,10 @@ func newHarness(t *testing.T, mutate ...func(*config.Config)) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { svc.Drain(context.Background()) })
+	// A push that is no longer the head of its branch is skipped at once; tests that want the wait set it.
+	recheck := headRecheck
+	headRecheck = 0
+	t.Cleanup(func() { headRecheck = recheck })
 	h := &harness{t: t, svc: svc, gh: gh, br: br, db: db, host: host, reg: reg, cfg: cfg}
 	h.conn = registry.GitHubConnection{OrgID: 1, ProjectRef: prodRef, InstallationID: gh.instID, RepositoryID: gh.repoID, RepositoryName: gh.repo,
 		SupabaseChangesOnly: false, BranchLimit: 50, NewBranchPerPR: true, CreatedBy: "user-1"}

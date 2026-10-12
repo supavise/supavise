@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/supavise/supavise/internal/github"
@@ -47,7 +48,11 @@ func (s *Server) ghWebhook(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// readHookBody reads the body of a delivery under one of the route's slots.
+// readHookBody reads the body of a delivery under one of the route's slots. The body has ghHookReadTime
+// to arrive: the connection's read deadline enforces it (http.ResponseController reaches the
+// connection through the API's own writer, which unwraps), and a writer that has no deadline to set
+// (a test's recorder, a future wrapper that does not unwrap) is read in the background and given up
+// on at the same time, so that a slow sender never holds a slot for longer.
 func (s *Server) readHookBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	wait := time.NewTimer(ghHookSlotWait)
 	defer wait.Stop()
@@ -60,16 +65,56 @@ func (s *Server) readHookBody(w http.ResponseWriter, r *http.Request) ([]byte, e
 	case <-r.Context().Done():
 		return nil, errf(http.StatusServiceUnavailable, "The request ended")
 	}
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(ghHookReadTime))
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, github.MaxWebhookBody))
+	rc := http.NewResponseController(w)
+	body := http.MaxBytesReader(w, r.Body, github.MaxWebhookBody)
+	var data []byte
+	var err error
+	switch derr := rc.SetReadDeadline(time.Now().Add(ghHookReadTime)); {
+	case derr == nil:
+		// The deadline stays set: the connection's next request replaces it, and the server's attempt to
+		// drain what is left of an unfinished body fails at once instead of waiting for a sender that stalled.
+		data, err = io.ReadAll(body)
+	case errors.Is(derr, http.ErrNotSupported):
+		s.log.Debug("the webhook's connection takes no read deadline; the body is read under a timer instead")
+		data, err = readWithin(body, ghHookReadTime)
+	default:
+		s.log.Error("could not set the read deadline of a GitHub delivery", "err", derr)
+		return nil, errf(http.StatusInternalServerError, "Could not read the delivery")
+	}
 	if err != nil {
 		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
+		switch {
+		case errors.As(err, &mbe):
 			return nil, errf(http.StatusRequestEntityTooLarge, "The delivery is larger than %d bytes", github.MaxWebhookBody)
+		case errors.Is(err, os.ErrDeadlineExceeded):
+			w.Header().Set("Connection", "close")
+			return nil, errf(http.StatusRequestTimeout, "The delivery took longer than %s to arrive", ghHookReadTime)
 		}
 		return nil, errf(http.StatusBadRequest, "Could not read the delivery")
 	}
-	return body, nil
+	return data, nil
+}
+
+// readWithin reads r to its end, or gives up with os.ErrDeadlineExceeded after d. The read goes on in
+// the background until r ends (the connection closes with the answer), and reads into a buffer of its own.
+func readWithin(r io.Reader, d time.Duration) ([]byte, error) {
+	type result struct {
+		b   []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		b, err := io.ReadAll(r)
+		done <- result{b, err}
+	}()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case res := <-done:
+		return res.b, res.err
+	case <-t.C:
+		return nil, os.ErrDeadlineExceeded
+	}
 }
 
 // ---- the operator's side: creating the server's GitHub App ---------------------------------------
@@ -83,44 +128,6 @@ func (s *Server) ghAppStatus(w http.ResponseWriter, r *http.Request) error {
 		return s.ghErr(r, err)
 	}
 	writeJSON(w, http.StatusOK, st)
-	return nil
-}
-
-// ghAppBegin starts GitHub's manifest flow and answers the link the operator opens in a browser
-// that is signed in to GitHub.
-func (s *Server) ghAppBegin(w http.ResponseWriter, r *http.Request) error {
-	if s.gh == nil {
-		return errf(http.StatusNotFound, "%s", ghNotConfiguredMsg)
-	}
-	var in struct {
-		Owner   string `json:"owner"`
-		Name    string `json:"name"`
-		Replace bool   `json:"replace"`
-	}
-	if err := decode(r, &in); err != nil {
-		return err
-	}
-	link, err := s.gh.BeginManifest(r.Context(), github.ManifestRequest{Owner: in.Owner, Name: in.Name, Replace: in.Replace,
-		CreatedBy: principalFrom(r.Context()).UserID})
-	if err != nil {
-		return s.ghErr(r, err)
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"url": link})
-	return nil
-}
-
-func (s *Server) ghAppRemove(w http.ResponseWriter, r *http.Request) error {
-	if s.gh == nil {
-		return errf(http.StatusNotFound, "%s", ghNotConfiguredMsg)
-	}
-	had, err := s.gh.RemoveApp(r.Context())
-	if err != nil {
-		return s.ghErr(r, err)
-	}
-	if !had {
-		return errf(http.StatusNotFound, "This server has no GitHub App to remove.")
-	}
-	writeNoContent(w)
 	return nil
 }
 

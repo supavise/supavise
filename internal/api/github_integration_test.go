@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -10,7 +11,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +29,7 @@ import (
 	v2 "github.com/supavise/supavise/internal/api/gen/v2"
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/github"
+	"github.com/supavise/supavise/internal/members"
 	"github.com/supavise/supavise/internal/registry"
 )
 
@@ -258,12 +262,6 @@ func TestGitHubWithoutAnAppAnswersTruthfully(t *testing.T) {
 	check()
 	if rec := f.do("GET", "/supavise/v1/github/app", nil); rec.Code != 404 {
 		t.Fatalf("app status with no service: %d", rec.Code)
-	}
-	if rec := f.do("POST", "/supavise/v1/github/app", map[string]any{}); rec.Code != 404 {
-		t.Fatalf("app create with no service: %d", rec.Code)
-	}
-	if rec := f.do("DELETE", "/supavise/v1/github/app", nil); rec.Code != 404 {
-		t.Fatalf("app delete with no service: %d", rec.Code)
 	}
 	// A service with no App on it answers the same, and says so when asked about the App.
 	withGitHub(t, f, false)
@@ -556,15 +554,12 @@ func TestGitHubManifestFlow(t *testing.T) {
 		t.Fatalf("status: %d %s", rec.Code, rec.Body)
 	}
 
-	rec = f.do("POST", "/supavise/v1/github/app", map[string]any{"owner": "acme"})
-	var begin struct {
-		URL string `json:"url"`
+	// The operator starts the flow at the node (`supavise github app create`): there is no route for it.
+	link, err := svc.BeginManifest(context.Background(), github.ManifestRequest{Owner: "acme", CreatedBy: "cli"})
+	if err != nil || !strings.Contains(link, github.ManifestPath+"?state=") {
+		t.Fatalf("begin: %q, %v", link, err)
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &begin)
-	if rec.Code != 200 || !strings.Contains(begin.URL, github.ManifestPath+"?state=") {
-		t.Fatalf("begin: %d %s", rec.Code, rec.Body)
-	}
-	state := begin.URL[strings.Index(begin.URL, "state=")+6:]
+	state := link[strings.Index(link, "state=")+6:]
 
 	// The page a browser opens: a form to GitHub, with the manifest, and a CSP that allows nowhere else.
 	page := httptest.NewRecorder()
@@ -633,20 +628,20 @@ func TestGitHubManifestFlow(t *testing.T) {
 		t.Fatalf("the status leaks a secret: %s", rec.Body)
 	}
 	// A second App is refused unless it replaces the first.
-	if rec := f.do("POST", "/supavise/v1/github/app", map[string]any{}); rec.Code != 409 {
-		t.Fatalf("a second App: %d %s", rec.Code, rec.Body)
+	if _, err := svc.BeginManifest(context.Background(), github.ManifestRequest{CreatedBy: "cli"}); !errors.Is(err, github.ErrConflict) {
+		t.Fatalf("a second App: %v", err)
 	}
-	if rec := f.do("POST", "/supavise/v1/github/app", map[string]any{"replace": true}); rec.Code != 200 {
-		t.Fatalf("replace: %d %s", rec.Code, rec.Body)
+	if _, err := svc.BeginManifest(context.Background(), github.ManifestRequest{CreatedBy: "cli", Replace: true}); err != nil {
+		t.Fatalf("replace: %v", err)
 	}
-	if rec := f.do("POST", "/supavise/v1/github/app", map[string]any{"owner": "bad owner!"}); rec.Code != 400 {
-		t.Fatalf("a bad owner: %d", rec.Code)
+	if _, err := svc.BeginManifest(context.Background(), github.ManifestRequest{Owner: "bad owner!", CreatedBy: "cli"}); !errors.Is(err, github.ErrInvalid) {
+		t.Fatalf("a bad owner: %v", err)
 	}
-	if rec := f.do("DELETE", "/supavise/v1/github/app", nil); rec.Code != 204 {
-		t.Fatalf("remove: %d %s", rec.Code, rec.Body)
+	if had, err := svc.RemoveApp(context.Background()); err != nil || !had {
+		t.Fatalf("remove: %v, %v", had, err)
 	}
-	if rec := f.do("DELETE", "/supavise/v1/github/app", nil); rec.Code != 404 {
-		t.Fatalf("remove again: %d", rec.Code)
+	if had, err := svc.RemoveApp(context.Background()); err != nil || had {
+		t.Fatalf("remove again: %v, %v", had, err)
 	}
 	if !hasString(profileDisabled(t, f), featureGitHub) {
 		t.Fatal("the profile shows GitHub after the App was removed")
@@ -721,6 +716,111 @@ func TestGitHubWebhookRoute(t *testing.T) {
 	}
 	if rec := post(good); rec.Code != 200 {
 		t.Fatalf("after the slots were free: %d", rec.Code)
+	}
+}
+
+// A body that trickles in must not hold one of the route's slots for longer than ghHookReadTime. The
+// deadline has to reach the connection through the API's middleware writer, which the unit tests
+// above (a recorder) never exercise: this test serves the API from a real http.Server.
+func TestGitHubWebhookBodyDeadlineAppliesThroughTheMiddleware(t *testing.T) {
+	f := newFixture(t)
+	withGitHub(t, f, true)
+	read := ghHookReadTime
+	ghHookReadTime = 200 * time.Millisecond
+	defer func() { ghHookReadTime = read }()
+	ts := httptest.NewServer(f.srv)
+	defer ts.Close()
+	calledRoutes.Store("POST /hooks/github", true)
+
+	stalled := func() net.Conn {
+		t.Helper()
+		c, err := net.Dial("tcp", strings.TrimPrefix(ts.URL, "http://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A well-formed signature header, a declared body of 100 bytes, and one byte of it.
+		_, err = io.WriteString(c, "POST /hooks/github HTTP/1.1\r\nHost: x\r\nX-GitHub-Event: push\r\nX-GitHub-Delivery: slow\r\n"+
+			"X-Hub-Signature-256: sha256="+strings.Repeat("ab", 32)+"\r\nContent-Length: 100\r\n\r\n{")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	// Every slot is taken by a sender that has stopped sending.
+	var conns []net.Conn
+	for i := 0; i < cap(ghHookSlots); i++ {
+		conns = append(conns, stalled())
+	}
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for _, c := range conns {
+		_ = c.SetReadDeadline(deadline)
+		br := bufio.NewReader(c)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("a stalled delivery got no answer within the deadline (the slot is held): %v", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusRequestTimeout {
+			t.Fatalf("a stalled delivery: %d, want 408", resp.StatusCode)
+		}
+		// The deadline is the connection's own: the server ends the connection after the answer instead of
+		// waiting for the rest of a body that is not coming (a timer alone would leave it open).
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, err := br.ReadByte(); err != io.EOF {
+			t.Fatalf("the connection of a stalled delivery stays open after the answer: %v", err)
+		}
+	}
+	if n := len(ghHookSlots); n != 0 {
+		t.Fatalf("%d slot(s) still held after the deadline", n)
+	}
+	// A real delivery is read again, and the connection of a keep-alive client has no deadline left over.
+	body := `{"zen":"x"}`
+	req, _ := http.NewRequest("POST", ts.URL+"/hooks/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "ping")
+	req.Header.Set("X-GitHub-Delivery", "after-the-stall")
+	req.Header.Set("X-Hub-Signature-256", signHook("whsec", body))
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("a delivery after the stalled ones: %d", resp.StatusCode)
+	}
+}
+
+// Where the writer has no deadline to set (a recorder; a wrapper that does not unwrap), the body is
+// read under a timer of the same length and the slot is freed.
+func TestGitHubWebhookBodyTimerCoversAWriterWithoutADeadline(t *testing.T) {
+	f := newFixture(t)
+	withGitHub(t, f, true)
+	read := ghHookReadTime
+	ghHookReadTime = 100 * time.Millisecond
+	defer func() { ghHookReadTime = read }()
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	req := httptest.NewRequest("POST", "/hooks/github", pr)
+	req.ContentLength = 100
+	req.Header.Set("X-Hub-Signature-256", "sha256="+strings.Repeat("cd", 32))
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { f.srv.ServeHTTP(rec, req); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler is still waiting for a body that does not come")
+	}
+	if rec.Code != http.StatusRequestTimeout {
+		t.Fatalf("%d %s, want 408", rec.Code, rec.Body)
+	}
+	if n := len(ghHookSlots); n != 0 {
+		t.Fatalf("%d slot(s) still held", n)
 	}
 }
 
@@ -868,8 +968,6 @@ func TestGitHubRoleMatrix(t *testing.T) {
 		rc("YYNNNN", "POST", "/platform/integrations/github/connections", map[string]any{"project_ref": testRef, "installation_id": 1, "repository_id": 2}),
 		rc("YYYYYN", "GET", "/v2/organizations/default/integrations/github/connections", nil),
 		rc("YYNNNN", "GET", "/supavise/v1/github/app", nil),
-		rc("YNNNNN", "POST", "/supavise/v1/github/app", map[string]any{}),
-		rd("YNNNNN", "DELETE", "/supavise/v1/github/app", nil),
 	} {
 		for i, role := range roleNames {
 			rec := rf.as(role, c.method, c.path, c.body)
@@ -878,6 +976,125 @@ func TestGitHubRoleMatrix(t *testing.T) {
 				t.Errorf("%s as %s: %d %s, want allowed=%v", c, role, rec.Code, rec.Body, want)
 			}
 		}
+	}
+}
+
+// The App is one object for the whole node: the Owner of any organization, however many projects it
+// holds, can neither start a replacement of it nor remove it, and what the Owner of another
+// organization connected stays. The operator does both at the node (`supavise github app`).
+func TestAnotherOrganizationsOwnerCannotCreateReplaceOrRemoveTheServersApp(t *testing.T) {
+	rf := newRolesFixture(t)
+	ctx := context.Background()
+	svc, _ := withGitHub(t, rf.fixture, true)
+	conn := registry.GitHubConnection{OrgID: rf.org.ID, ProjectRef: testRef, InstallationID: tInstID, RepositoryID: tRepoID, RepositoryName: tRepoName,
+		BranchLimit: 50, NewBranchPerPR: true, CreatedBy: "owner"}
+	if err := rf.reg.CreateGitHubConnection(ctx, &conn); err != nil {
+		t.Fatal(err)
+	}
+	// "stranger" owns an organization of their own: Owner somewhere, and nothing here.
+	other, err := rf.reg.CreateOrganization(ctx, "other", "Other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rf.srv.members.EnsureOwner(ctx, members.OrgRef{ID: other.ID, Slug: other.Slug}, rf.ids["stranger"]); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"stranger", "owner", "admin"} {
+		for _, c := range []struct {
+			method string
+			body   any
+		}{{"POST", map[string]any{"replace": true, "owner": "evil"}}, {"POST", map[string]any{}}, {"DELETE", nil}, {"PUT", map[string]any{}}, {"PATCH", map[string]any{}}} {
+			rec := rf.as(role, c.method, "/supavise/v1/github/app", c.body)
+			if rec.Code >= 200 && rec.Code < 300 {
+				t.Errorf("%s: %s /supavise/v1/github/app answered %d %s", role, c.method, rec.Code, rec.Body)
+			}
+		}
+	}
+	if _, err := rf.reg.GetGitHubConnectionByProject(ctx, testRef); err != nil {
+		t.Fatalf("the connection of the other organization went with a request that was refused: %v", err)
+	}
+	if !svc.Configured(ctx) {
+		t.Fatal("the server's App was removed")
+	}
+	// The one thing an Owner or Administrator may do with the App is read how it is set up.
+	for _, role := range []string{"stranger", "owner", "admin"} {
+		if rec := rf.as(role, "GET", "/supavise/v1/github/app", nil); rec.Code != 200 {
+			t.Errorf("%s: status %d %s", role, rec.Code, rec.Body)
+		}
+	}
+}
+
+// The Git branch production follows is a field of the project's GitHub connection (Owner and
+// Administrator write it), and a push to it applies the repository to production. A Developer, who
+// may push to branches and update preview branches, can neither point production at another Git
+// branch (PATCH or create of the default branch) nor deploy it again (Resync); an unchanged value
+// still goes through, as Studio's form sends it with every save.
+func TestProductionBranchAndResyncNeedTheRightToUpdateTheConnection(t *testing.T) {
+	rf := newRolesFixture(t)
+	ctx := context.Background()
+	withGitHub(t, rf.fixture, true)
+	conn := registry.GitHubConnection{OrgID: rf.org.ID, ProjectRef: testRef, InstallationID: tInstID, RepositoryID: tRepoID, RepositoryName: tRepoName,
+		BranchLimit: 50, NewBranchPerPR: true, CreatedBy: "owner"}
+	if err := rf.reg.CreateGitHubConnection(ctx, &conn); err != nil {
+		t.Fatal(err)
+	}
+	gitBranch := func() string {
+		g, err := rf.reg.GetDefaultBranchGit(ctx, testRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	patch := func(role, git string) *httptest.ResponseRecorder {
+		return rf.as(role, "PATCH", "/v1/branches/"+testRef, map[string]any{"git_branch": git})
+	}
+	if rec := patch("owner", "main"); rec.Code != 200 || gitBranch() != "main" {
+		t.Fatalf("owner sets the production branch: %d %s (now %q)", rec.Code, rec.Body, gitBranch())
+	}
+	for _, role := range []string{"dev", "ro", "scoped", "stranger"} {
+		if rec := patch(role, "unreviewed"); rec.Code != 403 || gitBranch() != "main" {
+			t.Errorf("%s: PATCH of the production branch: %d %s (now %q)", role, rec.Code, rec.Body, gitBranch())
+		}
+		rec := rf.as(role, "POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "main", "is_default": true, "git_branch": "unreviewed"})
+		if rec.Code != 403 || gitBranch() != "main" {
+			t.Errorf("%s: create of the default branch with a Git branch: %d %s (now %q)", role, rec.Code, rec.Body, gitBranch())
+		}
+	}
+	// The refusal says who may.
+	if msg := errMessage(t, patch("dev", "unreviewed")); !strings.Contains(msg, "Owner or Administrator") {
+		t.Errorf("message = %q", msg)
+	}
+	// The same value again, and a change that clears nothing, are not a change of the production branch.
+	if rec := patch("dev", "main"); rec.Code != 200 {
+		t.Errorf("dev: an unchanged production branch: %d %s", rec.Code, rec.Body)
+	}
+	// The Git branch of a preview branch stays a Developer's to set.
+	feature := decodeBody(t, rf.status(201, "dev", "POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "feature", "git_branch": "feature"})).(map[string]any)["id"].(string)
+	rf.waitBranch(t, "feature", "FUNCTIONS_DEPLOYED")
+	if rec := rf.as("dev", "PATCH", "/v1/branches/"+feature, map[string]any{"git_branch": "feature-2"}); rec.Code != 200 {
+		t.Errorf("dev: git_branch of a preview branch: %d %s", rec.Code, rec.Body)
+	}
+	if rec := patch("admin", "release"); rec.Code != 200 || gitBranch() != "release" {
+		t.Errorf("admin: %d %s (now %q)", rec.Code, rec.Body, gitBranch())
+	}
+	rec := rf.as("admin", "POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "main", "is_default": true, "git_branch": "main"})
+	if rec.Code == 403 || gitBranch() != "main" {
+		t.Errorf("admin: create of the default branch: %d %s (now %q)", rec.Code, rec.Body, gitBranch())
+	}
+	// Resync deploys the production branch of the repository to production.
+	for _, role := range []string{"dev", "ro", "scoped"} {
+		if rec := rf.as(role, "POST", "/v1/branches/"+testRef+"/push", map[string]any{}); rec.Code != 403 {
+			t.Errorf("%s: Resync: %d %s", role, rec.Code, rec.Body)
+		}
+	}
+	for _, role := range []string{"owner", "admin"} {
+		if rec := rf.as(role, "POST", "/v1/branches/"+testRef+"/push", map[string]any{}); rec.Code == 403 {
+			t.Errorf("%s: Resync refused: %s", role, rec.Body)
+		}
+	}
+	// A push of a preview branch is still the service's, for the roles that may update branches.
+	if rec := rf.as("dev", "POST", "/v1/branches/"+feature+"/push", map[string]any{}); rec.Code == 403 {
+		t.Errorf("dev: push of a preview branch refused: %s", rec.Body)
 	}
 }
 

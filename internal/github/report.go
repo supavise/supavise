@@ -188,6 +188,11 @@ type outcome struct {
 	BranchRef string
 	Parent    string
 	Links     []string // markdown links for the footer
+	// Private says the branch may hold data (production, a copy of it, a persistent branch): a failure
+	// is not quoted outside the dashboard (public). secrets are the values config.toml read from the
+	// branch's secrets, which no report repeats.
+	Private bool
+	secrets []string
 }
 
 func (o outcome) conclusion() string {
@@ -217,23 +222,6 @@ func (o outcome) summary() string {
 		b.WriteString("\n")
 	}
 	return b.String()
-}
-
-// logText is the log of a run for the check run's text.
-func logText(run *registry.BranchRun) string {
-	if run == nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, st := range run.Steps {
-		if st.Log != "" {
-			b.WriteString(st.Log)
-		}
-	}
-	if b.Len() == 0 {
-		return ""
-	}
-	return "```\n" + strings.ReplaceAll(b.String(), "```", "'''") + "```"
 }
 
 // dashboardLinks are the footer links of a report.

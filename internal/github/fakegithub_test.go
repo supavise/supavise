@@ -53,6 +53,12 @@ type fakeGitHub struct {
 	defaultBranch string
 	readOnly      bool // the user can read the repository and not push to it
 	branches      []string
+	// heads is the commit each branch points to; a branch that is not in it points to "head-<branch>".
+	// headQueue answers the next reads of a branch's head with these commits first (a lagging API).
+	heads     map[string]string
+	headQueue map[string][]string
+	// convertStatus makes the manifest conversion fail with this status (0: it works).
+	convertStatus int
 }
 
 type fakeCheck struct {
@@ -63,6 +69,7 @@ type fakeCheck struct {
 	Conclusion string
 	Title      string
 	Summary    string
+	Text       string
 	Updates    int
 }
 
@@ -85,7 +92,8 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 	f := &fakeGitHub{t: t, key: key, repoID: 1001, repo: "acme/app", instID: 42, appID: 77, files: map[string]map[string]string{},
 		prFiles: map[int][]string{}, checks: map[int64]*fakeCheck{}, comments: map[int64]*fakeComment{}, next: 1000,
 		userToken: "ghu_user", refreshToken: "ghr_refresh", tokenTTL: 28800, manifestCodes: map[string]bool{"good-manifest-code": true},
-		webhookSecret: "hook-secret", clientSecret: "client-secret", defaultBranch: "main", branches: []string{"main", "feature"}}
+		webhookSecret: "hook-secret", clientSecret: "client-secret", defaultBranch: "main", branches: []string{"main", "feature"},
+		heads: map[string]string{}, headQueue: map[string][]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", f.instToken)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/git/commits/{sha}", f.gitCommit)
@@ -332,12 +340,13 @@ func (f *fakeGitHub) createCheck(w http.ResponseWriter, r *http.Request) {
 		Output  struct {
 			Title   string `json:"title"`
 			Summary string `json:"summary"`
+			Text    string `json:"text"`
 		} `json:"output"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&in)
 	id := f.id()
 	f.mu.Lock()
-	f.checks[id] = &fakeCheck{ID: id, Name: in.Name, HeadSHA: in.HeadSHA, Status: in.Status, Title: in.Output.Title, Summary: in.Output.Summary}
+	f.checks[id] = &fakeCheck{ID: id, Name: in.Name, HeadSHA: in.HeadSHA, Status: in.Status, Title: in.Output.Title, Summary: in.Output.Summary, Text: in.Output.Text}
 	f.mu.Unlock()
 	f.writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
@@ -353,6 +362,7 @@ func (f *fakeGitHub) updateCheck(w http.ResponseWriter, r *http.Request) {
 		Output     struct {
 			Title   string `json:"title"`
 			Summary string `json:"summary"`
+			Text    string `json:"text"`
 		} `json:"output"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&in)
@@ -363,7 +373,7 @@ func (f *fakeGitHub) updateCheck(w http.ResponseWriter, r *http.Request) {
 		f.fail(w, http.StatusNotFound, "Not Found")
 		return
 	}
-	c.Status, c.Conclusion, c.Title, c.Summary = in.Status, in.Conclusion, in.Output.Title, in.Output.Summary
+	c.Status, c.Conclusion, c.Title, c.Summary, c.Text = in.Status, in.Conclusion, in.Output.Title, in.Output.Summary, in.Output.Text
 	c.Updates++
 	f.writeJSON(w, http.StatusOK, map[string]any{"id": id})
 }
@@ -465,12 +475,26 @@ func (f *fakeGitHub) commit(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	sha := "head-" + r.PathValue("b")
+	b := r.PathValue("b")
+	sha, ok := f.heads[b]
+	if !ok {
+		sha = "head-" + b
+	}
+	if q := f.headQueue[b]; len(q) > 0 {
+		sha, f.headQueue[b] = q[0], q[1:]
+	}
 	if _, ok := f.files[sha]; !ok {
-		f.fail(w, http.StatusUnprocessableEntity, "No commit found for SHA: "+r.PathValue("b"))
+		f.fail(w, http.StatusUnprocessableEntity, "No commit found for SHA: "+b)
 		return
 	}
 	f.writeJSON(w, http.StatusOK, map[string]string{"sha": sha})
+}
+
+// setHead makes the branch point to the commit (whose files setCommit set).
+func (f *fakeGitHub) setHead(branch, sha string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.heads[branch] = sha
 }
 
 func (f *fakeGitHub) oauth(w http.ResponseWriter, r *http.Request) {
@@ -547,6 +571,12 @@ func (f *fakeGitHub) revoke(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeGitHub) convert(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
+	if f.convertStatus != 0 {
+		status := f.convertStatus
+		f.mu.Unlock()
+		f.fail(w, status, "GitHub is having a problem")
+		return
+	}
 	ok := f.manifestCodes[r.PathValue("code")]
 	delete(f.manifestCodes, r.PathValue("code"))
 	f.mu.Unlock()

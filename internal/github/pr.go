@@ -256,8 +256,21 @@ func (s *Service) buildPR(ctx context.Context, conn registry.GitHubConnection, e
 }
 
 // createFromPR makes the branch of a pull request that has none.
+//
+// The branch is made, and its link to the pull request stored, under a context that a newer event
+// does not cancel: Create returns once the branch's row is visible and the rest of the create goes on
+// without the caller, so a caller that gave up at that moment would leave a branch that nothing
+// points to (no link: the next event would take it for a branch somebody made by hand and never seed
+// it, and a close event would not delete it). The create itself still ends when the job does (the
+// repoSource is linked to it); the link says the seed is due, and the next event for the pull request
+// finds the branch through it and finishes the work. Waiting for the result stays with the job.
 func (s *Service) createFromPR(ctx context.Context, conn registry.GitHubConnection, ev prEvent, sn *Snapshot, checkID int64) outcome {
 	oc := outcome{Parent: conn.ProjectRef}
+	if err := ctx.Err(); err != nil {
+		// A newer event replaced this one before it began: it makes the branch itself.
+		oc.Headline, oc.Detail = "Supavise stopped before it created the preview branch.", err.Error()
+		return oc
+	}
 	if links, err := s.st.ListGitHubBranchLinks(ctx, conn.ProjectRef); err == nil && len(links) >= conn.BranchLimit {
 		oc.Neutral = true
 		oc.Headline = fmt.Sprintf("No preview branch was made: the project already has %d, the branch limit of its GitHub connection.", len(links))
@@ -267,12 +280,13 @@ func (s *Service) createFromPR(ctx context.Context, conn registry.GitHubConnecti
 	src := &repoSource{s: s, conn: conn, sn: sn, job: ctx, fresh: true, seedDue: true, have: map[string]string{}}
 	name := branchName(ev.HeadRef, ev.Number)
 	in := branching.CreateInput{Name: name, GitBranch: ev.HeadRef, TTL: -1, SchemaSource: src}
-	b, err := s.br.Create(ctx, conn.ProjectRef, in)
+	keep := context.WithoutCancel(ctx)
+	b, err := s.br.Create(keep, conn.ProjectRef, in)
 	if errors.Is(err, branching.ErrConflict) && strings.Contains(err.Error(), "already has a branch named") {
 		// The name is taken: by this pull request's own branch after a cancelled create, or by another.
 		if exist := s.sameBranch(ctx, conn, name, ev.HeadRef); exist != nil {
 			link := s.linkFor(conn, ev, exist, checkID)
-			if perr := s.st.PutGitHubBranchLink(ctx, link); perr != nil {
+			if perr := s.st.PutGitHubBranchLink(keep, link); perr != nil {
 				oc.Headline, oc.Detail = "Supavise could not record the preview branch.", perr.Error()
 				return oc
 			}
@@ -285,7 +299,7 @@ func (s *Service) createFromPR(ctx context.Context, conn registry.GitHubConnecti
 		if len(in.Name) > 100 {
 			in.Name = fmt.Sprintf("pr-%d", ev.Number)
 		}
-		b, err = s.br.Create(ctx, conn.ProjectRef, in)
+		b, err = s.br.Create(keep, conn.ProjectRef, in)
 	}
 	if err != nil {
 		oc.Headline = "Supavise could not create the preview branch."
@@ -294,7 +308,7 @@ func (s *Service) createFromPR(ctx context.Context, conn registry.GitHubConnecti
 		return oc
 	}
 	link := s.linkFor(conn, ev, b, checkID)
-	if err := s.st.PutGitHubBranchLink(ctx, link); err != nil {
+	if err := s.st.PutGitHubBranchLink(keep, link); err != nil {
 		oc.Headline, oc.Detail = "Supavise could not record the preview branch.", err.Error()
 		return oc
 	}
@@ -329,7 +343,7 @@ func branchErrText(err error) string {
 
 // driveBranch brings an existing branch up to the commit.
 func (s *Service) driveBranch(ctx context.Context, conn registry.GitHubConnection, b *branching.Branch, link *registry.GitHubBranchLink, src *repoSource, checkID int64) outcome {
-	oc := outcome{Parent: conn.ProjectRef, Branch: b.Name, BranchRef: b.Ref}
+	oc := outcome{Parent: conn.ProjectRef, Branch: b.Name, BranchRef: b.Ref, Private: b.WithData || b.Persistent}
 	// A previous commit's run may still be winding down after it was cancelled.
 	if _, err := s.br.WaitIdle(ctx, b.Ref); err != nil {
 		oc.Headline, oc.Detail = "Supavise could not wait for the branch.", err.Error()
@@ -382,6 +396,8 @@ func (s *Service) await(ctx context.Context, conn registry.GitHubConnection, ref
 		return oc
 	}
 	oc.Branch = b.Name
+	oc.Private = b.WithData || b.Persistent
+	oc.secrets = src.knownSecrets()
 	if runID != "" {
 		if run, rerr := s.br.GetRun(rctx, ref, runID); rerr == nil {
 			oc.Run = run
@@ -430,7 +446,10 @@ func (s *Service) finishPR(ctx context.Context, conn registry.GitHubConnection, 
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	out := checkOutput{Title: oc.Headline, Summary: oc.summary(), Text: logText(oc.Run)}
+	// Everyone who can read the repository reads the check run and the comment: they get the public
+	// form of the outcome, and the run's log stays in the dashboard.
+	oc, text := oc.public()
+	out := checkOutput{Title: oc.Headline, Summary: oc.summary(), Text: text}
 	if len(out.Title) > 120 {
 		out.Title = out.Title[:117] + "..."
 	}

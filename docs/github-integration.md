@@ -29,6 +29,8 @@ The command prints a link. It is good once, for 30 minutes.
 
 The server restarts Studio so that its install and authorize windows name your App. `supavise github app status` shows the App; `supavise github app remove` forgets it (the App stays on GitHub; delete it there too when you no longer need it). `supavise github app create --replace` replaces the App. The users' authorizations and every project's connection to a repository go with the old one, because they name its installations: connect the projects again afterwards. The preview branches stay and stop following their pull requests; `supavise github app remove` does the same.
 
+Only the operator, at the node, creates, replaces or removes the App: the server has one App for all its organizations, and no Owner or Administrator of an organization can change it through the dashboard or the API (they can read how it is set up with `GET /supavise/v1/github/app`).
+
 The App is private to its owner. It asks for read access to contents and metadata, and write access to pull requests, checks and issues (the comment on a pull request is an issue comment). It subscribes to `pull_request`, `push`, `create` and `delete`; GitHub sends the installation events to every App on its own.
 
 ### An App you made yourself
@@ -68,7 +70,7 @@ In Studio, open the project's **Settings**, **Integrations**, **GitHub**.
 | Deploy to production | Apply the repository to the project when you push to the production branch. |
 | Production branch | The Git branch production follows (usually `main`). |
 
-Owners and Administrators connect, change and disconnect; every role that can see the project reads the connection. Disconnecting keeps the preview branches that exist: delete them from the Branches page. The picker lists only repositories you can push to; the App posts check runs and comments on them, so a read-only collaborator cannot connect a project. If a repository is renamed or transferred, its connection follows it (the next event from GitHub carries the new name).
+Owners and Administrators connect, change and disconnect; every role that can see the project reads the connection. Setting the production branch of the project's default branch (`git_branch` of `PATCH /v1/branches/{id}`, or of the create call with `is_default`) needs the same role, because a push to that Git branch changes production's schema, Edge Functions and settings; a Developer can set the Git branch of a preview branch, and a request that leaves the production branch as it is needs no more than before. Disconnecting keeps the preview branches that exist: delete them from the Branches page. The picker lists only repositories you can push to; the App posts check runs and comments on them, so a read-only collaborator cannot connect a project. If a repository is renamed or transferred, its connection follows it (the next event from GitHub carries the new name).
 
 ## What happens to a pull request
 
@@ -97,6 +99,12 @@ The run is an ordinary action run with seven steps, readable in Studio (**View L
 | migrate | Applies the migrations the branch does not have, each in one transaction, in version order. A migration that changed after it was applied stays as applied; the log says so. |
 | seed | Runs the seed files once per branch, in the first run that gets this far. |
 | deploy | Deploys the Edge Functions that changed and creates the Storage buckets of `config.toml`. |
+
+Everyone who can read the repository can read the check run and the comment, and that can be everyone. Supavise shortens and cleans what it writes there:
+
+- A failure is cut to 300 characters. Text that looks like a credential (a password in a connection string, a bearer token, a JWT, a `password = ...` assignment) and the values that `env(NAME)` read from the branch's secrets are replaced with `[redacted]`.
+- The text of the check run is the end of the log of the step that failed, at most 3,000 characters. It isn't the whole log.
+- A branch that may hold data (one created with data, or a persistent one) and production report only that the run failed and where to look, because a database error can quote the value of a row. The dashboard has the error and the log: open **Branches**, the branch, then **Workflow logs**.
 
 The branch starts from **nothing but the repository**: its schema comes from `supabase/migrations`, not from production. It still starts with the parent's saved settings, as every branch does, less the credentials (no SMTP, SMS, OAuth, captcha or hook secrets, and no provider that needs one), and `config.toml` is laid over them. The seed belongs to the first run that gets past `migrate`. If that run fails in a migration, or a newer commit cancels it, the next commit applies the missing migrations and then the seed. A seed that fails is tried again by the next commit. A run that found no seed file, or `[db.seed] enabled = false`, used its chance: a `seed.sql` added later is not applied to a branch that has data. A branch you made yourself before the pull request keeps its own data and is not seeded. To rebuild a preview branch and seed it again, close and reopen the pull request. A **Reset branch** in Studio, the CLI or the MCP server replays the branch's own migrations, applies no seed of the parent, and drops the data, the repository's seed with it; the next commit to the pull request applies `seed.sql` again if the repository has one. That holds for every branch a pull request follows, also for one you made yourself before the pull request: once reset, it is treated like a preview branch.
 
@@ -136,9 +144,15 @@ Everything else is named in the run's log as not applied, with the key, so nothi
 
 ## Deploy to production
 
-Set **Deploy to production** and the **production branch** in the connection form. A push to that Git branch (a merge, usually) runs the steps on the project: the migrations it lacks, the Edge Functions that changed and the buckets of `config.toml`; no seed. It is a run listed under the project, with a check named `Supabase Production` on the commit. The check shows the step table and a short failure message; the full log stays in the dashboard, because production's errors can quote its data and the check is visible to everyone who reads the repository.
+Set **Deploy to production** and the **production branch** in the connection form. A push to that Git branch (a merge, usually) runs the steps on the project: the migrations it lacks, the Edge Functions that changed and the buckets of `config.toml`; no seed. It is a run listed under the project, with a check named `Supabase Production` on the commit. The check shows the step table and, for a failure, the step that failed and a pointer to the dashboard; the error and the log stay in the dashboard, because production's errors can quote its data and the check is visible to everyone who reads the repository.
 
-With Deploy to production on, Studio disables the dashboard's **Merge** button for the project: changes reach production through the repository. **Resync** on the production row of the Branches page deploys the head of the production branch again.
+The server deploys a push only while its commit is the head of the production branch. GitHub doesn't guarantee the order of deliveries, and someone can send a failed delivery again days later. Without this check, an older push that arrives late would put older Edge Functions and settings on the project.
+
+The job reads the head from GitHub right before it applies the commit. If the head is another commit, the job reads it once more after two seconds, because the API can lag behind the event. A push that is still not the head is skipped and noted in the daemon's log, and the push of the head deploys. If the job can't read the head, it deploys nothing, and **Resync** deploys the head on demand. The same check applies to a push to a Git branch that preview branches follow.
+
+Deployments of one project run one at a time, and the newest event goes first. The production row of the Branches page shows a deployment in progress as running, and a failed one as failed, until a newer run of either kind replaces it.
+
+With Deploy to production on, Studio disables the dashboard's **Merge** button for the project: changes reach production through the repository. **Resync** on the production row of the Branches page deploys the head of the production branch again; it needs the Owner or Administrator role, like changing the production branch.
 
 Deploying needs the project running; a paused project fails the run with that reason. Each migration is applied under the project's apply lock, the one a merge takes, so a merge from the CLI or the MCP server and a deployment do not interleave their DDL; they take turns.
 
@@ -154,7 +168,9 @@ The author of a pull request chooses the SQL, the function code and `config.toml
 | A user's GitHub token and refresh token | Sealed, per user; refreshed before they expire; removed when GitHub refuses them or the user removes the connection (the token is revoked at GitHub too). |
 | Installation tokens | In memory, for under an hour. |
 
-The webhook checks the `X-Hub-Signature-256` header in constant time before it reads anything, remembers each `X-GitHub-Delivery` so that a replay does nothing, refuses a request whose signature header cannot be GitHub's, and one declaring a body over 4 MiB, before it reads the body, then reads at most 16 bodies at a time (15 seconds each) and limits the rate of deliveries. A push of more commits than fit in 4 MiB is refused with 413; **Resync** deploys production for it.
+Before it reads a body, the webhook refuses a request whose signature header can't be GitHub's, and one that declares a body over 4 MiB. It reads at most 16 bodies at a time, each within 15 seconds; a slower sender gets a 408, and the server closes its connection. It checks the signature (`X-Hub-Signature-256`) in constant time before it parses anything, and it limits the rate of deliveries.
+
+A replay does nothing. The webhook remembers each `X-GitHub-Delivery` and the SHA-256 of each body for a week (GitHub sends a delivery again for three days), because the signature covers the body and not the delivery id. A body that arrives again under a new id counts as the same delivery. A push of more commits than fit in 4 MiB gets a 413; **Resync** deploys production for it.
 
 ## A server GitHub cannot reach
 
@@ -226,6 +242,9 @@ Differences from the App: no check run named `Supabase Preview` and no comment (
 - **"Supavise could not create the preview branch".** The node refused: the project must be running, and `[branching] max_per_project`, `max_total` or the disk can stop a branch. The comment and the check carry the reason.
 - **A migration fails.** The run's `migrate` step is `DEAD`, the log has the migration and the error, and the branch is `MIGRATIONS_FAILED`. Push a fix: the same branch is brought up to date with only the migrations it still lacks. If the first run never reached the seed, the run that applies the fix seeds the branch.
 - **`env(NAME)` is not applied.** Set the secret on the branch with `supabase secrets set NAME=... --project-ref <branch ref>`, then push again. A provider, the captcha or an HTTP hook that needs the secret stays off until then, and the log says "is not applied: the branch has no ... yet".
+- **A push to the production branch did nothing.** Look in the daemon's log. "A push is skipped" means the commit of the push was no longer the head of the branch, and a newer push deploys or has deployed. "A push is not deployed" means the server couldn't read the head. **Resync** deploys the head.
+- **The check run says only that the run failed.** On a branch that may hold data, and on production, the error and the log are in the dashboard: open **Branches**, the branch, then **Workflow logs**.
+- **A newer commit arrives while the branch of a pull request is still being created.** Supavise keeps the branch and its link to the pull request. The newer commit applies what the cancelled create didn't reach, including the seed.
 - **The pull request stopped getting reports after the repository was renamed.** The connection follows the new name with the next event GitHub sends; push a commit or reopen the pull request. After `app create --replace` or `app remove` the connections are gone: connect the project again.
 - **"Supavise could not wake the paused preview branch".** The detail says which case it is. The node is full, so the branch could not start: free memory, then push again. You paused the branch yourself, or its deletion is scheduled: resume or restore it from the Branches page, then push again. The branch was stopped because it still carries the production credentials or integrations (it was created with data and the node could not isolate it): reset or delete it.
 - **The Storage buckets step says the schema is not ready.** A new branch's Storage service has not finished; the step retries for 30 seconds.
