@@ -73,6 +73,11 @@ type Deps struct {
 	// services in follower mode (follower.go). Nil asks the registry's cluster
 	// (pg_is_in_recovery()); a registry that cannot be asked, the in-memory one of tests, is a leader.
 	Follower func(ctx context.Context) (bool, error)
+	// StudioAI returns the [studio.ai] settings Studio is rendered with. Nil means Cfg.Studio.AI,
+	// which is the file as this process read it. The daemon reads the files again for every
+	// render (app.liveStudioAI), because `supavise studio ai set` changes them while it runs and
+	// a render from the old values would take the provider away again.
+	StudioAI func() config.StudioAI
 }
 
 func (d *Deps) log() *slog.Logger {
@@ -133,6 +138,14 @@ func NewManager(d Deps) (*Manager, error) {
 }
 
 func (m *Manager) cfg() *config.Config { return m.d.Cfg }
+
+// studioAI is the [studio.ai] section to render Studio with.
+func (m *Manager) studioAI() config.StudioAI {
+	if m.d.StudioAI != nil {
+		return m.d.StudioAI()
+	}
+	return m.d.Cfg.Studio.AI
+}
 
 func unitOf(svc string) string { return config.UnitName(svc, "") }
 

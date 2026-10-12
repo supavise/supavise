@@ -25,7 +25,7 @@ Supabase never open-sourced the management API, the per-machine agent or the edg
 | `supavise-realtime` | 1 | tenants by first host label |
 | `supavise-storage` | 1 | `MULTI_TENANT=true`, tenants by `x-forwarded-host`, file backend or S3 |
 | `supavise-pgmeta` | 1 | stateless; per-request encrypted connection string from `supavise` |
-| `supavise-studio` | 1 | our build of the upstream tag; platform mode, four small patches; it also serves the remote MCP route behind `api.<domain>/mcp` (section 13) |
+| `supavise-studio` | 1 | our build of the upstream tag; platform mode, small patches (section 10); it also serves the remote MCP route behind `api.<domain>/mcp` (section 13) |
 | `supavise-postgres@<ref>` | per project | the project's cluster, full extension set, own Vault key |
 | `supavise-gotrue@<ref>` | per project | about 12 MB |
 | `supavise-postgrest@<ref>` | per project | about 9 MB |
@@ -59,7 +59,7 @@ Creation takes well under a minute. Delete is the reverse, with a final base bac
 
 | Tool | How it connects | Patch needed |
 |---|---|---|
-| Studio | our platform-mode build; `NEXT_PUBLIC_API_URL` = `supavise`; sign-in via `supavise-gotrue@system` | three upstreamable patches: hCaptcha only with a site key, env-overridable `dashboard_auth:*` flags, extra project hosts in CSP; and a fourth that only Supavise needs, which serves Studio's MCP route in platform mode (section 13.5) |
+| Studio | our platform-mode build; `NEXT_PUBLIC_API_URL` = `supavise`; sign-in via `supavise-gotrue@system` | three upstreamable patches: hCaptcha only with a site key, env-overridable `dashboard_auth:*` flags, extra project hosts in CSP; and the patches that only Supavise needs: one serves Studio's MCP route in platform mode (section 13.5), one points the AI features at the operator's model provider (section 10) |
 | Supabase CLI | `--profile` file written by `supavise` with `api_url`, `dashboard_url`, `project_host`, `pooler_host`; PATs in `sbp_` format | none |
 | Supabase MCP server (stdio) | `--api-url`; project-URL and logs-dialect overrides | none |
 | Remote MCP clients: Claude Code, Cursor, VS Code, Codex, Claude desktop | `https://api.<domain>/mcp?project_ref=<ref>`; OAuth 2.1 sign-in (section 13) | none on the client |
@@ -84,7 +84,7 @@ Laptops are not a target: `supabase start --runtime native` covers local develop
 
 ## 8. Staying in sync
 
-`internal/versions/versions.yaml` pins every artifact release and the Studio tag; a nightly job opens a bump pull request per newer upstream release, and the conformance suite (two projects, the upstream client test suites, Studio smoke tests) gates it. The four Studio patches are rebased on each tag by the Studio build; the first three are general fixes Supabase could take upstream (none has been submitted), and the fourth is specific to Supavise (section 13.5). A nightly job diffs the `v1`, `v2` and `platform` OpenAPI specs against the server. Projects upgrade one at a time with per-project version pinning (`internal/lifecycle/README.md`, "Service versions and project upgrades"). The jobs are listed in [development.md](development.md).
+`internal/versions/versions.yaml` pins every artifact release and the Studio tag; a nightly job opens a bump pull request per newer upstream release, and the conformance suite (two projects, the upstream client test suites, Studio smoke tests) gates it. The Studio patches are rebased on each tag by the Studio build; the first three are general fixes Supabase could take upstream (none has been submitted), and the others are specific to Supavise (section 13.5 and the rows of section 10). A nightly job diffs the `v1`, `v2` and `platform` OpenAPI specs against the server. Projects upgrade one at a time with per-project version pinning (`internal/lifecycle/README.md`, "Service versions and project upgrades"). The jobs are listed in [development.md](development.md).
 
 ## 9. In v1 and reserved
 
@@ -133,6 +133,7 @@ Hosted Supabase gives every branch its own Postgres instance, which is what AI a
 | Hosted's separate MCP service, or a Go reimplementation of its tools | Studio's bundled MCP route, served in platform mode by patch 0004 behind an authenticating gate in the Go edge | Supavise has no process for a separate MCP service, and about 30 tools written again in Go would drift from the package. Studio already bundles the package with every tool. The patch is Supavise-specific and cannot go upstream (section 13.5) |
 | Hosted's branching dialog as it is | patch 0005: no prices or tax notice when `billing:all` is disabled (in the Create branch dialog and in the confirmation and create dialogs of Restore to new project, which print hosted's compute and disk prices and a 1.5 times larger disk), Include data enabled by the `supaviseBranchClones` flag of the node's ConfigCat document instead of the PITR add-on, and Create pull request only with a GitHub connection | Supavise has no billing, so the dollar copy contradicts the product. A node clones the parent's database itself (copy-on-write or a base-backup restore), so requiring the PITR add-on hid a feature it has. The menu item linked to github.com for every branch that had a git branch. Each is a few lines that keep hosted's behavior when the flag and the feature are absent. Section 13.5 explains why a deployment-specific patch is acceptable at all |
 | OAuth tokens in `access_tokens` | five `oauth_*` tables | A release without OAuth would read an `sbp_oauth_` token in `access_tokens` as an all-permissions personal access token. With separate tables it finds no row and answers 401 |
+| Hosted Studio's AI: Supabase's own OpenAI account, three fixed model names and a client that never asks whether a key exists | Studio patch 0006: the model, the API and the reasoning effort come from `SUPAVISE_AI_*` on the server, next to the `OPENAI_API_KEY` and `OPENAI_BASE_URL` that the provider reads itself; `supavise studio ai` and `[studio.ai]` fill them in; the key check asks the server | A node has no Supabase account behind the Assistant, so the operator brings an OpenAI-compatible provider and names its models. Without the patch the Assistant took input on a node with no key and failed on the first message, and its model picker named OpenAI's models whatever the provider. The key sits in a file that only its owner reads, goes into Studio's environment file (mode 0600) and nowhere else: Studio's unit cannot read `/etc/supavise`. The patch is Supavise-specific and is not meant for upstream as it stands |
 
 ## 11. Open questions
 

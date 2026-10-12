@@ -162,12 +162,15 @@ func affected(tag pgconn.CommandTag, err error) error {
 
 // Organizations
 
-const orgCols = `id, slug, name, created_at`
+const orgCols = `id, slug, name, created_at, opt_in_tags`
 
 func scanOrg(row pgx.Row) (*Organization, error) {
 	var o Organization
-	if err := row.Scan(&o.ID, &o.Slug, &o.Name, &o.CreatedAt); err != nil {
+	if err := row.Scan(&o.ID, &o.Slug, &o.Name, &o.CreatedAt, &o.OptInTags); err != nil {
 		return nil, mapErr(err)
+	}
+	if o.OptInTags == nil {
+		o.OptInTags = []string{}
 	}
 	return &o, nil
 }
@@ -200,7 +203,9 @@ func (r *Postgres) ListOrganizations(ctx context.Context) ([]Organization, error
 }
 
 func (r *Postgres) UpdateOrganization(ctx context.Context, o *Organization) error {
-	return affected(r.pool.Exec(ctx, `update supavise.organizations set slug = $2, name = $3 where id = $1`, o.ID, o.Slug, o.Name))
+	// A nil OptInTags is NULL here and leaves the saved tags alone.
+	return affected(r.pool.Exec(ctx, `update supavise.organizations set slug = $2, name = $3, opt_in_tags = coalesce($4::text[], opt_in_tags) where id = $1`,
+		o.ID, o.Slug, o.Name, o.OptInTags))
 }
 
 func (r *Postgres) DeleteOrganization(ctx context.Context, id int64) error {

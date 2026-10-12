@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,7 @@ func testRegistry(t *testing.T, r Registry) {
 	if _, err := r.CreateOrganization(ctx, "acme", "Again"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("dup org: %v", err)
 	}
+	testOrgOptInTags(t, ctx, r, org)
 	sys := &Project{Ref: "system", Name: "system", Status: StatusActiveHealthy}
 	if err := r.CreateProject(ctx, sys); err != nil || sys.Seq != 0 {
 		t.Fatalf("system: %v seq=%d", err, sys.Seq)
@@ -616,5 +618,46 @@ func testDataAPI(t *testing.T, m Registry) {
 	}
 	if err := m.DeleteOrganization(ctx, org.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The AI opt-in tags of an organization: empty at first, saved with UpdateOrganization, and left alone
+// by an update that does not name them.
+func testOrgOptInTags(t *testing.T, ctx context.Context, r Registry, org *Organization) {
+	t.Helper()
+	if org.OptInTags == nil || len(org.OptInTags) != 0 {
+		t.Fatalf("a new organization has opt-in tags %#v, want an empty list", org.OptInTags)
+	}
+	tags := []string{"AI_SQL_GENERATOR_OPT_IN", "AI_LOG_GENERATOR_OPT_IN"}
+	o := *org
+	o.OptInTags = tags
+	if err := r.UpdateOrganization(ctx, &o); err != nil {
+		t.Fatal(err)
+	}
+	for name, get := range map[string]func() (*Organization, error){
+		"by slug": func() (*Organization, error) { return r.GetOrganization(ctx, "acme") },
+		"by id":   func() (*Organization, error) { return r.GetOrganizationByID(ctx, org.ID) },
+	} {
+		got, err := get()
+		if err != nil || !slices.Equal(got.OptInTags, tags) {
+			t.Fatalf("%s: tags %v, %v, want %v", name, got, err, tags)
+		}
+	}
+	// A rename that does not carry tags (nil) keeps them; an empty list clears them.
+	o.Name, o.OptInTags = "Acme Inc", nil
+	if err := r.UpdateOrganization(ctx, &o); err != nil {
+		t.Fatal(err)
+	}
+	all, err := r.ListOrganizations(ctx)
+	if err != nil || len(all) == 0 || all[0].Name != "Acme Inc" || !slices.Equal(all[0].OptInTags, tags) {
+		t.Fatalf("after a rename: %+v, %v", all, err)
+	}
+	o.Name, o.OptInTags = "Acme", []string{}
+	if err := r.UpdateOrganization(ctx, &o); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.GetOrganization(ctx, "acme")
+	if err != nil || got.OptInTags == nil || len(got.OptInTags) != 0 || got.Name != "Acme" {
+		t.Fatalf("after clearing: %+v, %v", got, err)
 	}
 }

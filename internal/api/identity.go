@@ -206,7 +206,7 @@ func (s *Server) v1Org(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	resp := base("GET /v1/organizations/{slug}")
-	setAll(resp, map[string]any{"id": o.Slug, "name": o.Name, "opt_in_tags": []any{}, "allowed_release_channels": []string{"ga"}})
+	setAll(resp, map[string]any{"id": o.Slug, "name": o.Name, "opt_in_tags": optInTags(o), "allowed_release_channels": []string{"ga"}})
 	set(resp, "plan", "enterprise")
 	writeJSON(w, http.StatusOK, resp)
 	return nil
@@ -216,7 +216,7 @@ func (s *Server) v1Org(w http.ResponseWriter, r *http.Request) error {
 func (s *Server) orgEntry(o *registry.Organization, isOwner bool) map[string]any {
 	row := elem("GET /platform/organizations", "")
 	return setAll(row, map[string]any{
-		"id": o.ID, "slug": o.Slug, "name": o.Name, "is_owner": isOwner, "opt_in_tags": []string{},
+		"id": o.ID, "slug": o.Slug, "name": o.Name, "is_owner": isOwner, "opt_in_tags": optInTags(o),
 		"plan": map[string]any{"id": "enterprise", "name": "Self-hosted"}, "usage_billing_enabled": false,
 		"billing_email": nil, "billing_partner": nil, "integration_source": nil, "stripe_customer_id": nil,
 		"subscription_id": nil, "restriction_data": nil, "restriction_status": nil,
@@ -254,7 +254,7 @@ func (s *Server) platformOrg(w http.ResponseWriter, r *http.Request) error {
 	resp := base("GET /platform/organizations/{slug}")
 	setAll(resp, map[string]any{
 		"id": o.ID, "slug": o.Slug, "name": o.Name, "created_at": ts(o.CreatedAt), "has_oriole_project": false,
-		"opt_in_tags": []string{}, "plan": map[string]any{"id": "enterprise", "name": "Self-hosted"},
+		"opt_in_tags": optInTags(o), "plan": map[string]any{"id": "enterprise", "name": "Self-hosted"},
 		"usage_billing_enabled": false, "billing_email": nil, "billing_partner": nil, "integration_source": nil,
 		"restriction_data": nil, "restriction_status": nil,
 	})
@@ -304,25 +304,84 @@ func (s *Server) platformCreateOrg(w http.ResponseWriter, r *http.Request) error
 	return nil
 }
 
+// optInTags is the organization's AI opt-in tags as the responses list them: never null.
+func optInTags(o *registry.Organization) []string {
+	if len(o.OptInTags) == 0 {
+		return []string{}
+	}
+	return slices.Clone(o.OptInTags)
+}
+
+// aiOptInTags are the opt-in tags Studio's AI settings use (the enum of the spec's
+// UpdateOrganizationBody): schema metadata, logs and database data may go to the model provider.
+var aiOptInTags = []plat.UpdateOrganizationBodyOptInTags{"AI_SQL_GENERATOR_OPT_IN", "AI_DATA_GENERATOR_OPT_IN", "AI_LOG_GENERATOR_OPT_IN"}
+
+// parseOptInTags checks the tags of a PATCH against the spec's enum and drops repeats, keeping the
+// order they came in.
+func parseOptInTags(in []plat.UpdateOrganizationBodyOptInTags) ([]string, error) {
+	out := make([]string, 0, len(in))
+	for _, t := range in {
+		if !slices.Contains(aiOptInTags, t) {
+			return nil, errf(http.StatusBadRequest, "opt_in_tags: %q is not one of %s", string(t), joinTags(aiOptInTags))
+		}
+		if !slices.Contains(out, string(t)) {
+			out = append(out, string(t))
+		}
+	}
+	return out, nil
+}
+
+func joinTags(tags []plat.UpdateOrganizationBodyOptInTags) string {
+	s := make([]string, len(tags))
+	for i, t := range tags {
+		s[i] = string(t)
+	}
+	return strings.Join(s, ", ")
+}
+
+// platformUpdateOrg renames the organization and saves its AI opt-in tags. The route needs the
+// organization update permission, which only an Owner has (authz.go), as on hosted; the tags decide
+// what Studio may send to the node's model provider (docs/guide.md, "Use the AI Assistant").
 func (s *Server) platformUpdateOrg(w http.ResponseWriter, r *http.Request) error {
 	o, err := s.orgBySlug(r.Context(), r.PathValue("slug"))
 	if err != nil {
 		return err
 	}
-	var in struct {
-		Name string `json:"name"`
-	}
+	var in plat.UpdateOrganizationBody
 	if err := decode(r, &in); err != nil {
 		return err
 	}
-	if n := strings.TrimSpace(in.Name); n != "" {
-		o.Name = n
-		if err := s.reg.UpdateOrganization(r.Context(), o); err != nil {
+	// upd is what the registry gets. Its tags stay nil unless the body names them: the registry then
+	// leaves the saved tags alone, so a rename cannot write back the tags this handler read before
+	// another Owner changed them.
+	upd := *o
+	upd.OptInTags = nil
+	changed := false
+	if in.Name != nil {
+		if n := strings.TrimSpace(*in.Name); n != "" {
+			upd.Name, changed = n, true
+		}
+	}
+	if in.OptInTags != nil {
+		tags, err := parseOptInTags(*in.OptInTags)
+		if err != nil {
+			return err
+		}
+		upd.OptInTags, changed = tags, true
+	}
+	if changed {
+		if err := s.reg.UpdateOrganization(r.Context(), &upd); err != nil {
 			return mapErr(err)
+		}
+		o.Name = upd.Name
+		if upd.OptInTags != nil {
+			o.OptInTags = upd.OptInTags
+		} else if fresh, err := s.reg.GetOrganizationByID(r.Context(), o.ID); err == nil {
+			o.OptInTags = fresh.OptInTags // answer with what is saved, not with what was read first
 		}
 	}
 	resp := base("PATCH /platform/organizations/{slug}")
-	setAll(resp, map[string]any{"id": o.ID, "name": o.Name, "slug": o.Slug})
+	setAll(resp, map[string]any{"id": o.ID, "name": o.Name, "slug": o.Slug, "opt_in_tags": optInTags(o)})
 	writeJSON(w, http.StatusOK, resp)
 	return nil
 }
