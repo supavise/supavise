@@ -1,0 +1,82 @@
+From f73797474812fa7ab6e0a8b00447e1134467798a Mon Sep 17 00:00:00 2001
+From: supavise <supavise@users.noreply.invalid>
+Date: Sun, 11 Oct 2026 12:09:00 -0700
+Subject: [PATCH 09/11] fix(studio): wait for the project ref before
+ redirecting to a project page
+
+A page that Next prerendered renders once with an empty route query. The
+SQL editor's index page sent the user to /project/undefined/sql/new when
+the local-storage query for its history resolved before the router had
+the ref, and the Compute layout and the project webhooks page redirected
+to /project/undefined the same way, after which Studio's project-not-
+found handling landed on the organization page. The effects now wait for
+the ref.
+---
+ .../interfaces/Platform/Webhooks/PlatformWebhooksPage.tsx | 8 ++++++--
+ .../components/layouts/ComputeLayout/ComputeLayout.tsx    | 3 ++-
+ apps/studio/pages/project/[ref]/sql/index.tsx             | 6 ++++--
+ 3 files changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/apps/studio/components/interfaces/Platform/Webhooks/PlatformWebhooksPage.tsx b/apps/studio/components/interfaces/Platform/Webhooks/PlatformWebhooksPage.tsx
+index e14be6da..6d82e57d 100644
+--- a/apps/studio/components/interfaces/Platform/Webhooks/PlatformWebhooksPage.tsx
++++ b/apps/studio/components/interfaces/Platform/Webhooks/PlatformWebhooksPage.tsx
+@@ -144,11 +144,15 @@ export const PlatformWebhooksPage = ({ scope, endpointId }: PlatformWebhooksPage
+       : 'Deleting this endpoint stops all deliveries to the URL below. This can’t be undone.'
+   }
+ 
++  const hasScopeParam = scope === 'organization' ? !!slug : !!ref
++
+   useEffect(() => {
+-    if (!platformWebhooksEnabled) {
++    // Wait for the slug or ref of the route: its query is empty on the first render of a prerendered
++    // page, and fallbackHref would name /project/undefined.
++    if (!platformWebhooksEnabled && hasScopeParam) {
+       router.replace(fallbackHref)
+     }
+-  }, [fallbackHref, platformWebhooksEnabled, router])
++  }, [fallbackHref, hasScopeParam, platformWebhooksEnabled, router])
+ 
+   useEffect(() => {
+     if (
+diff --git a/apps/studio/components/layouts/ComputeLayout/ComputeLayout.tsx b/apps/studio/components/layouts/ComputeLayout/ComputeLayout.tsx
+index 85e4e768..c424edb3 100644
+--- a/apps/studio/components/layouts/ComputeLayout/ComputeLayout.tsx
++++ b/apps/studio/components/layouts/ComputeLayout/ComputeLayout.tsx
+@@ -63,7 +63,8 @@ const ComputeLayoutContent = ({ children, title }: PropsWithChildren<ComputeLayo
+   )
+ 
+   useEffect(() => {
+-    if (hasLoaded && !computeEnabled) {
++    // Wait for the project ref: the route's query is empty on the first render of a prerendered page.
++    if (hasLoaded && !computeEnabled && projectRef) {
+       router.replace(`/project/${projectRef}`)
+     }
+   }, [router, hasLoaded, computeEnabled, projectRef])
+diff --git a/apps/studio/pages/project/[ref]/sql/index.tsx b/apps/studio/pages/project/[ref]/sql/index.tsx
+index 3d16de1f..7eeaa099 100644
+--- a/apps/studio/pages/project/[ref]/sql/index.tsx
++++ b/apps/studio/pages/project/[ref]/sql/index.tsx
+@@ -18,7 +18,9 @@ const SQLEditorIndexPage: NextPageWithLayout = () => {
+   const { history, isHistoryLoaded } = useDashboardHistory()
+ 
+   useEffect(() => {
+-    if (isHistoryLoaded) {
++    // The route's query is empty on the first render of a page that Next prerendered, so wait for the
++    // project ref: without it this sent the user to /project/undefined/sql/new.
++    if (isHistoryLoaded && projectRef) {
+       // Handle redirect to last opened snippet tab, or last snippet tab
+       const lastOpenedTab = history.sql
+       const lastTabId = store.openTabs.find((id) => store.tabsMap[id]?.type === 'sql')
+@@ -34,7 +36,7 @@ const SQLEditorIndexPage: NextPageWithLayout = () => {
+       }
+     }
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [isHistoryLoaded])
++  }, [isHistoryLoaded, projectRef])
+ 
+   return null
+ }
+-- 
+2.50.1 (Apple Git-155)
+
