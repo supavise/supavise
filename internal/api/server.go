@@ -806,6 +806,10 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			h := w.Header()
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Credentials", "true")
+			// A cross-origin script reads only the safelisted response headers unless they are exposed. ConfigCat's
+			// browser SDK reads the flag document's ETag, and the console logged `Refused to get unsafe header "ETag"`
+			// on every sign-in; Studio reads Retry-After of a 429, and the request id is what a bug report quotes.
+			h.Set("Access-Control-Expose-Headers", "ETag, Retry-After, X-Request-Id")
 			h.Add("Vary", "Origin")
 			if r.Method == http.MethodOptions {
 				h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")

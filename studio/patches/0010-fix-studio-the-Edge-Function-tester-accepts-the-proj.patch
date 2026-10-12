@@ -1,0 +1,114 @@
+From ee7ddf443ebe9d6073569a75456c6012c27428e3 Mon Sep 17 00:00:00 2001
+From: supavise <supavise@users.noreply.invalid>
+Date: Sun, 11 Oct 2026 12:10:00 -0700
+Subject: [PATCH 10/11] fix(studio): the Edge Function tester accepts the
+ project hosts of a deployment without TLS
+
+NIMBUS_PROD_PROJECTS_URL names the hosts of project APIs for the tester,
+but the check built an https-only expression from it and allowed letters
+only, so a deployment with no TLS (http project URLs) or a project host
+with a digit or hyphen got Provided URL is not a valid Supabase edge
+function URL for its own functions. The scheme now follows the value,
+and the label may hold digits and hyphens. The host still has to be one
+label under the configured apex.
+---
+ apps/studio/lib/api/edgeFunctions.test.ts | 45 +++++++++++++++++++++++
+ apps/studio/lib/api/edgeFunctions.ts      | 20 ++++++++--
+ 2 files changed, 62 insertions(+), 3 deletions(-)
+
+diff --git a/apps/studio/lib/api/edgeFunctions.test.ts b/apps/studio/lib/api/edgeFunctions.test.ts
+index 0d6a43d8..7827e326 100644
+--- a/apps/studio/lib/api/edgeFunctions.test.ts
++++ b/apps/studio/lib/api/edgeFunctions.test.ts
+@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
+ import {
+   buildDatabaseEdgeFunctionUrl,
+   isEdgeFunctionUrl,
++  isNimbusEdgeFunctionURL,
+   isValidEdgeFunctionURL,
+ } from './edgeFunctions'
+ 
+@@ -153,3 +154,47 @@ describe('isValidEdgeFunctionURL', () => {
+     }
+   })
+ })
++
++describe('isNimbusEdgeFunctionURL', () => {
++  it('accepts a project host on the deployment\'s scheme', () => {
++    const projects = 'https://*.api.example.com'
++    for (const url of [
++      'https://uniquetwentychararef.api.example.com/functions/v1/hello-world',
++      'https://my-app-2.api.example.com/functions/v1/hello-world',
++      'https://a.api.example.com/functions/v2/nested/path?x=1',
++    ]) {
++      expect(isNimbusEdgeFunctionURL(url, projects), `Expected ${url} to be valid`).toBe(true)
++    }
++  })
++
++  it('takes http for a deployment without TLS and never mixes the schemes', () => {
++    const url = 'http://uniquetwentychararef.api.example.test/functions/v1/hello-world'
++    expect(isNimbusEdgeFunctionURL(url, 'http://*.api.example.test')).toBe(true)
++    expect(isNimbusEdgeFunctionURL(url, 'https://*.api.example.test')).toBe(false)
++    expect(
++      isNimbusEdgeFunctionURL(url.replace('http://', 'https://'), 'http://*.api.example.test')
++    ).toBe(false)
++  })
++
++  it('refuses every other host', () => {
++    const projects = 'https://*.api.example.com'
++    for (const url of [
++      'https://api.example.com/functions/v1/hello',
++      'https://.api.example.com/functions/v1/hello',
++      'https://a.b.api.example.com/functions/v1/hello',
++      'https://-a.api.example.com/functions/v1/hello',
++      'https://A.api.example.com/functions/v1/hello',
++      'https://aXapi.example.com/functions/v1/hello',
++      'https://a.api.example.com:8443/functions/v1/hello',
++      'https://user@a.api.example.com/functions/v1/hello',
++      'https://a.api.example.com@evil.example/functions/v1/hello',
++      'https://evil.example/https://a.api.example.com/functions/v1/hello',
++      'https://a.api.example.com.evil.example/functions/v1/hello',
++      'https://a.api.example.com/rest/v1/hello',
++      'https://a.api.example.com/functions/v10/hello',
++      'https://localhost?https://a.api.example.com/functions/v1/hello',
++    ]) {
++      expect(isNimbusEdgeFunctionURL(url, projects), `Expected ${url} to be invalid`).toBe(false)
++    }
++  })
++})
+diff --git a/apps/studio/lib/api/edgeFunctions.ts b/apps/studio/lib/api/edgeFunctions.ts
+index 89bb5a4a..1684abe1 100644
+--- a/apps/studio/lib/api/edgeFunctions.ts
++++ b/apps/studio/lib/api/edgeFunctions.ts
+@@ -35,11 +35,25 @@ export const isEdgeFunctionUrl = (
+   )
+ }
+ 
++/**
++ * Whether url is the function URL of a project host named by projectsUrl, the value of
++ * NIMBUS_PROD_PROJECTS_URL: `https://*.<apex>`, or `http://*.<apex>` for a deployment that has no TLS.
++ * The host is one label of letters, digits and hyphens under the apex, on the deployment's own scheme,
++ * so nothing else (another host, userinfo, a port, a path to a second URL) gets through.
++ */
++export const isNimbusEdgeFunctionURL = (url: string, projectsUrl: string) => {
++  const match = /^(https?):\/\/\*\.(.+)$/.exec(projectsUrl)
++  const scheme = match?.[1] ?? 'https'
++  const apexDomain = (match?.[2] ?? projectsUrl).replace(/\./g, '\\.')
++  const nimbusRegex = new RegExp(
++    `^${scheme}://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.${apexDomain}/functions/v[0-9]{1}/.*$`
++  )
++  return nimbusRegex.test(url)
++}
++
+ export const isValidEdgeFunctionURL = (url: string, isPlatform: boolean) => {
+   if (NIMBUS_PROD_PROJECTS_URL !== undefined) {
+-    const apexDomain = NIMBUS_PROD_PROJECTS_URL.replace('https://*.', '').replace(/\./g, '\\.')
+-    const nimbusRegex = new RegExp('^https://[a-z]*\\.' + apexDomain + '/functions/v[0-9]{1}/.*$')
+-    return nimbusRegex.test(url)
++    return isNimbusEdgeFunctionURL(url, NIMBUS_PROD_PROJECTS_URL)
+   }
+ 
+   if (!isPlatform) {
+-- 
+2.50.1 (Apple Git-155)
+

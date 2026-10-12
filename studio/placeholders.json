@@ -47,7 +47,7 @@
       "placeholder": "supavise-placeholder-projects.invalid",
       "required": false,
       "default": "",
-      "doc": "Host sources that serve project APIs, for example *.api.example.com (patch 0003). Each is allowed over https and wss."
+      "doc": "Host sources that serve project APIs, for example *.api.example.com (patch 0003). Each is allowed over https and wss, and also over http and ws when NEXT_PUBLIC_API_URL is an http URL."
     },
     {
       "env": "NEXT_PUBLIC_MCP_URL",

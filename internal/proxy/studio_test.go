@@ -170,3 +170,95 @@ func TestIncidentBannerStaysEmptyDuringMaintenanceAndUpgrade(t *testing.T) {
 		t.Errorf("HEAD: %d %q %q", resp.StatusCode, body, resp.Header.Get("Cache-Control"))
 	}
 }
+
+// Studio's /api/incident-status route answers 500 on every node (no statuspage.io key), which the
+// console logged and react-query retried; the proxy answers the empty list instead, as it does for
+// the banner.
+func TestIncidentStatusIsAnsweredByTheProxy(t *testing.T) {
+	h := newHarness(t)
+	before := h.ups[svcStudio].count()
+	resp, body := h.req("GET", "studio."+testDomain, "/api/incident-status")
+	if resp.StatusCode != 200 || strings.TrimSpace(body) != `[]` {
+		t.Fatalf("incident status: %d %q", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Errorf("content type %q", got)
+	}
+	if resp.Header.Get("Cache-Control") != "no-store" {
+		t.Errorf("cache control %q", resp.Header.Get("Cache-Control"))
+	}
+	if resp, body := h.req("HEAD", "studio."+testDomain, "/api/incident-status"); resp.StatusCode != 200 || body != "" {
+		t.Errorf("HEAD: %d %q", resp.StatusCode, body)
+	}
+	if h.ups[svcStudio].count() != before {
+		t.Error("the request reached Studio; the proxy must answer it itself")
+	}
+	// Other methods go to Studio, and a project host has no such route.
+	if _, _ = h.req("POST", "studio."+testDomain, "/api/incident-status"); h.ups[svcStudio].count() != before+1 {
+		t.Error("POST must be forwarded")
+	}
+	if resp, _ := h.project("GET", "/api/incident-status"); resp.StatusCode != 404 {
+		t.Errorf("project host: %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestDropUpgradeInsecure(t *testing.T) {
+	const csp = "default-src 'self'; block-all-mixed-content; frame-ancestors 'none'; upgrade-insecure-requests;"
+	got := dropUpgradeInsecure(csp)
+	if strings.Contains(got, "upgrade-insecure-requests") {
+		t.Fatalf("directive left in the policy: %s", got)
+	}
+	for _, keep := range []string{"default-src 'self'", "block-all-mixed-content", "frame-ancestors 'none'"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("policy lost %q: %s", keep, got)
+		}
+	}
+	// Whatever the case, and wherever it sits.
+	if got := dropUpgradeInsecure("Upgrade-Insecure-Requests; img-src 'self'"); got != "img-src 'self';" {
+		t.Errorf("leading directive: %q", got)
+	}
+	if got := dropUpgradeInsecure("upgrade-insecure-requests"); got != "" {
+		t.Errorf("only directive: %q", got)
+	}
+	// A source that merely contains the words stays; so does a policy without the directive.
+	if got := dropUpgradeInsecure("connect-src https://upgrade-insecure-requests.example"); !strings.Contains(got, "https://upgrade-insecure-requests.example") {
+		t.Errorf("a host named like the directive was dropped: %q", got)
+	}
+	if got := dropUpgradeInsecure("default-src 'self'"); got != "default-src 'self'" {
+		t.Errorf("a policy without it must come back unchanged: %q", got)
+	}
+}
+
+// On a node whose public URLs are http, a browser that honors upgrade-insecure-requests asks for every
+// asset of every page, and the chunks a Web Worker imports, over https, where nothing listens.
+func TestStudioCSPDropsUpgradeInsecureOnAPlainHTTPNode(t *testing.T) {
+	const csp = "default-src 'self'; connect-src 'self' http://api.example.test; upgrade-insecure-requests;"
+	studio := func(h *harness) {
+		h.ups[svcStudio].handler = func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Security-Policy", csp)
+			w.Header().Set("Content-Security-Policy-Report-Only", csp)
+			_, _ = w.Write([]byte("ok"))
+		}
+	}
+
+	h := newHarness(t) // tls.mode off: http://studio.example.test
+	studio(h)
+	for _, target := range []string{"/project/default", "/_next/static/chunks/turbopack-x.js"} {
+		resp, _ := h.req("GET", "studio."+testDomain, target)
+		for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
+			v := resp.Header.Get(name)
+			if strings.Contains(v, "upgrade-insecure-requests") || !strings.Contains(v, "connect-src 'self' http://api.example.test") {
+				t.Errorf("%s %s through the proxy: %s", target, name, v)
+			}
+		}
+	}
+
+	// A node whose dashboard is reached over https (tls.mode on, or off behind a terminator that
+	// the operator named in [api] dashboard_url) keeps it.
+	h = newHarness(t, func(o *Options) { o.Config.API.DashboardURL = "https://studio.example.test" })
+	studio(h)
+	resp, _ := h.req("GET", "studio."+testDomain, "/project/default")
+	if v := resp.Header.Get("Content-Security-Policy"); !strings.Contains(v, "upgrade-insecure-requests") {
+		t.Errorf("an https node lost the directive: %s", v)
+	}
+}

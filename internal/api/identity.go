@@ -190,6 +190,8 @@ func (s *Server) routesOrganizations(add func(string, handlerFunc)) {
 	add("DELETE /platform/organizations/{slug}", s.platformDeleteOrg)
 	add("GET /platform/organizations/{slug}/entitlements", s.entitlements("GET /platform/organizations/{slug}/entitlements"))
 	add("GET /platform/organizations/{slug}/billing/subscription", s.subscription)
+	add("GET /platform/organizations/{slug}/usage", s.orgUsage)
+	add("GET /platform/organizations/{slug}/usage/daily", s.orgUsageDaily)
 }
 
 func (s *Server) v1Orgs(w http.ResponseWriter, r *http.Request) error {
@@ -439,6 +441,11 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) error {
 	}
 	resp := base("GET /platform/organizations/{slug}/billing/subscription")
 	set(resp, "plan", map[string]any{"id": "enterprise", "name": "Self-hosted"})
+	// The Usage page prints this period and takes it as its default range; the stub's zero printed
+	// "01 Jan 1970 - 01 Jan 1970". A node has no billing cycle, so it is the calendar month (UTC).
+	start, end := billingPeriod(s.now())
+	set(resp, "current_period_start", start.Unix())
+	set(resp, "current_period_end", end.Unix())
 	writeJSON(w, http.StatusOK, resp)
 	return nil
 }

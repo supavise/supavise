@@ -117,3 +117,18 @@ func TestFeatureFlagsMakeStudioRevokeByDefault(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }
+
+// The answer lists every flag Studio reads, so that usePHFlag has no key to log as missing, and gives the
+// two experiments the value of the control arm.
+func TestFeatureFlagsListEveryKeyStudioReads(t *testing.T) {
+	f := newFixture(t)
+	rec := f.do("GET", "/platform/telemetry/feature-flags", nil)
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	for _, key := range []string{"proBenefitWording", "pricingPanelPlanPresentation"} {
+		if v, ok := jsonField(t, rec, key).(bool); !ok || v {
+			t.Errorf("%s = %v, want false: %s", key, jsonField(t, rec, key), rec.Body)
+		}
+	}
+}

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Starts a packaged supavise Studio build on a loopback port and checks that it is a platform-mode
-# build with patch 0005 in it, whose placeholders are replaced, twice with different values, that the MCP route of patch
-# 0004 answers (with and without the node's MCP settings), and that missing required values stop it
-# with exit code 78.
+# build with patches 0005, 0008 and 0011 in it, whose placeholders are replaced, twice with different
+# values, that Monaco is served from the public folder, that the MCP route of patch 0004 answers (with
+# and without the node's MCP settings), and that missing required values stop it with exit code 78.
 #
 #   studio/verify.sh <supavise-studio-*.tar.zst | extracted directory>
 #
@@ -163,6 +163,12 @@ check_round() { # api origin, hosts-regex-literal, mcp url, project-url-host-suf
   # /api/incident-banner answers 500 here (no incident.io key); supavise's proxy answers it
   # itself on studio.<domain> (internal/proxy), so the artifact carries no fixup for it.
 
+  # Patch 0008: the code editors load Monaco from this server's public folder. A 404 would leave every
+  # editor (Auth templates, Logs explorer, SQL and function editors) on a spinner where cdnjs is unreachable.
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$port/monaco-editor/vs/loader.js")"
+  [[ "$code" == 200 ]] || fail "/monaco-editor/vs/loader.js returned $code, want 200 (patch 0008 loads Monaco from there)"
+  ok "Monaco: loader.js is served from the public folder"
+
   leftover_placeholders || fail "placeholders left in rewritten files"
   [[ "$(files_containing "$api/platform")" -gt 0 ]] || fail "$api/platform is not in any rewritten file"
   ok "rewritten files carry $api/platform, no placeholder left"
@@ -183,6 +189,17 @@ check_patch_0005() {
   ok "patch 0005: the branching dialog reads supaviseBranchClones ($(wc -l < "$TMP/p5.files" | tr -d ' ') chunk)"
 }
 check_patch_0005
+
+# Patches 0008 and 0011 remove two hard-coded third-party hosts from the client bundle: the Monaco
+# loader's cdnjs path and Supabase's own edge-functions health probe.
+check_patch_0008_0011() {
+  grep -rlF --include='*.js' 'cdnjs.cloudflare.com/ajax/libs/monaco-editor' "$ROOT/app/apps/studio/.next/static/chunks" > "$TMP/p8.files" 2>/dev/null || true
+  [[ ! -s "$TMP/p8.files" ]] || fail "a client chunk still loads Monaco from cdnjs (patch 0008 is not in this build): $(head -n 1 "$TMP/p8.files")"
+  grep -rlF --include='*.js' 'obuldanrptloktxcffvn' "$ROOT/app/apps/studio/.next/static/chunks" > "$TMP/p11.files" 2>/dev/null || true
+  [[ ! -s "$TMP/p11.files" ]] || fail "a client chunk still probes Supabase's edge-functions health (patch 0011 is not in this build): $(head -n 1 "$TMP/p11.files")"
+  ok "patches 0008 and 0011: no client chunk names cdnjs for Monaco or Supabase's edge-functions health probe"
+}
+check_patch_0008_0011
 
 # round 1: every setting, including the node's MCP settings (127.0.0.1:9 is never contacted)
 start "https://api.one.test/platform" "https://auth.one.test/auth/v1" "https://studio.one.test" "*.api.one.test, db.one.test:8443" \
