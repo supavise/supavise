@@ -84,6 +84,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		webhookSecret: "hook-secret", clientSecret: "client-secret", defaultBranch: "main", branches: []string{"main", "feature"}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", f.instToken)
+	mux.HandleFunc("GET /repos/{owner}/{repo}/git/commits/{sha}", f.gitCommit)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/git/trees/{sha}", f.tree)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/git/blobs/{sha}", f.blob)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/contents/{path...}", f.contents)
@@ -193,13 +194,28 @@ func (f *fakeGitHub) instToken(w http.ResponseWriter, r *http.Request) {
 	f.writeJSON(w, http.StatusCreated, map[string]any{"token": "inst-token", "expires_at": "2099-01-01T00:00:00Z"})
 }
 
+// gitCommit names the root tree of a commit: "tree-<commit>|", which tree() understands.
+func (f *fakeGitHub) gitCommit(w http.ResponseWriter, r *http.Request) {
+	if !f.needInstallation(w, r) {
+		return
+	}
+	f.mu.Lock()
+	_, ok := f.files[r.PathValue("sha")]
+	f.mu.Unlock()
+	if !ok {
+		f.fail(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	f.writeJSON(w, http.StatusOK, map[string]any{"sha": r.PathValue("sha"), "tree": map[string]string{"sha": "tree-" + r.PathValue("sha") + "|"}})
+}
+
 func (f *fakeGitHub) tree(w http.ResponseWriter, r *http.Request) {
 	if !f.needInstallation(w, r) {
 		return
 	}
 	sha := r.PathValue("sha")
 	recursive := r.URL.Query().Get("recursive") == "1"
-	commit, dir := sha, ""
+	commit, dir := "", ""
 	if rest, ok := strings.CutPrefix(sha, "tree-"); ok {
 		// tree-<commit>-<path with / as :>: a directory of a commit
 		commit, dir, _ = strings.Cut(rest, "|")

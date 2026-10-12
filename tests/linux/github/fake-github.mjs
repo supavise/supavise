@@ -199,12 +199,17 @@ const repoCall = (fn) => async (req, res, p) => {
   if (`${p.owner}/${p.repo}` !== REPO) return fail(res, 404, 'Not Found')
   return fn(req, res, p)
 }
+route('GET', '/repos/{owner}/{repo}/git/commits/{sha}', repoCall(async (req, res, p) => {
+  if (!files.has(p.sha)) return fail(res, 404, 'Not Found')
+  json(res, 200, { sha: p.sha, tree: { sha: `tree-${p.sha}|` } })
+}))
 route('GET', '/repos/{owner}/{repo}/git/trees/{sha}', repoCall(async (req, res, p) => {
   const q = new URL(req.url, 'http://x').searchParams
-  let commit = decodeURIComponent(p.sha)
+  let commit = ''
   let dir = ''
-  if (commit.startsWith('tree-')) {
-    const rest = commit.slice(5)
+  const named = decodeURIComponent(p.sha)
+  if (named.startsWith('tree-')) {
+    const rest = named.slice(5)
     commit = rest.slice(0, rest.indexOf('|'))
     dir = rest.slice(rest.indexOf('|') + 1).replace(/:/g, '/')
   }
