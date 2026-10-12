@@ -213,9 +213,16 @@ export const PROBES = [
       const page = await e.page()
       await e.goto(page, `/project/${b.ref}/merge`)
       await e.expectText(page, /out of date/i, 120_000, 'the merge page of a branch behind its parent')
+      // Update branch may open a confirmation that animates in after the click: wait for it a moment
+      // instead of checking once, and require the push itself, so a missed dialog fails here and not
+      // as a 240 s wait for a notice that cannot clear.
+      const pushed = page.waitForRequest((r) => r.method() === 'POST' && /\/v1\/branches\/[^/]+\/push$/.test(new URL(r.url()).pathname), { timeout: 30_000 })
       await page.getByRole('button', { name: /^Update branch$/ }).first().click()
       const confirm = page.getByRole('button', { name: /^Update anyway$/ })
-      if (await confirm.isVisible().catch(() => false)) await confirm.click()
+      if (await confirm.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true, () => false)) await confirm.click()
+      await pushed.catch(() => {
+        throw new Error('Update branch sent no POST /v1/branches/{id}/push within 30 s')
+      })
       await waitFor('the out-of-date notice to clear', async () => {
         await e.goto(page, `/project/${b.ref}/merge`)
         return !/out of date/i.test(await pageText(page))
