@@ -750,6 +750,10 @@ func (w *statusWriter) Flush() {
 	}
 }
 
+// Unwrap lets http.ResponseController reach the connection's own writer: a handler that sets a read
+// deadline (the GitHub webhook's body) or hijacks would otherwise get ErrNotSupported from this one.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func newRequestID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
