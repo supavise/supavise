@@ -39,6 +39,7 @@ import (
 	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/lifecycle"
+	"github.com/supavise/supavise/internal/members"
 	"github.com/supavise/supavise/internal/proxy"
 	"github.com/supavise/supavise/internal/registry"
 	"github.com/supavise/supavise/internal/reqstats"
@@ -173,7 +174,10 @@ func TestServeLifecycle(t *testing.T) {
 	}
 	c.Close(ctx)
 
-	srv := api.New(api.Deps{Registry: n.Registry, Secrets: n.Secrets, Manager: n.Engine, Config: cfg, Branching: svc, CreateWait: 30 * time.Second, Requests: requests})
+	srv, err := api.NewServer(api.Deps{Registry: n.Registry, Secrets: n.Secrets, Manager: n.Engine, Config: cfg, Branching: svc, CreateWait: 30 * time.Second, Requests: requests})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", base+34))
 	if err != nil {
 		t.Fatal(err)
@@ -214,8 +218,21 @@ func TestServeLifecycle(t *testing.T) {
 	go ds.Serve(dl) //nolint:errcheck
 	defer ds.Close()
 
+	// The token's user owns every organization, as the claimed first user of a node does (serve_test.go does the
+	// same): without a seat the API refuses to create a branch of the parent ("You are not a member of this
+	// organization").
+	const serveUser = "11111111-2222-4333-8444-555555555555"
+	orgs, err := n.Registry.ListOrganizations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range orgs {
+		if err := srv.Members().EnsureOwner(ctx, members.OrgRef{ID: o.ID, Slug: o.Slug}, serveUser); err != nil {
+			t.Fatal(err)
+		}
+	}
 	pat := secrets.NewPAT()
-	if err := n.Registry.CreateAccessToken(ctx, &registry.AccessToken{UserID: "11111111-2222-4333-8444-555555555555", Name: "serve", Hash: secrets.HashToken(pat), Prefix: pat[:8]}); err != nil {
+	if err := n.Registry.CreateAccessToken(ctx, &registry.AccessToken{UserID: serveUser, Name: "serve", Hash: secrets.HashToken(pat), Prefix: pat[:8]}); err != nil {
 		t.Fatal(err)
 	}
 	info, _ := json.MarshalIndent(map[string]any{
