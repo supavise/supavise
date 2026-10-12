@@ -399,7 +399,7 @@ Schema-only branches copy nothing and are not checked.
   fail without touching the branch is checked first (the parent runs, a with_data branch can still get its data, the parent's
   credentials can be read). A later failure leaves the branch registered as `MIGRATIONS_FAILED` with `INIT_FAILED` project status under
   the same id, so it can be reset again or deleted. A schema-only branch keeps its credentials, its compute class and its schema
-  base; a branch with data gets new credentials as at creation and a new base. Its lifetime is kept, with at least 15 minutes left and
+  base; a branch with data gets new credentials as at creation and a new base. Its lifetime is kept, with at least 15 minutes left (a branch that never expires still never expires), and
   the branch stays resolvable (its `status` is `CREATING_PROJECT` meanwhile). A branch that recorded no history, or whose state is
   not a working one (a failed creation, a failed merge) and whose cluster cannot be read, is reset from the parent's history as a new
   branch is, and the run log says which history was used. A working branch (`FUNCTIONS_DEPLOYED`, `MIGRATIONS_PASSED`) whose history
