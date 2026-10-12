@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -99,5 +100,26 @@ func TestConfigCatKeysAreSortedAndUnique(t *testing.T) {
 		if seen[own] {
 			t.Errorf("%s is set by configCatDocument and must not be in configCatKeys", own)
 		}
+	}
+}
+
+// configcat-js reads the ETag of the flag document with XMLHttpRequest.getResponseHeader, which a cross-origin
+// page may do only for an exposed header; the browser logged `Refused to get unsafe header "ETag"` otherwise.
+// Only the dashboard's origin (and the operator's [api] allowed_origins) gets the CORS headers at all.
+func TestDashboardOriginExposesTheHeadersStudioReads(t *testing.T) {
+	f := newFixture(t)
+	rec := f.doAs("", "GET", configCatPath, nil, "Origin", f.cfg.DashboardURL())
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	exposed := strings.Split(rec.Header().Get("Access-Control-Expose-Headers"), ", ")
+	for _, want := range []string{"ETag", "Retry-After", "X-Request-Id"} {
+		if !slices.Contains(exposed, want) {
+			t.Errorf("Access-Control-Expose-Headers %q lacks %s", rec.Header().Get("Access-Control-Expose-Headers"), want)
+		}
+	}
+	rec = f.doAs("", "GET", configCatPath, nil, "Origin", "https://evil.example")
+	if rec.Header().Get("Access-Control-Allow-Origin") != "" || rec.Header().Get("Access-Control-Expose-Headers") != "" {
+		t.Errorf("a foreign origin got CORS headers: %v", rec.Header())
 	}
 }
