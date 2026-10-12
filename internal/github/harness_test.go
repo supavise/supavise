@@ -124,6 +124,10 @@ type fakeBranches struct {
 	maxPerProject int
 	paused        map[string]bool // refs of branches that are paused
 	woken         []string
+	// createHook, when set, runs in Create once the branch is registered (the row is visible) and before
+	// its schema is built: the real service returns to its caller at that point and goes on in the
+	// background. An error ends Create with the branch left as it is.
+	createHook func(ctx context.Context) error
 }
 
 func newFakeBranches(db *fakeDB) *fakeBranches {
@@ -184,7 +188,13 @@ func (f *fakeBranches) Create(ctx context.Context, ref string, in branching.Crea
 	run := f.run(newRef)
 	b.RunID = run.ID
 	f.branches[newRef] = b
+	hook := f.createHook
 	f.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx); err != nil {
+			return nil, err
+		}
+	}
 
 	state, detail := registry.BranchFunctionsDeployed, "schema only"
 	var err error
