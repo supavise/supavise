@@ -34,6 +34,13 @@ func (m *Memory) gh() *githubMem {
 	return m.github
 }
 
+// dropInstallations forgets the connections and the branch links, which name installations of the
+// App that goes.
+func (g *githubMem) dropInstallations() {
+	g.conns = nil
+	g.links = map[string]*GitHubBranchLink{}
+}
+
 func cloneApp(a *GitHubApp) *GitHubApp {
 	c := *a
 	c.SealedClientSecret = bytes.Clone(a.SealedClientSecret)
@@ -52,6 +59,10 @@ func cloneAuth(a *GitHubAuthorization) *GitHubAuthorization {
 func cloneLink(l *GitHubBranchLink) *GitHubBranchLink {
 	c := *l
 	c.Functions = maps.Clone(nonNilMap(l.Functions))
+	if l.SeededAt != nil {
+		t := *l.SeededAt
+		c.SeededAt = &t
+	}
 	return &c
 }
 
@@ -74,6 +85,7 @@ func (m *Memory) PutGitHubApp(_ context.Context, a *GitHubApp) error {
 	g.app = c
 	g.auths = map[string]*GitHubAuthorization{}
 	g.states = map[string]memState{}
+	g.dropInstallations()
 	a.CreatedAt, a.UpdatedAt = now, now
 	return nil
 }
@@ -86,6 +98,7 @@ func (m *Memory) DeleteGitHubApp(_ context.Context) (bool, error) {
 	g.app = nil
 	g.auths = map[string]*GitHubAuthorization{}
 	g.states = map[string]memState{}
+	g.dropInstallations()
 	return had, nil
 }
 
@@ -322,12 +335,15 @@ func (m *Memory) PutGitHubBranchLink(_ context.Context, l *GitHubBranchLink) err
 	c := cloneLink(l)
 	if old, ok := g.links[l.BranchRef]; ok {
 		c.CreatedAt = old.CreatedAt
+		if old.SeededAt != nil { // a stale link never un-seeds a branch
+			c.SeededAt = old.SeededAt
+		}
 	} else {
 		c.CreatedAt = now
 	}
 	c.UpdatedAt = now
 	g.links[l.BranchRef] = c
-	l.CreatedAt, l.UpdatedAt = c.CreatedAt, now
+	l.CreatedAt, l.UpdatedAt, l.SeededAt = c.CreatedAt, now, c.SeededAt
 	return nil
 }
 

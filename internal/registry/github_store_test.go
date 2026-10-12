@@ -3,10 +3,13 @@ package registry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestMemoryGitHubStore(t *testing.T) { testGitHubStore(t, NewMemory()) }
@@ -168,6 +171,23 @@ func testGitHubStore(t *testing.T, reg Registry) {
 	if err != nil || gl.HeadSHA != "def" || gl.PRNumber != 12 || gl.CheckRunID != 5 || gl.Functions["other"] != "o" || gl.ProjectRef != parent {
 		t.Fatalf("link = %+v, %v", gl, err)
 	}
+	// The seed is recorded once, and a stale copy of the link does not clear it.
+	if gl.SeededAt != nil {
+		t.Fatalf("a new link is seeded: %v", gl.SeededAt)
+	}
+	seededAt := time.Now().UTC().Truncate(time.Second)
+	gl.SeededAt = &seededAt
+	if err := st.PutGitHubBranchLink(ctx, gl); err != nil {
+		t.Fatal(err)
+	}
+	stale := &GitHubBranchLink{BranchRef: branch, ProjectRef: parent, RepositoryID: 750123456, RepositoryName: "acme/app", InstallationID: 49123456,
+		PRNumber: 12, HeadRef: "feature", HeadSHA: "def"}
+	if err := st.PutGitHubBranchLink(ctx, stale); err != nil || stale.SeededAt == nil {
+		t.Fatalf("put of a stale link: %v %v", err, stale.SeededAt)
+	}
+	if gl, err = st.GetGitHubBranchLink(ctx, branch); err != nil || gl.SeededAt == nil || !gl.SeededAt.Equal(seededAt) {
+		t.Fatalf("seeded_at after a stale put = %v, %v", gl.SeededAt, err)
+	}
 	if byPR, err := st.FindGitHubBranchLink(ctx, parent, 750123456, "", 12); err != nil || byPR.BranchRef != branch {
 		t.Fatalf("by pull request = %+v, %v", byPR, err)
 	}
@@ -231,10 +251,22 @@ func testGitHubStore(t *testing.T, reg Registry) {
 
 	// Replacing the App takes the users' tokens and the states with it; removing it too.
 	_ = st.PutGitHubState(ctx, hash, "x", "", now.Add(time.Hour))
+	relink := &GitHubBranchLink{BranchRef: branch, ProjectRef: parent, RepositoryID: 750123456, RepositoryName: "acme/app", InstallationID: 49123456,
+		PRNumber: 12, HeadRef: "feature"}
+	if err := st.PutGitHubBranchLink(ctx, relink); err != nil {
+		t.Fatal(err)
+	}
 	app2 := *app
 	app2.AppID = 1
 	if err := st.PutGitHubApp(ctx, &app2); err != nil {
 		t.Fatal(err)
+	}
+	// The connections and links name installations of the old App: they go too.
+	if _, err := st.GetGitHubConnection(ctx, c.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a connection outlived its App: %v", err)
+	}
+	if _, err := st.GetGitHubBranchLink(ctx, branch); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a branch link outlived its App: %v", err)
 	}
 	if _, err := st.GetGitHubAuthorization(ctx, "u1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("an authorization outlived its App: %v", err)
@@ -255,5 +287,15 @@ func testGitHubStore(t *testing.T, reg Registry) {
 	}
 	if removed, err := st.DeleteGitHubAuthorization(ctx, "u1"); err != nil || removed {
 		t.Fatalf("remove authorization of nobody: %v %v", removed, err)
+	}
+}
+
+func TestAMissingTableIsRecognizedThroughWrapping(t *testing.T) {
+	err := fmt.Errorf("query: %w", &pgconn.PgError{Code: "42P01", Message: `relation "supavise.github_app" does not exist`})
+	if !missingTable(err) {
+		t.Fatal("undefined_table is not recognized")
+	}
+	if missingTable(&pgconn.PgError{Code: "23505"}) || missingTable(errors.New("x")) || missingTable(nil) {
+		t.Fatal("another error is taken for a missing table")
 	}
 }
