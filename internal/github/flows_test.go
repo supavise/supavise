@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/config"
@@ -281,14 +282,142 @@ func TestProductionFailureKeepsItsLogOutOfTheCheckRun(t *testing.T) {
 	if got == nil || got.Name != CheckNameProduction || got.Conclusion != "failure" {
 		t.Fatalf("check = %+v", got)
 	}
-	if strings.Contains(got.Summary, "selec") && len(got.Summary) > 2000 {
-		t.Fatalf("the summary is long: %d", len(got.Summary))
+	if strings.Contains(got.Summary, "selec") || len(got.Summary) > 2000 {
+		t.Fatalf("the summary quotes the error or is long (%d): %s", len(got.Summary), got.Summary)
 	}
 	if !strings.Contains(got.Summary, "dashboard") {
 		t.Fatalf("the failure does not point at the dashboard: %s", got.Summary)
 	}
+	if got.Text != "" {
+		t.Fatalf("the check run of production carries a log: %q", got.Text)
+	}
 	if len(h.host.deployed) != 0 {
 		t.Fatal("functions were deployed after the migrations failed")
+	}
+}
+
+// The check run and the comment are read by everyone who can read the repository. A database error
+// can quote a value of a row, so a branch that may hold data (a copy of production's, or a persistent
+// one) and production itself report that they failed and where to look, and nothing the error says.
+func TestAFailureOfABranchThatMayHoldDataIsNotQuotedOnGitHub(t *testing.T) {
+	const quoted = `ERROR: invalid input syntax for type integer: "jane@example.com" (SQLSTATE 22P02)`
+	for name, in := range map[string]branching.CreateInput{
+		"with data":  {Name: "staging", GitBranch: "staging", WithData: true},
+		"persistent": {Name: "staging", GitBranch: "staging", Persistent: true},
+	} {
+		for _, via := range []string{"a pull request", "a push"} {
+			name, in, via := name, in, via
+			t.Run(name+" through "+via, func(t *testing.T) { testQuotedFailure(t, in, via == "a push", quoted) })
+		}
+	}
+}
+
+func testQuotedFailure(t *testing.T, in branching.CreateInput, viaPush bool, quoted string) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, err := h.br.Create(ctx, prodRef, in); err != nil {
+		t.Fatal(err)
+	}
+	h.db.failAt, h.db.failMsg = "20240101000000", quoted
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	if viaPush {
+		// A push to the Git branch the branch follows (no pull request owns it).
+		h.gh.setHead("staging", "sha-1")
+		h.deliver("push", "d2", h.pushEvent("refs/heads/staging", "sha-1"))
+	} else {
+		h.deliver("pull_request", "d1", h.prEvent("opened", 5, "staging", "sha-1"))
+	}
+	if len(h.gh.checks) == 0 || (!viaPush && len(h.gh.comments) == 0) {
+		t.Fatalf("no report was made: %d check run(s), %d comment(s)", len(h.gh.checks), len(h.gh.comments))
+	}
+	everything := func() string {
+		var all strings.Builder
+		for _, c := range h.gh.checks {
+			fmt.Fprintf(&all, "%s|%s|%s|%s\n", c.Title, c.Summary, c.Text, c.Conclusion)
+		}
+		for _, c := range h.gh.comments {
+			all.WriteString(c.Body + "\n")
+		}
+		return all.String()
+	}
+	got := everything()
+	for _, leak := range []string{"jane@example.com", "22P02", "invalid input syntax", "line of migrate"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("GitHub was told %q:\n%s", leak, got)
+		}
+	}
+	if !strings.Contains(got, "dashboard") || !strings.Contains(got, "failure") {
+		t.Errorf("the report does not say that it failed and where to look:\n%s", got)
+	}
+	// The run keeps its log: it is in the dashboard.
+	kept := false
+	h.br.mu.Lock()
+	for _, run := range h.br.runs {
+		for _, st := range run.Steps {
+			kept = kept || strings.Contains(st.Log, "jane@example.com")
+		}
+	}
+	h.br.mu.Unlock()
+	if !kept {
+		t.Errorf("the run lost its log")
+	}
+}
+
+// A branch that holds only what the repository gave it gets the failure, shortened, with the end of
+// the failed step's log in the check run, and never a credential.
+func TestAFailureOfAPreviewBranchIsShortenedAndHasNoCredential(t *testing.T) {
+	h := newHarness(t)
+	h.db.failAt = "20240101000000"
+	h.db.failMsg = `ERROR: could not connect to postgres://admin:hunter2secret@db.internal:5432/app with password=s3cr3tvalue and Bearer abcdefghijklmnop123 ` + strings.Repeat("padding ", 100)
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	h.deliver("pull_request", "d1", h.prEvent("opened", 6, "feature", "sha-1"))
+	var check *fakeCheck
+	for _, c := range h.gh.checks {
+		check = c
+	}
+	var comment string
+	for _, c := range h.gh.comments {
+		comment = c.Body
+	}
+	if check == nil || check.Conclusion != "failure" || comment == "" {
+		t.Fatalf("check = %+v, comment = %q", check, comment)
+	}
+	for _, text := range []string{check.Title, check.Summary, check.Text, comment} {
+		for _, leak := range []string{"hunter2secret", "s3cr3tvalue", "abcdefghijklmnop123"} {
+			if strings.Contains(text, leak) {
+				t.Errorf("a credential reached GitHub (%q): %.300s", leak, text)
+			}
+		}
+	}
+	if strings.Contains(check.Summary, strings.Repeat("padding ", 60)) || len(check.Summary) > 1500 {
+		t.Errorf("the failure is not shortened (%d bytes)", len(check.Summary))
+	}
+	if !strings.Contains(check.Summary, "could not connect") || !strings.Contains(check.Summary, "[redacted]") {
+		t.Errorf("the summary lost the start of the failure: %.400s", check.Summary)
+	}
+	// The check run has the end of the failed step's log, not the log of the run.
+	if !strings.Contains(check.Text, "FAILED") || strings.Contains(check.Text, "line of seed") || len(check.Text) > maxPublicLog+200 {
+		t.Errorf("the check run's text is not the failed step's excerpt (%d bytes): %.300s", len(check.Text), check.Text)
+	}
+}
+
+func TestRedactTakesOutWhatLooksLikeACredentialAndTheSecretsTheRunRead(t *testing.T) {
+	for in, want := range map[string]string{
+		"dial postgres://app:pw1234@host:5432/db failed":     "dial postgres://app:[redacted]@host:5432/db failed",
+		"Authorization: Bearer abcdefgh12345678":             "Authorization: Bearer [redacted]",
+		"jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln ok":   "jwt [redacted token] ok",
+		"smtp_pass = hunter2 and api_key: abc123":            "smtp_pass = [redacted] and api_key: [redacted]",
+		"password='my pass' next":                            "password=[redacted] next",
+		"the host smtp.example.com refused user bob":         "the host smtp.example.com refused user bob",
+		"relation \"todos\" does not exist (SQLSTATE 42P01)": "relation \"todos\" does not exist (SQLSTATE 42P01)",
+		"value from env: s3cretFromEnv end":                  "value from env: [redacted] end",
+	} {
+		if got := redact(in, []string{"s3cretFromEnv", "x"}); got != want {
+			t.Errorf("redact(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := clip("héllo wörld", 8); !utf8.ValidString(got) || len(got) > 8 {
+		t.Errorf("clip = %q", got)
 	}
 }
 

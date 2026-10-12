@@ -329,7 +329,7 @@ func branchErrText(err error) string {
 
 // driveBranch brings an existing branch up to the commit.
 func (s *Service) driveBranch(ctx context.Context, conn registry.GitHubConnection, b *branching.Branch, link *registry.GitHubBranchLink, src *repoSource, checkID int64) outcome {
-	oc := outcome{Parent: conn.ProjectRef, Branch: b.Name, BranchRef: b.Ref}
+	oc := outcome{Parent: conn.ProjectRef, Branch: b.Name, BranchRef: b.Ref, Private: b.WithData || b.Persistent}
 	// A previous commit's run may still be winding down after it was cancelled.
 	if _, err := s.br.WaitIdle(ctx, b.Ref); err != nil {
 		oc.Headline, oc.Detail = "Supavise could not wait for the branch.", err.Error()
@@ -381,6 +381,8 @@ func (s *Service) await(ctx context.Context, conn registry.GitHubConnection, ref
 		return oc
 	}
 	oc.Branch = b.Name
+	oc.Private = b.WithData || b.Persistent
+	oc.secrets = src.knownSecrets()
 	if runID != "" {
 		if run, rerr := s.br.GetRun(rctx, ref, runID); rerr == nil {
 			oc.Run = run
@@ -429,7 +431,10 @@ func (s *Service) finishPR(ctx context.Context, conn registry.GitHubConnection, 
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	out := checkOutput{Title: oc.Headline, Summary: oc.summary(), Text: logText(oc.Run)}
+	// Everyone who can read the repository reads the check run and the comment: they get the public
+	// form of the outcome, and the run's log stays in the dashboard.
+	oc, text := oc.public()
+	out := checkOutput{Title: oc.Headline, Summary: oc.summary(), Text: text}
 	if len(out.Title) > 120 {
 		out.Title = out.Title[:117] + "..."
 	}
