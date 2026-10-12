@@ -306,8 +306,10 @@ func storageEnv(cfg *config.Config, c *creds, credToken string) (map[string]stri
 //
 // NEXT_PUBLIC_CONFIGCAT_PROXY_URL (a placeholder in the build) points Studio's flag client at the Management
 // API, which serves the document. NIMBUS_PROD_PROJECTS_URL and its _WS twin name the hosts of project APIs for
-// the Edge Function Test tab; Studio's CSP code adds both together, and the CSP itself comes from
-// CSP_EXTRA_PROJECT_HOSTS.
+// the Edge Function Test tab, on the scheme of the project URLs (patch 0010 reads it: http on a node with
+// tls.mode off, where every project URL is http); Studio's CSP code adds both together, and the CSP
+// itself comes from CSP_EXTRA_PROJECT_HOSTS, which the runtime widens to http and ws when the project URLs are
+// http (studio/runtime).
 //
 // Unless [api] disable_oauth is set, Studio also gets the remote MCP endpoint. Connect > MCP
 // shows NEXT_PUBLIC_MCP_URL (a placeholder in the build). Patch 0004 serves the route
@@ -328,8 +330,8 @@ func studioEnv(cfg *config.Config, sso bool) map[string]string {
 		// The Edge Function Test tab posts to Studio's own /api/edge-functions/test, which accepts only a
 		// function URL on these hosts (lib/api/edgeFunctions.ts isValidEdgeFunctionURL; a platform build
 		// otherwise allows *.supabase.co only). Read per request, not substituted into the build.
-		"NIMBUS_PROD_PROJECTS_URL":    "https://*.api." + cfg.BaseDomain(),
-		"NIMBUS_PROD_PROJECTS_URL_WS": "wss://*.api." + cfg.BaseDomain(),
+		"NIMBUS_PROD_PROJECTS_URL":    projectScheme(cfg) + "://*.api." + cfg.BaseDomain(),
+		"NIMBUS_PROD_PROJECTS_URL_WS": projectWSScheme(cfg) + "://*.api." + cfg.BaseDomain(),
 	}
 	if k := cfg.Studio.HCaptchaSiteKey; k != "" {
 		env["NEXT_PUBLIC_HCAPTCHA_SITE_KEY"] = k
@@ -362,11 +364,24 @@ func adminURL(cfg *config.Config) string {
 // projectURLTemplate is the public API URL of a project with {ref} in place of its ref, in the
 // scheme of the public listeners (as the API's own project URLs).
 func projectURLTemplate(cfg *config.Config) string {
-	scheme := "https"
+	return projectScheme(cfg) + "://" + cfg.ProjectHost("{ref}")
+}
+
+// projectScheme is the scheme of project API URLs: that of the public listeners, http on a node with
+// tls.mode off. internal/api uses the same rule for the URLs it reports.
+func projectScheme(cfg *config.Config) string {
 	if cfg.TLS.Mode == "off" {
-		scheme = "http"
+		return "http"
 	}
-	return scheme + "://" + cfg.ProjectHost("{ref}")
+	return "https"
+}
+
+// projectWSScheme is the WebSocket scheme of the same URLs.
+func projectWSScheme(cfg *config.Config) string {
+	if cfg.TLS.Mode == "off" {
+		return "ws"
+	}
+	return "wss"
 }
 
 // studioDisabledByDefault is the list of features Studio's build disables before login
