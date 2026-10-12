@@ -27,6 +27,10 @@
    "pattern": "^Failed to send event to Sentry",
    "blockedHost": "sentry.hcaptcha.com",
    "reason": "hCaptcha's loader could not report its own failure to sentry.hcaptcha.com, which the sandbox blocks (externalHosts). The line is not in Studio's source."
+  },
+  {
+   "pattern": "^\\[crawl\\] unhandled rejection with a plain object: \\{\"type\":\"cancelation\"",
+   "reason": "@monaco-editor/react's useMonaco() hook calls loader.init().then(...) with no catch and cancels the promise when its component unmounts; Monaco then finishes loading and the promise rejects with {type: 'cancelation'}, a plain object that nobody handles. The line is the crawl's own console record of that rejection (browser.mjs, the unhandledrejection listener)."
   }
  ],
  "pageerror": [
@@ -48,6 +52,11 @@
    "pattern": "^Minified React error #418",
    "onPage": "^/(?:sign-in|sign-up|forgot-password|reset-password)(?:-[a-z]+)?/?$",
    "reason": "Hydration mismatch of the 'last used' badge on the sign-in pages (docs/reference/studio-platform-calls.md, Findings from running Studio, 8). The browser raises it as a page error."
+  },
+  {
+   "pattern": "^Object$",
+   "with": "^\\[crawl\\] unhandled rejection with a plain object: \\{\"type\":\"cancelation\"",
+   "reason": "The rejection of the useMonaco() cancelation that the console entry above records: Playwright shows the plain object as a page error named Object. It counts only with that console line on the same record, one for one, so that any other plain-object rejection is still a finding, with its content in the console line."
   }
  ],
  "requestfailed": [

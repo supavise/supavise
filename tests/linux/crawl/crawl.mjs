@@ -98,6 +98,7 @@ async function visit(page, v, { anonymousVisit = false } = {}) {
     rec.phase = 'click' // from here a call the guard aborts may be the change that a click started
     res.clicks = await safeClicks(page, rec)
     await settle(page, { quiet: 800, max: 6_000 })
+    for (const e of allow.pendingDom(v.page)) await waitText(page, e.text, 15_000)
     text = `${text}\n${await pageText(page)}`
     for (const f of domFindings(v.page, text, allow)) tracker.add(f)
     res.screenshot = await shot(page, join(OUT, 'screenshots'), `${String(++seq).padStart(3, '0')}-${v.url}`)

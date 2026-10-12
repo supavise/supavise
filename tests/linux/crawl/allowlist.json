@@ -857,6 +857,12 @@
    "reason": "Studio asks for the feature flags before the session exists, on the sign-in page; the call is repeated once the session is there."
   },
   {
+   "op": "GET /platform/notifications",
+   "status": 401,
+   "reach": "static",
+   "reason": "Studio's header Advisor button asks for notifications as soon as the app shell mounts. The anonymous visit of /maintenance (Studio redirects it to /, and from there to the sign-in page, when no maintenance mode is set) can reach the shell before the redirect, and without a session the call is refused 401, as hosted refuses every /platform call without one. Whether the shell mounts first is timing, so the entry is not one the crawl must see."
+  },
+  {
    "op": "GET /platform/organizations/{slug}/sso",
    "status": 404,
    "reach": "crawl",
@@ -1025,6 +1031,12 @@
    "text": "Failed to",
    "reach": "crawl",
    "reason": "The report cards are log queries, which a node answers with the explicit error that points to `supavise logs`; a card that drew an empty chart would read as \"no requests\"."
+  },
+  {
+   "route": "/project/[ref]/observability/api-overview",
+   "text": "Failed to",
+   "reach": "crawl",
+   "reason": "The API Gateway report's cards are log queries, which a node answers with the explicit error that points to `supavise logs`; a card that drew an empty chart would read as \"no requests\". The crawl waits for the text on a page that has not shown it yet, because the cards retry before they print it."
   }
  ]
 }

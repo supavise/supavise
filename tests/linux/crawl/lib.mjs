@@ -170,6 +170,14 @@ export class Allowlist {
     return e ?? null
   }
 
+  // pendingDom: the dom entries of reach "crawl" that the run has not seen yet and that this route may show. A visit waits for
+  // their text before it judges the page, because a card that queries logs retries for a few seconds before it prints its error,
+  // so whether the text is on the page at the end of the settle is a matter of timing, and an entry that the run must see would
+  // fail it for nothing.
+  pendingDom(route) {
+    return this.dom.filter((e) => e.reach === 'crawl' && e.seen === 0 && e.routeRe.test(route))
+  }
+
   // unseen: the entries the run must have hit and did not (reach "crawl"); each makes the run fail.
   unseen() {
     const pick = (list) => list.filter((e) => e.reach === 'crawl' && e.seen === 0)

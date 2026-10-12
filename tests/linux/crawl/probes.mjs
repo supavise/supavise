@@ -60,23 +60,11 @@ class Env {
     return t
   }
 
-  // clickRowMenu opens the "..." menu of the row that holds `name` (the row's last button without a label).
+  // clickRowMenu opens the "More branch actions" menu of the Branches row that holds `name`. The click is Playwright's: a Radix
+  // dropdown opens on pointerdown, which element.click() in the page never sends, so the menu stayed closed and its items never showed.
   async clickRowMenu(page, name) {
-    const clicked = await page.evaluate((n) => {
-      const hit = [...document.querySelectorAll('*')].filter((e) => e.children.length === 0 && (e.textContent || '').trim() === n)
-      for (const h of hit) {
-        for (let el = h; el && el !== document.body; el = el.parentElement) {
-          const icon = [...el.querySelectorAll('button')].filter((b) => !(b.innerText || '').trim() && b.querySelector('svg'))
-          if (icon.length) {
-            icon[icon.length - 1].click()
-            return true
-          }
-        }
-      }
-      return false
-    }, name)
-    ok(clicked, `no row menu for ${name}`)
-    await page.waitForTimeout(400)
+    const row = page.getByText(name, { exact: true }).first().locator('xpath=ancestor::div[.//button[@aria-label="More branch actions"]][1]')
+    await row.getByRole('button', { name: 'More branch actions' }).click({ timeout: 15_000 })
   }
 
   async branchesOf(parent) {
@@ -202,10 +190,14 @@ export const PROBES = [
       ok(there?.[0]?.present === true, 'the table of the branch is not in the parent after the merge')
       // the diff refreshes and shows nothing left
       await e.expectText(page, /No changes detected between branches/, 60_000, 'the Database tab after the merge')
-      // equal functions are not changes
-      await page.getByRole('link', { name: 'Edge Functions' }).first().click()
+      // equal functions are not changes. The tabs are the merge page's own links (the project's sidebar has an Edge Functions and a
+      // Database link too, which lead away from the merge page), and the URL says which tab the page is on.
+      const tab = (name) => page.locator(`a[href*="/merge?tab=${name}"]`).first()
+      await tab('edge-functions').click()
+      await page.waitForURL(/[?&]tab=edge-functions/, { timeout: 30_000 })
       await e.expectText(page, /No changes detected between branches/, 60_000, 'the Edge Functions tab')
-      await page.getByRole('link', { name: 'Database' }).first().click()
+      await tab('database').click()
+      await page.waitForURL(/[?&]tab=database/, { timeout: 30_000 })
       // Close branch removes the branch
       await e.expectText(page, /Close branch/, 30_000, 'the merge page')
       await page.getByRole('button', { name: /^Close branch$/ }).first().click()
@@ -348,7 +340,16 @@ export const PROBES = [
     async run(e) {
       const P = e.fx.projects.P
       const site = 'http://crawl-site.example.test'
-      await e.node.api('PATCH', `/platform/auth/${P}/config`, { SITE_URL: site })
+      const key = 'MAILER_TEMPLATES_CONFIRMATION_CONTENT'
+      // Studio offers Reset template only for a template that the config reports as custom (hasCustomTemplate in TemplateEditor.tsx),
+      // that is for one with a saved subject or body: a project that never edited the template has nothing to reset.
+      await e.node.api('PATCH', `/platform/auth/${P}/config`, {
+        SITE_URL: site,
+        MAILER_SUBJECTS_CONFIRMATION: 'Confirm your crawl account',
+        [key]: '<h2>Confirm</h2><p><a href="{{ .ConfirmationURL }}">Confirm your address</a></p>',
+      })
+      const before = (await e.node.api('GET', `/platform/auth/${P}/config`)).json
+      ok(before.MAILER_TEMPLATES_CUSTOM_CONTENTS?.[key] === true, 'the config does not report the saved confirmation template as custom')
       const page = await e.page()
       await e.goto(page, `/project/${P}/auth/templates/confirm-sign-up`)
       await page.getByRole('button', { name: /^Reset template$/ }).first().click()
@@ -356,6 +357,10 @@ export const PROBES = [
       await e.expectText(page, /Email template reset to default/, 30_000, 'the template page')
       const cfg = (await e.node.api('GET', `/platform/auth/${P}/config`)).json
       ok(cfg.SITE_URL === site, `the template reset changed SITE_URL from ${site} to ${cfg.SITE_URL}`)
+      ok(cfg.MAILER_SUBJECTS_CONFIRMATION === '' && cfg[key] === '', 'the template reset left the subject or the body of the confirmation template')
+      ok(cfg.MAILER_TEMPLATES_CUSTOM_CONTENTS?.[key] === false, 'the config still reports the reset template as custom')
+      // the answer of the reset is the config Studio now shows, so there is nothing left to reset
+      await waitFor('the Reset template button to go', async () => (await page.getByRole('button', { name: /^Reset template$/ }).count()) === 0, { timeout: 15_000, every: 500 })
     },
   },
   {
