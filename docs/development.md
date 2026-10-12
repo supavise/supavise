@@ -82,8 +82,10 @@ Rules the code follows. A change that breaks one needs a reason in [design.md](d
 | Provenance | no code copied from `kmhari/supastack` (AGPL); reading it for reference is fine |
 | Name | the product name must not contain "Supabase"; Supavise is not affiliated with Supabase Inc. |
 
-**Decided.** Do not reintroduce these without a written reason in [design.md](design.md) section 10: one Postgres cluster per project; native artifacts and no Docker; the proxy inside the binary and no Envoy; Supavisor as the only Postgres entry point; WAL archiving through the binary and no wal-g; wildcard DNS required; the platform-mode Studio build with a few small patches (three upstreamable, and the ones only Supavise needs: 0004 serves the MCP route and 0006 points the AI features at the operator's model provider; the reasons are in section 10); API types generated from the specs.
+**Decided.** Do not reintroduce these without a written reason in [design.md](design.md) section 10: one Postgres cluster per project; native artifacts and no Docker; the proxy inside the binary and no Envoy; Supavisor as the only Postgres entry point; WAL archiving through the binary and no wal-g; wildcard DNS required; the platform-mode Studio build with small patches (0001 to 0011, described in `studio/README.md`: three upstreamable, and eight that this deployment needs, such as 0004, which serves the MCP route, 0006, which points the AI features at the operator's model provider, 0008, which loads the code editor from the dashboard, and 0011, which reads the Edge Functions status from the node; the reasons are in section 10, except for the bug fixes 0009 and 0010); API types generated from the specs.
 
 ## Releases
 
 A `v*` tag starts `.github/workflows/release.yml`: it checks that the commit has passed its tests, builds the binaries and the Studio artifact, signs the checksum list and publishes the release. Signing key setup and the release steps are in [deploy/README.md](../deploy/README.md), "Release signing".
+
+A commit pushed only to `integrate/**` or `ws/**` may have skipped the `mcp-e2e` job of `studio.yml`, which runs there only when the push touched a Studio, MCP or AI-provider path (its `changes` job). Before you tag such a commit, check that it has a `studio.yml` run with `mcp-e2e`; a push to `main` or `gh workflow run studio.yml --ref <branch>` provides one.
