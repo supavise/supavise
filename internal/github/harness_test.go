@@ -350,6 +350,13 @@ func (h *fakeHost) FunctionSecret(_ context.Context, ref, name string) (string, 
 	return v, ok, nil
 }
 
+func (h *fakeHost) SettingSaved(_ context.Context, ref string, svc projectconfig.Service, key string) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	v, ok := h.patches[string(svc)+"@"+ref][key]
+	return ok && v != nil && fmt.Sprint(v) != "", nil
+}
+
 func (h *fakeHost) SaveSettings(_ context.Context, ref string, svc projectconfig.Service, patch map[string]any) ([]string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

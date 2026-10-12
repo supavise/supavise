@@ -584,3 +584,41 @@ func TestAConfigTomlSchemaTheMigrationsDoNotMakeFailsTheRunWithTheNodesMessage(t
 		t.Fatalf("the migrations were not applied before the failure: %v", got)
 	}
 }
+
+// A new preview branch has none of the parent's credentials and no Edge Function secret, so a config.toml
+// that switches an OAuth provider on with env(NAME) cannot give it a secret on the first run. The run
+// finishes without the switch (the node would refuse it); once the branch has the secret, the next commit
+// switches the provider on, and a secret the branch holds from then on is enough.
+func TestAFirstRunThatCannotGiveAProviderItsSecretFinishesAndALaterCommitSwitchesItOn(t *testing.T) {
+	h := newHarness(t)
+	const cfg = "project_id = \"app\"\n[auth]\nsite_url = \"https://app.example.com\"\n[auth.external.github]\nenabled = true\nclient_id = \"id\"\nsecret = \"env(GH_SECRET)\"\n"
+	h.gh.setCommit("sha-1", repoFiles(map[string]string{"supabase/config.toml": cfg}))
+	h.deliver("pull_request", "d1", h.prEvent("opened", 1, "feature", "sha-1"))
+	b := h.br.byName("feature")
+	if b == nil || b.State != registry.BranchFunctionsDeployed {
+		t.Fatalf("the first run did not finish: %+v", b)
+	}
+	key := "auth@" + b.Ref
+	if a := h.host.patches[key]; a["site_url"] != "https://app.example.com" || a["external_github_client_id"] != "id" {
+		t.Fatalf("the rest of config.toml did not apply: %v", a)
+	}
+	if _, on := h.host.patches[key]["external_github_enabled"]; on {
+		t.Fatalf("the provider was switched on without its secret: %v", h.host.patches[key])
+	}
+
+	h.host.secrets[b.Ref+"/GH_SECRET"] = "s3cret"
+	h.gh.setCommit("sha-2", repoFiles(map[string]string{"supabase/config.toml": cfg}))
+	h.deliver("pull_request", "d2", h.prEvent("synchronize", 1, "feature", "sha-2"))
+	if a := h.host.patches[key]; a["external_github_enabled"] != true || a["external_github_secret"] != "s3cret" {
+		t.Fatalf("the second run did not switch the provider on: %v", a)
+	}
+
+	// The branch holds the secret now: a commit whose env(GH_SECRET) cannot be read still switches it on.
+	h.host.patches[key]["external_github_enabled"] = false
+	delete(h.host.secrets, b.Ref+"/GH_SECRET")
+	h.gh.setCommit("sha-3", repoFiles(map[string]string{"supabase/config.toml": cfg}))
+	h.deliver("pull_request", "d3", h.prEvent("synchronize", 1, "feature", "sha-3"))
+	if got := h.host.patches[key]["external_github_enabled"]; got != true {
+		t.Fatalf("a provider whose secret the branch holds was left off: %v", h.host.patches[key])
+	}
+}

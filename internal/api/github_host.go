@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 
 	"github.com/supavise/supavise/internal/github"
 	"github.com/supavise/supavise/internal/lifecycle"
@@ -42,6 +43,22 @@ func (h ghHost) FunctionSecret(ctx context.Context, ref, name string) (string, b
 		return string(b), true, nil
 	}
 	return "", false, nil
+}
+
+// SettingSaved reports whether the project has a value saved for one setting of a service (a secret
+// counts when one is sealed): what the GitHub integration asks before it switches a provider on.
+func (h ghHost) SettingSaved(ctx context.Context, ref string, svc projectconfig.Service, key string) (bool, error) {
+	st, err := h.s.settings.Get(ctx, ref, svc)
+	if err != nil {
+		return false, err
+	}
+	switch v := st.Set[key].(type) {
+	case nil:
+		return false, nil
+	case string:
+		return strings.TrimSpace(v) != "", nil
+	}
+	return true, nil
 }
 
 // SaveSettings saves and applies settings of one service, as the PATCH of its config does. A
