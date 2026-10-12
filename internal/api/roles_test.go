@@ -120,11 +120,28 @@ func TestSecretsAreHiddenFromReadOnly(t *testing.T) {
 			t.Errorf("%s: jwt_secret %q, shown=%v", role, got, secretShown)
 		}
 	}
-	// Secret keys are listed masked, and cannot be revealed.
-	rec := rf.status(200, "ro", "GET", "/v1/projects/"+testRef+"/api-keys", nil)
-	for _, k := range body[[]map[string]any](t, rec) {
-		if key, _ := k["api_key"].(string); k["name"] == "service_role" && strings.HasPrefix(key, "eyJ") {
-			t.Errorf("the service_role key is listed in full to a Read-only member: %v", k)
+	// The legacy service_role key is listed in full, as on hosted, to a member who may read the service keys
+	// and not to a Read-only member, by the list and by id. The opaque secret key stays masked for everyone
+	// without reveal, and a Read-only member cannot reveal it.
+	serviceID := keyID(testRef, "service_role", "legacy")
+	for role, shown := range map[string]bool{"owner": true, "admin": true, "dev": true, "scoped": true, "ro": false} {
+		rec := rf.status(200, role, "GET", "/v1/projects/"+testRef+"/api-keys", nil)
+		for _, k := range body[[]map[string]any](t, rec) {
+			key, _ := k["api_key"].(string)
+			switch {
+			case k["type"] == "legacy" && k["name"] == "service_role":
+				if full := strings.HasPrefix(key, "eyJ"); full != shown {
+					t.Errorf("%s: the list shows the service_role key in full = %v, want %v: %v", role, full, shown, k)
+				}
+			case k["type"] == "secret":
+				if !strings.HasSuffix(key, maskDots) {
+					t.Errorf("%s: the opaque secret key is not masked: %v", role, k)
+				}
+			}
+		}
+		rec = rf.status(200, role, "GET", "/v1/projects/"+testRef+"/api-keys/"+serviceID, nil)
+		if key, _ := body[map[string]any](t, rec)["api_key"].(string); strings.HasPrefix(key, "eyJ") != shown {
+			t.Errorf("%s: by id, the service_role key in full = %v, want %v", role, !shown, shown)
 		}
 	}
 	rf.status(403, "ro", "GET", "/v1/projects/"+testRef+"/api-keys/anything?reveal=true", nil)
