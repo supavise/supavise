@@ -149,6 +149,11 @@ type Database interface {
 // ApplyOptions tune Database.Apply.
 type ApplyOptions struct {
 	Atomic bool
+	// Lock takes the project's apply lock, which Atomic takes too, without Atomic's single
+	// transaction and without its look at the history: the migrations run as without Atomic, one
+	// transaction each, but never while a merge is applying its own. The Git integration applies a
+	// repository's migrations to production this way.
+	Lock bool
 	// LockTimeout bounds how long a statement waits for a lock (0: no limit). Merges set it
 	// so that DDL on a busy parent fails instead of queueing behind, and blocking, traffic.
 	LockTimeout time.Duration
@@ -334,15 +339,18 @@ func (d *pgDatabase) Apply(ctx context.Context, ref string, ms []Migration, o Ap
 	if _, err := c.Exec(ctx, ensureMigrationsTable); err != nil {
 		return res, fmt.Errorf("prepare %s: %w", migrationsTable, err)
 	}
-	if o.Atomic {
+	if o.Atomic || o.Lock {
 		// One merge at a time per project: two would interleave their DDL. The lock belongs to
 		// this session, so it also covers the statement-by-statement fallback below, and it is
-		// released when the connection closes. The decision to apply was made before the lock
-		// was held: look again, so that a version another merge just applied is not run twice, and let
-		// the caller check its whole plan (divergence included) against the history as it is now.
-		if _, err := c.Exec(ctx, `select pg_advisory_lock(hashtext('supavise.branching.apply'))`); err != nil {
+		// released when the connection closes.
+		if _, err := c.Exec(ctx, applyLockSQL); err != nil {
 			return res, fmt.Errorf("wait for other migrations on %s: %w", ref, err)
 		}
+	}
+	if o.Atomic {
+		// The decision to apply was made before the lock was held: look again, so that a version
+		// another merge just applied is not run twice, and let the caller check its whole plan
+		// (divergence included) against the history as it is now.
 		current, err := readMigrations(ctx, c)
 		if err != nil {
 			return res, err

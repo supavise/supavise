@@ -51,7 +51,7 @@ One file per operation, so that a change to one operation stays in one file:
 | `carry.go` | what is carried between a branch and its parent besides schema: Edge Functions (`FunctionCarrier`), their base digests and the create-body secrets |
 | `schemadiff/` | the schema engine: reads a database into a `Snapshot`, plans the DDL between two, merges and syncs snapshots |
 | `update.go` | `Update` (PATCH of a branch) |
-| `driven.go` | `Drive` (an operation on an existing branch whose work the caller does) and `Database` (what the service runs SQL with), both for the Git integration |
+| `driven.go` | `Drive` (an operation on an existing branch whose work the caller does), `Wake` (resumes a paused branch and waits until it runs) and `Database` (what the service runs SQL with), all for the Git integration |
 | `delete.go` | `Delete`, `Restore`, `DisableBranching` and `removeBranch` |
 | `migrations.go` | the migration history (`Migration`, `Compare`, `Apply`, covered migrations), `SchemaDatabase` (snapshots and history written without running it) and `replay` into a schema-only branch |
 | `stmts.go` | which statements of a migration a recorded schema diff holds and which it does not (`carriedStatements`) |
@@ -443,6 +443,7 @@ to a list of migrations) when it cannot read or express something.
 
 * **`CreateInput.SchemaSource`** (types.go) builds a schema-only branch from something other than its parent. `Create` makes the branch's project as always (keys, ports, the parent's saved settings) and then calls `Schema` in place of the replay of the parent's migrations and seed, and `Functions` in the deploy step in place of the copy of the parent's Edge Functions. The branch gets no schema base (nothing it started from is the parent's) and the run's `clone`, `configure`, `migrate` and `seed` steps are the source's to report, with `Run.Step`. It needs a schema-only branch.
 * **`Drive(ctx, idOrRef, op, fn)`** (driven.go) starts a run on an existing branch whose steps `fn` performs, with the checks of a push (the branch is idle and running) and the ending of one (`FUNCTIONS_DEPLOYED` or `MIGRATIONS_FAILED`/`FUNCTIONS_FAILED`, events, `notify_url`). A caller that is not a branch (production) uses `StartRun` and ends the run with `Run.Finish`.
+* **`Wake(ctx, idOrRef)`** (driven.go) resumes a branch whose project is paused (`INACTIVE`) and waits while it comes up; `Drive` refuses a branch that is not running, so the Git integration wakes first. **`ApplyOptions.Lock`** takes the project's apply lock (the one a merge holds) without `Atomic`'s single transaction.
 
 A branch made for a pull request is created with `TTL` below zero, so it has no `expires_at`: it lives until the pull request closes and the integration deletes it. A branch somebody made with `--git-branch` keeps the lifetime `[branching] default_ttl` gives it.
 
