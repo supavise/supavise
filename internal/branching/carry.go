@@ -102,6 +102,21 @@ func (s *Service) serveKeptFunctions(ctx context.Context, branchRef string) erro
 	return nil
 }
 
+// serveFunctionsAgain tells the Edge Functions runtime to serve a branch's functions now. The runtime's
+// reconcile takes the files of a project that is not running off the disk, so a branch that starts again
+// after a pause (a wake for a request, a restore, a commit of the Git integration, a second server joining)
+// has none until the next reconcile. The start has succeeded, so a failure is logged and goes no further: the
+// reconcile repeats it. A node without the runtime has no carrier, and nothing happens.
+func (s *Service) serveFunctionsAgain(ctx context.Context, ref string) {
+	c := s.carrier()
+	if c == nil {
+		return
+	}
+	if err := c.Applied(context.WithoutCancel(ctx), ref); err != nil {
+		s.log.Warn("edge functions: serving the functions of a branch that started again", "ref", ref, "err", err)
+	}
+}
+
 // pushFunctions brings the parent's Edge Functions into the branch: a function the parent has and the
 // branch lacks is added, and one both have in another form is overwritten with the parent's, unless
 // only the branch changed it. Functions only the branch has are left alone, and nothing is deleted

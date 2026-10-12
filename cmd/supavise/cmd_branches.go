@@ -529,7 +529,8 @@ func expiryColumn(b *branching.Branch, now time.Time) string {
 }
 
 // projectColumn is the PROJECT column of the list: the project's status, and who paused it when it is
-// paused (a pause the node made for idleness wakes on the next request; an owner's waits for a resume).
+// paused (a pause the node made for idleness wakes on the next request; an owner's, and a stop of a branch
+// that still carries its parent's credentials, wait for a resume, a reset or a delete).
 func projectColumn(ctx context.Context, svc *branching.Service, b *branching.Branch) string {
 	if b.ProjectStatus != registry.StatusInactive || b.IsDefault {
 		return string(b.ProjectStatus)
@@ -537,6 +538,8 @@ func projectColumn(ctx context.Context, svc *branching.Service, b *branching.Bra
 	switch svc.PauseReason(ctx, b.Ref) {
 	case registry.PauseIdle:
 		return string(b.ProjectStatus) + " (idle: wakes on a request)"
+	case registry.PauseQuarantine:
+		return string(b.ProjectStatus) + " (stopped: carries the parent's credentials; reset or delete it)"
 	case "owner":
 		return string(b.ProjectStatus) + " (paused)"
 	}

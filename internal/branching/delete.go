@@ -39,7 +39,7 @@ func (s *Service) Delete(ctx context.Context, idOrRef string, o DeleteOptions) (
 		return s.scheduleDelete(ctx, b)
 	}
 	// A request that gives up must not leave a half-deleted branch.
-	return b, s.deleteWith(context.WithoutCancel(ctx), b, "api", o.SkipFinalBackup)
+	return b, s.deleteWith(context.WithoutCancel(ctx), b, "api", o.SkipFinalBackup, nil)
 }
 
 // scheduleDelete marks b for deletion after the grace period and pauses it. The pause is what makes
@@ -56,7 +56,7 @@ func (s *Service) scheduleDelete(ctx context.Context, b *Branch) (*Branch, error
 	// answers "not active" instead of trying to wake the branch. The listener that wakes the branch on a
 	// database connection is told at once.
 	if st := registry.BranchLifecycleOf(s.reg); st != nil && p.Status == registry.StatusInactive {
-		if pz, err := st.GetPause(ctx, b.Ref); err == nil && pz.Reason != "" {
+		if pz, err := st.GetPause(ctx, b.Ref); err == nil && registry.WakesByItself(pz.Reason) {
 			if err := st.SetPause(ctx, b.Ref, "", s.now().UTC()); err != nil {
 				s.log.Warn("could not make the pause of a branch scheduled for deletion the owner's", "ref", b.Ref, "err", err)
 			} else {
@@ -83,15 +83,37 @@ func (s *Service) scheduleDelete(ctx context.Context, b *Branch) (*Branch, error
 }
 
 func (s *Service) deleteNow(ctx context.Context, b *Branch, by string) error {
-	return s.deleteWith(ctx, b, by, false)
+	return s.deleteWith(ctx, b, by, false, nil)
 }
 
-func (s *Service) deleteWith(ctx context.Context, b *Branch, by string, skipBackup bool) error {
+// errNoLongerDue is what deleteWith returns, having deleted nothing, when its due check says the branch is
+// not to go after all.
+var errNoLongerDue = errors.New("branching: the branch is no longer due for deletion")
+
+// deleteWith deletes b. With due, the branch is read again once the operation is held and due judges what
+// the registry holds now: when it says no, or the branch is gone, nothing is deleted (errNoLongerDue); when
+// it says yes, the fresh value is what the delete works from (whether the branch is persistent decides on
+// its final backup and its archive).
+func (s *Service) deleteWith(ctx context.Context, b *Branch, by string, skipBackup bool, due func(*Branch) bool) error {
 	r, err := s.begin(b.Ref, "delete")
 	if err != nil {
 		return err
 	}
 	defer s.end(b.Ref, r)
+	if due != nil {
+		cur, err := s.reg.GetProject(ctx, b.Ref)
+		switch {
+		case errors.Is(err, registry.ErrNotFound):
+			return errNoLongerDue
+		case err != nil:
+			return err
+		case cur.Branch == nil:
+			return errNoLongerDue
+		}
+		if b = branchOf(cur); !due(b) {
+			return errNoLongerDue
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, s.opTimeout)
 	defer cancel()
 	if err := s.removeBranch(ctx, b, removeOptions{final: true, skipFinalBackup: skipBackup}); err != nil {
@@ -160,6 +182,7 @@ func (s *Service) Restore(ctx context.Context, idOrRef string) (*Branch, error) 
 		if err := s.eng.Resume(context.WithoutCancel(ctx), b.Ref); err != nil {
 			return nil, fmt.Errorf("the deletion is cancelled, but branch %s did not start again (resume it with `supavise projects resume %s`): %w", b.Name, b.Ref, err)
 		}
+		s.woken(ctx, b.Ref)
 	}
 	return s.Resolve(ctx, b.Ref)
 }
