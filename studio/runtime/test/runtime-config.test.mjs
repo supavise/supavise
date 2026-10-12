@@ -142,6 +142,42 @@ test('apply substitutes values, origins and CSP hosts', () => {
   }
 })
 
+test('a plain-http node also allows its project hosts over http and ws', () => {
+  const { root, app } = packaged()
+  try {
+    applyRuntimeConfig(root, {
+      NEXT_PUBLIC_API_URL: 'http://api.example.test',
+      NEXT_PUBLIC_GOTRUE_URL: 'http://api.example.test/auth/v1',
+      NEXT_PUBLIC_SITE_URL: 'http://studio.example.test',
+      CSP_EXTRA_PROJECT_HOSTS: '*.api.example.test',
+    })
+    const manifest = JSON.parse(readFileSync(join(app, 'apps/studio/.next/routes-manifest.json'), 'utf8'))
+    const csp = manifest.headers[0].value
+    assert.ok(csp.includes("connect-src 'self' http://api.example.test http://api.example.test "))
+    assert.ok(
+      csp.includes('https://*.api.example.test http://*.api.example.test wss://*.api.example.test ws://*.api.example.test;'),
+      csp
+    )
+    assert.ok(csp.includes("img-src 'self' https://*.api.example.test http://*.api.example.test;"), csp)
+    for (const s of allPlaceholderStrings(spec)) assert.ok(!csp.includes(s), s)
+  } finally {
+    rmSync(root, { recursive: true })
+  }
+})
+
+test('an https node does not allow its project hosts over http or ws', () => {
+  const { root, app } = packaged()
+  try {
+    applyRuntimeConfig(root, { ...goodEnv, CSP_EXTRA_PROJECT_HOSTS: '*.api.example.com' })
+    const manifest = JSON.parse(readFileSync(join(app, 'apps/studio/.next/routes-manifest.json'), 'utf8'))
+    const csp = manifest.headers[0].value
+    assert.ok(!/(^|[ ;])(http|ws):\/\//.test(csp), csp)
+    assert.ok(csp.includes('https://*.api.example.com wss://*.api.example.com;'), csp)
+  } finally {
+    rmSync(root, { recursive: true })
+  }
+})
+
 test('empty optional values: no captcha, default feature list, no extra CSP hosts', () => {
   const { root, app } = packaged()
   try {
