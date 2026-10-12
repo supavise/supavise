@@ -17,20 +17,17 @@ integrations:vercel). The platform lists it in disabled_features while
 it has no GitHub App, and Studio then hides the GitHub section of the
 project and organization integration settings, the Connections section
 of the account preferences, the GitHub status of the Branches side
-menu and the GitHub block of the create and edit branch dialogs. The
-Create pull request action of a branch is shown only when the project
-has a GitHub connection, because it builds its link from it.
+menu and the GitHub block of the create and edit branch dialogs.
 ---
  .../Account/Preferences/AccountConnections.tsx       |  5 +++++
  .../BranchManagement/CreateBranchModal.tsx           |  9 ++++++---
  .../interfaces/BranchManagement/EditBranchModal.tsx  |  9 ++++++---
- .../interfaces/BranchManagement/Overview.tsx         |  7 ++++++-
  .../IntegrationSettings/IntegrationSettings.tsx      |  3 ++-
  .../Settings/Integrations/IntegrationsSettings.tsx   |  3 ++-
  .../components/layouts/BranchLayout/BranchLayout.tsx | 12 ++++++++----
  .../common/enabled-features/enabled-features.json    |  1 +
  .../enabled-features/enabled-features.schema.json    |  5 +++++
- 9 files changed, 41 insertions(+), 13 deletions(-)
+ 8 files changed, 35 insertions(+), 12 deletions(-)
 
 diff --git a/apps/studio/components/interfaces/Account/Preferences/AccountConnections.tsx b/apps/studio/components/interfaces/Account/Preferences/AccountConnections.tsx
 index 5e4ab175..964abb97 100644
@@ -113,57 +110,6 @@ index 0f8cc13f..240bad2d 100644
    const error = authorizationError || connectionsError
  
    const { data: branches } = useBranchesQuery({ projectRef })
-diff --git a/apps/studio/components/interfaces/BranchManagement/Overview.tsx b/apps/studio/components/interfaces/BranchManagement/Overview.tsx
-index 6b797f75..0844c45a 100644
---- a/apps/studio/components/interfaces/BranchManagement/Overview.tsx
-+++ b/apps/studio/components/interfaces/BranchManagement/Overview.tsx
-@@ -159,6 +159,7 @@ export const Overview = ({
-                   <PreviewBranchActions
-                     branch={branch}
-                     repo={repo}
-+                    isGithubConnected={isGithubConnected}
-                     onSelectDeleteBranch={() => onSelectDeleteBranch(branch)}
-                     generateCreatePullRequestURL={generateCreatePullRequestURL}
-                   />
-@@ -186,6 +187,7 @@ export const Overview = ({
-                   <PreviewBranchActions
-                     branch={branch}
-                     repo={repo}
-+                    isGithubConnected={isGithubConnected}
-                     onSelectDeleteBranch={() => onSelectDeleteBranch(branch)}
-                     generateCreatePullRequestURL={generateCreatePullRequestURL}
-                   />
-@@ -214,6 +216,7 @@ export const Overview = ({
-                   <PreviewBranchActions
-                     branch={branch}
-                     repo={repo}
-+                    isGithubConnected={isGithubConnected}
-                     // If a scheduled for deletion branch is deleted, we force the deletion
-                     onSelectDeleteBranch={() => onSelectDeleteBranch(branch)}
-                     generateCreatePullRequestURL={generateCreatePullRequestURL}
-@@ -230,11 +233,13 @@ export const Overview = ({
- // Row actions for preview branches (non-main)
- const PreviewBranchActions = ({
-   branch,
-+  isGithubConnected,
-   onSelectDeleteBranch,
-   generateCreatePullRequestURL,
- }: {
-   branch: Branch
-   repo: string
-+  isGithubConnected: boolean
-   onSelectDeleteBranch: () => void
-   generateCreatePullRequestURL: (branchName?: string) => string
- }) => {
-@@ -447,7 +452,7 @@ const PreviewBranchActions = ({
-           )}
- 
-           {/* Create PR if applicable */}
--          {branch.git_branch && branch.pr_number === undefined && (
-+          {isGithubConnected && branch.git_branch && branch.pr_number === undefined && (
-             <DropdownMenuItem asChild className="gap-x-2">
-               <a
-                 target="_blank"
 diff --git a/apps/studio/components/interfaces/Organization/IntegrationSettings/IntegrationSettings.tsx b/apps/studio/components/interfaces/Organization/IntegrationSettings/IntegrationSettings.tsx
 index 01f43f3d..57798938 100644
 --- a/apps/studio/components/interfaces/Organization/IntegrationSettings/IntegrationSettings.tsx
