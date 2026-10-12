@@ -193,6 +193,28 @@ func TestSnapshotsOfEqualSchemasAreEqual(t *testing.T) {
 	}
 }
 
+// The services of a full node put triggers of their own on their tables (Storage's on storage.objects), and
+// a user puts triggers on the same tables (on auth.users, on storage.objects). The snapshot holds the user's
+// and not the services', so a baseline made from it carries what the user built and does not try to create
+// what the branch's own Storage creates when it starts.
+func TestServiceTriggersOnManagedTablesAreLeftOutOfTheSnapshot(t *testing.T) {
+	c, _ := newDB(t, `
+		create function storage.update_updated_at_column() returns trigger language plpgsql as $$ begin return new; end $$;
+		create trigger update_objects_updated_at before update on storage.objects for each row execute function storage.update_updated_at_column();
+		create function public.audit() returns trigger language plpgsql security definer as $$ begin return new; end $$;
+		create trigger objects_audit after insert on storage.objects for each row execute function public.audit();
+		create trigger on_auth_user_created after insert on auth.users for each row execute function public.audit();`)
+	idx := snapshot(t, c, ReadOptions{}).index()
+	if idx["trigger|storage|objects|update_objects_updated_at"] != nil {
+		t.Error("the snapshot holds the trigger of Storage")
+	}
+	for _, k := range []string{"trigger|storage|objects|objects_audit", "trigger|auth|users|on_auth_user_created"} {
+		if idx[k] == nil {
+			t.Errorf("the snapshot lacks the user's %s", k)
+		}
+	}
+}
+
 func TestBaselineBuildsAnEmptyDatabase(t *testing.T) {
 	src, _ := newDB(t, baseSchema, `
 		create type public.mood as enum ('sad', 'ok', 'happy');
