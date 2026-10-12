@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/config"
@@ -475,6 +476,7 @@ func TestPushToTheProductionBranchDeploysToProduction(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.gh.setCommit("sha-main", repoFiles(nil))
+	h.gh.setHead("main", "sha-main")
 	// Deploy to production is off until the project has a production branch.
 	if res := h.deliver("push", "d1", h.pushEvent("refs/heads/main", "sha-main")); res.Status != http.StatusAccepted {
 		t.Fatalf("%+v", res)
@@ -485,7 +487,14 @@ func TestPushToTheProductionBranchDeploysToProduction(t *testing.T) {
 	if err := h.reg.SetDefaultBranchGit(context.Background(), prodRef, "main"); err != nil {
 		t.Fatal(err)
 	}
-	h.deliver("push", "d2", h.pushEvent("refs/heads/main", "sha-main"))
+	// (A delivery's body is remembered, so the second push of the commit differs in what GitHub sends
+	// with it, as a force-push of the same commit does.)
+	again := func(before string) map[string]any {
+		ev := h.pushEvent("refs/heads/main", "sha-main")
+		ev["before"] = before
+		return ev
+	}
+	h.deliver("push", "d2", again("sha-before-1"))
 	if got := h.db.applied(prodRef); len(got) != 1 {
 		t.Fatalf("production migrations = %v", got)
 	}
@@ -507,9 +516,203 @@ func TestPushToTheProductionBranchDeploysToProduction(t *testing.T) {
 		t.Fatalf("checks = %+v", h.gh.checks)
 	}
 	// The same commit again changes nothing: the function is unchanged.
-	h.deliver("push", "d3", h.pushEvent("refs/heads/main", "sha-main"))
+	h.deliver("push", "d3", again("sha-before-2"))
 	if len(h.host.deployed) != 1 {
 		t.Fatalf("functions deployed = %v, an unchanged function is deployed once", h.host.deployed)
+	}
+}
+
+// prodHarness is a harness whose project is running and deploys the Git branch main.
+func prodHarness(t *testing.T) *harness {
+	t.Helper()
+	h := newHarness(t)
+	ctx := context.Background()
+	if err := h.reg.CreateProject(ctx, &registry.Project{Ref: prodRef, Name: "prod", Status: registry.StatusActiveHealthy}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reg.SetDefaultBranchGit(ctx, prodRef, "main"); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func (h *harness) prodChecks() (n int, headSHAs []string) {
+	h.gh.mu.Lock()
+	defer h.gh.mu.Unlock()
+	for _, c := range h.gh.checks {
+		if c.Name == CheckNameProduction {
+			n++
+			headSHAs = append(headSHAs, c.HeadSHA)
+		}
+	}
+	return n, headSHAs
+}
+
+// Events do not arrive in order, and a delivery that failed is sent again by hand long after: a push
+// of a commit that is no longer the head of the branch must not put its older code on production.
+func TestAnOlderPushIsNotDeployedOverANewerOne(t *testing.T) {
+	h := prodHarness(t)
+	fnA := map[string]string{"supabase/functions/hello/index.ts": "Deno.serve(() => new Response('vulnerable'))"}
+	fnB := map[string]string{"supabase/functions/hello/index.ts": "Deno.serve(() => new Response('fixed'))"}
+	h.gh.setCommit("sha-A", repoFiles(fnA))
+	h.gh.setCommit("sha-B", repoFiles(fnB))
+	h.gh.setHead("main", "sha-B")
+	// B's delivery is handled first.
+	if res := h.deliver("push", "dB", h.pushEvent("refs/heads/main", "sha-B")); res.Status != http.StatusAccepted {
+		t.Fatalf("%+v", res)
+	}
+	if n, shas := h.prodChecks(); n != 1 || shas[0] != "sha-B" {
+		t.Fatalf("production checks after B = %d %v", n, shas)
+	}
+	conn, err := h.reg.GetGitHubConnectionByProject(context.Background(), prodRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashB := conn.ProdFunctions["hello"]
+	deployed := len(h.host.deployed)
+	if hashB == "" || deployed != 1 {
+		t.Fatalf("after B: hash %q, %d function deployment(s)", hashB, deployed)
+	}
+	// A arrives late (or is sent again after an outage): it is accepted and does nothing.
+	if res := h.deliver("push", "dA", h.pushEvent("refs/heads/main", "sha-A")); res.Status != http.StatusAccepted {
+		t.Fatalf("%+v", res)
+	}
+	if n, _ := h.prodChecks(); n != 1 {
+		t.Fatalf("a stale push opened a production check run (%d)", n)
+	}
+	if len(h.host.deployed) != deployed {
+		t.Fatalf("the older function code was deployed: %v", h.host.deployed)
+	}
+	conn, _ = h.reg.GetGitHubConnectionByProject(context.Background(), prodRef)
+	if conn.ProdFunctions["hello"] != hashB {
+		t.Fatalf("the recorded function hash went back to the older code's")
+	}
+}
+
+func TestPushesInTheWrongOrderEndOnTheHead(t *testing.T) {
+	h := prodHarness(t)
+	for _, sha := range []string{"sha-A", "sha-B"} {
+		h.gh.setCommit(sha, repoFiles(map[string]string{"supabase/functions/hello/index.ts": "Deno.serve(() => new Response('" + sha + "'))"}))
+	}
+	h.gh.setHead("main", "sha-B")
+	h.deliver("push", "dA", h.pushEvent("refs/heads/main", "sha-A")) // arrives first, is already stale
+	h.deliver("push", "dB", h.pushEvent("refs/heads/main", "sha-B"))
+	if n, shas := h.prodChecks(); n != 1 || shas[0] != "sha-B" {
+		t.Fatalf("production checks = %d %v, want the head only", n, shas)
+	}
+	if got := h.host.deployed; len(got) != 1 {
+		t.Fatalf("functions deployed = %v", got)
+	}
+}
+
+// GitHub's API can show the previous head for a moment after the event was sent; the check asks
+// again before it calls a push stale.
+func TestAPushWhoseHeadTheAPIShowsLateIsStillDeployed(t *testing.T) {
+	h := prodHarness(t)
+	headRecheck = 5 * time.Millisecond
+	h.gh.setCommit("sha-old", repoFiles(nil))
+	h.gh.setCommit("sha-new", repoFiles(map[string]string{"supabase/migrations/20240102000000_done.sql": mig2}))
+	h.gh.setHead("main", "sha-new")
+	h.gh.mu.Lock()
+	h.gh.headQueue["main"] = []string{"sha-old"}
+	h.gh.mu.Unlock()
+	h.deliver("push", "d1", h.pushEvent("refs/heads/main", "sha-new"))
+	if got := h.db.applied(prodRef); len(got) != 2 {
+		t.Fatalf("production migrations = %v", got)
+	}
+	if n, shas := h.prodChecks(); n != 1 || shas[0] != "sha-new" {
+		t.Fatalf("production checks = %d %v", n, shas)
+	}
+}
+
+func TestAPushToABranchThatIsGoneIsNotDeployed(t *testing.T) {
+	h := prodHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(nil)) // no head: "main" does not exist any more
+	h.deliver("push", "d1", h.pushEvent("refs/heads/main", "sha-1"))
+	if n, _ := h.prodChecks(); n != 0 || len(h.db.history[prodRef]) != 0 {
+		t.Fatalf("a push to a deleted branch deployed (%d checks)", n)
+	}
+}
+
+func TestAnOlderPushToAGitBranchIsNotDeployedToTheBranchThatFollowsIt(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	h.deliver("pull_request", "d0", h.prEvent("opened", 1, "staging", "sha-1"))
+	b := h.br.byName("staging")
+	h.br.mu.Lock()
+	h.br.branches[b.Ref].Persistent = true
+	h.br.mu.Unlock()
+	h.deliver("pull_request", "d0b", h.prEvent("closed", 1, "staging", "sha-1"))
+	h.gh.setCommit("sha-2", repoFiles(map[string]string{"supabase/migrations/20240102000000_done.sql": mig2}))
+	h.gh.setCommit("sha-3", repoFiles(map[string]string{"supabase/migrations/20240102000000_done.sql": mig2, "supabase/migrations/20240103000000_more.sql": mig2}))
+	h.gh.setHead("staging", "sha-3")
+	before := len(h.br.drives)
+	h.deliver("push", "d1", h.pushEvent("refs/heads/staging", "sha-2"))
+	if len(h.br.drives) != before {
+		t.Fatal("a push of a commit that is not the head of its Git branch drove the branch")
+	}
+	h.deliver("push", "d2", h.pushEvent("refs/heads/staging", "sha-3"))
+	if len(h.br.drives) != before+1 {
+		t.Fatalf("drives = %d, want the head's push to drive once", len(h.br.drives)-before)
+	}
+	// A push that no branch follows costs GitHub no request at all.
+	calls := h.gh.callsTo("GET /repos/acme/app/commits/")
+	h.deliver("push", "d3", h.pushEvent("refs/heads/unfollowed", "sha-3"))
+	if got := h.gh.callsTo("GET /repos/acme/app/commits/"); got != calls {
+		t.Fatalf("a push nothing follows read the head from GitHub (%d request(s))", got-calls)
+	}
+}
+
+// The signature covers the body and not X-GitHub-Delivery: a body that was captured once and is sent
+// again under a new id is the same event.
+func TestAReplayedBodyUnderANewDeliveryIdIsNotHandledAgain(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	h.gh.setCommit("sha-2", repoFiles(nil))
+	ev := h.prEvent("opened", 7, "feature", "sha-1")
+	if res := h.deliver("pull_request", "delivery-1", ev); res.Status != http.StatusAccepted {
+		t.Fatalf("first delivery: %+v", res)
+	}
+	res := h.deliver("pull_request", "delivery-2", ev) // the same signed body, a new id
+	if res.Status != http.StatusOK || !strings.Contains(res.Message, "body") {
+		t.Fatalf("a replayed body: %+v", res)
+	}
+	if h.gh.callsTo("POST /repos/acme/app/check-runs") != 1 || len(h.br.creates) != 1 {
+		t.Fatalf("the replay was handled: %d check run(s), %d create(s)", h.gh.callsTo("POST /repos/acme/app/check-runs"), len(h.br.creates))
+	}
+	// Another body is another event, and a delivery that could not be handled is forgotten with its body.
+	if res := h.deliver("pull_request", "delivery-3", h.prEvent("synchronize", 7, "feature", "sha-2")); res.Status != http.StatusAccepted {
+		t.Fatalf("a new body: %+v", res)
+	}
+	bad := h.prEvent("opened", 8, "feature-8", "")
+	if res := h.deliver("pull_request", "delivery-4", bad); res.Status != http.StatusBadRequest {
+		t.Fatalf("an unreadable payload: %+v", res)
+	}
+	if res := h.deliver("pull_request", "delivery-4", bad); res.Status != http.StatusBadRequest {
+		t.Fatalf("an unreadable payload is sent again: %+v", res)
+	}
+}
+
+// A replay of a captured body has no three-day limit like GitHub's own redelivery: the body is
+// remembered for a week.
+func TestADeliveryBodyIsRememberedBeyondGitHubsRedeliveryWindow(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	clock := time.Now() // the App's JWTs are checked against the real clock by the fake
+	h.svc.now = func() time.Time { return clock }
+	ev := h.prEvent("opened", 7, "feature", "sha-1")
+	h.deliver("pull_request", "d1", ev)
+	drives := len(h.br.drives)
+	clock = clock.Add(73 * time.Hour) // past the 72 hours of GitHub's redelivery
+	if res := h.deliver("pull_request", "d2", ev); res.Status != http.StatusOK || !strings.Contains(res.Message, "before") {
+		t.Fatalf("a replay after three days: %+v", res)
+	}
+	clock = clock.Add(8 * 24 * time.Hour)
+	if res := h.deliver("pull_request", "d3", ev); res.Status != http.StatusAccepted {
+		t.Fatalf("after a week the body is forgotten: %+v", res)
+	}
+	if len(h.br.drives) != drives+1 {
+		t.Fatalf("drives = %d, want the forgotten body handled once more", len(h.br.drives)-drives)
 	}
 }
 
@@ -521,6 +724,7 @@ func TestPushWithoutSupabaseFilesSkipsProductionWhenSupabaseChangesOnly(t *testi
 		t.Fatal(err)
 	}
 	h.gh.setCommit("sha-main", repoFiles(nil))
+	h.gh.setHead("main", "sha-main")
 	h.deliver("push", "d1", h.pushEvent("refs/heads/main", "sha-main", "README.md"))
 	if len(h.db.history[prodRef]) != 0 {
 		t.Fatal("production was deployed by a push that changed nothing under supabase/")
@@ -542,6 +746,7 @@ func TestPushToAGitBranchDeploysToTheBranchThatFollowsIt(t *testing.T) {
 	h.br.mu.Unlock()
 	h.deliver("pull_request", "d0b", h.prEvent("closed", 1, "staging", "sha-1"))
 	h.gh.setCommit("sha-2", repoFiles(map[string]string{"supabase/migrations/20240102000000_done.sql": mig2}))
+	h.gh.setHead("staging", "sha-2")
 	h.deliver("push", "d1", h.pushEvent("refs/heads/staging", "sha-2"))
 	if got := h.db.applied(b.Ref); len(got) != 2 {
 		t.Fatalf("migrations on the branch = %v", got)

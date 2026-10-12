@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/registry"
@@ -37,6 +38,63 @@ func (s *Service) ProductionBranch(ctx context.Context, projectRef string) strin
 	return b
 }
 
+// branchHead returns the commit the Git branch points to now. ErrNotFound when the repository has no
+// such branch.
+func (s *Service) branchHead(ctx context.Context, conn registry.GitHubConnection, branch string) (string, error) {
+	tok, err := s.installationToken(ctx, conn.InstallationID)
+	if err != nil {
+		return "", err
+	}
+	var c struct {
+		SHA string `json:"sha"`
+	}
+	if err := s.cl.do(ctx, tok, http.MethodGet, "/repos/"+escapeSegments(conn.RepositoryName)+"/commits/"+url.PathEscape(branch), nil, &c); err != nil {
+		if IsStatus(err, http.StatusNotFound) || IsStatus(err, http.StatusUnprocessableEntity) {
+			return "", fmt.Errorf("%w: branch %q does not exist in %s", ErrNotFound, branch, conn.RepositoryName)
+		}
+		return "", err
+	}
+	return c.SHA, nil
+}
+
+// headRecheck is how long a push waits before it asks for the head of its branch a second time when
+// the first answer was another commit: GitHub's API can still show the previous head for a moment
+// after the push event was sent, and a push that really is stale gains nothing from being quick.
+var headRecheck = 2 * time.Second
+
+// pushIsHead reports whether sha is the commit the Git branch points to. Events do not arrive in
+// order, a failed delivery is sent again by hand long after the branch moved on, and a signed body
+// that was captured once can be sent again: deploying the commit an event names would put older
+// code on a project over newer. A push that is no longer the head is skipped; the head's own push
+// is the one that deploys. ok is false, with the reason logged, when the head cannot be read: it is
+// safer to deploy nothing than something unchecked (Resync deploys the head on demand).
+func (s *Service) pushIsHead(ctx context.Context, conn registry.GitHubConnection, branch, sha string) (ok bool) {
+	for attempt := 0; ; attempt++ {
+		head, err := s.branchHead(ctx, conn, branch)
+		switch {
+		case err != nil && errors.Is(err, ErrNotFound):
+			s.log.Info("a push is skipped: its branch is gone", "repo", conn.RepositoryName, "branch", branch, "sha", short(sha))
+			return false
+		case err != nil:
+			if ctx.Err() == nil {
+				s.log.Warn("a push is not deployed: the head of its branch could not be read (Resync deploys it)", "repo", conn.RepositoryName, "branch", branch, "err", err)
+			}
+			return false
+		case head == sha:
+			return true
+		case attempt == 0 && headRecheck > 0:
+			select {
+			case <-time.After(headRecheck):
+				continue
+			case <-ctx.Done():
+				return false
+			}
+		}
+		s.log.Info("a push is skipped: it is not the head of its branch any more", "repo", conn.RepositoryName, "branch", branch, "sha", short(sha), "head", short(head))
+		return false
+	}
+}
+
 // DeployProduction deploys the head of the production branch now (Resync on the production row of
 // the Branches page). It returns the id of the action run, which the work continues under.
 func (s *Service) DeployProduction(ctx context.Context, projectRef string) (string, error) {
@@ -57,17 +115,8 @@ func (s *Service) DeployProduction(ctx context.Context, projectRef string) (stri
 	if branch == "" {
 		return "", invalid("Deploy to production is off: no production branch is set for this project")
 	}
-	tok, err := s.installationToken(ctx, conn.InstallationID)
+	sha, err := s.branchHead(ctx, *conn, branch)
 	if err != nil {
-		return "", err
-	}
-	var c struct {
-		SHA string `json:"sha"`
-	}
-	if err := s.cl.do(ctx, tok, http.MethodGet, "/repos/"+escapeSegments(conn.RepositoryName)+"/commits/"+url.PathEscape(branch), nil, &c); err != nil {
-		if IsStatus(err, http.StatusNotFound) || IsStatus(err, http.StatusUnprocessableEntity) {
-			return "", fmt.Errorf("%w: branch %q does not exist in %s", ErrNotFound, branch, conn.RepositoryName)
-		}
 		return "", err
 	}
 	run, err := s.br.StartRun(ctx, "deploy", projectRef, projectRef, projectRef)
@@ -75,7 +124,7 @@ func (s *Service) DeployProduction(ctx context.Context, projectRef string) (stri
 		return "", err
 	}
 	s.enqueue("prod:"+projectRef, func(ctx context.Context) {
-		if err := s.deployProduction(ctx, *conn, branch, c.SHA, run); err != nil && ctx.Err() == nil {
+		if err := s.deployProduction(ctx, *conn, branch, sha, run); err != nil && ctx.Err() == nil {
 			s.log.Warn("a production deployment failed", "repo", conn.RepositoryName, "err", err)
 		}
 	}, func() {
@@ -212,6 +261,7 @@ func (s *Service) syncGitBranch(ctx context.Context, conn registry.GitHubConnect
 		return err
 	}
 	var first error
+	checked := false
 	for i := range list {
 		b := list[i]
 		if b.IsDefault || b.GitBranch != gitBranch {
@@ -223,6 +273,14 @@ func (s *Service) syncGitBranch(ctx context.Context, conn registry.GitHubConnect
 		}
 		if link != nil && link.PRNumber > 0 {
 			continue
+		}
+		// A push that no branch follows costs GitHub no request; one that some branch follows is checked
+		// against the head of its Git branch once, before the first of them is deployed.
+		if !checked {
+			if !s.pushIsHead(ctx, conn, gitBranch, sha) {
+				return nil
+			}
+			checked = true
 		}
 		if err := s.syncOne(ctx, conn, &b, link, gitBranch, sha); err != nil && first == nil {
 			first = err

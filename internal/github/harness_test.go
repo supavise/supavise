@@ -408,6 +408,10 @@ func newHarness(t *testing.T, mutate ...func(*config.Config)) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { svc.Drain(context.Background()) })
+	// A push that is no longer the head of its branch is skipped at once; tests that want the wait set it.
+	recheck := headRecheck
+	headRecheck = 0
+	t.Cleanup(func() { headRecheck = recheck })
 	h := &harness{t: t, svc: svc, gh: gh, br: br, db: db, host: host, reg: reg, cfg: cfg}
 	h.conn = registry.GitHubConnection{OrgID: 1, ProjectRef: prodRef, InstallationID: gh.instID, RepositoryID: gh.repoID, RepositoryName: gh.repo,
 		SupabaseChangesOnly: false, BranchLimit: 50, NewBranchPerPR: true, CreatedBy: "user-1"}
