@@ -133,6 +133,8 @@ type Service struct {
 	// files caches the operator's App files by modification time (app.go).
 	filesMu sync.Mutex
 	files   map[string]cachedFile
+	// warned is when an unusable App was last reported (app.go).
+	warned time.Time
 	// app is the parsed App, kept while appSig (what it was made from) stays the same.
 	app    *App
 	appSig string
@@ -149,7 +151,7 @@ type Service struct {
 	stop context.CancelFunc
 
 	// limiter admits webhooks (webhook.go).
-	limit rateLimiter
+	limit, badLimit rateLimiter
 	// prunedAt is when old deliveries were last removed.
 	pruneMu  sync.Mutex
 	prunedAt time.Time
@@ -179,7 +181,8 @@ func New(o Options) (*Service, error) {
 		s.cl.HTTP = &http.Client{Timeout: 60 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
 	s.base, s.stop = context.WithCancel(context.Background())
-	s.limit.init(s.now)
+	s.limit.init(s.now, hookRate, hookBurst)
+	s.badLimit.init(s.now, badRate, badBurst)
 	return s, nil
 }
 

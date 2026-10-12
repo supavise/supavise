@@ -3,7 +3,7 @@
 // API that a test uses to put commits in the repository and read back what the server reported.
 // Real GitHub is never contacted by a test.
 //
-//   node fake-github.mjs --port 8765 --app-id 918273 --key key.pem --client-secret S [--file ready.json]
+//   node fake-github.mjs --port 8765 --app-id 918273 --key key.pem --client-secret S [--file ready.json] [--callback URL]
 //
 // It listens on 127.0.0.1:<port>, answers GitHub's API and web endpoints on the same origin
 // (api_url = web_url = http://127.0.0.1:<port>), and writes {url} to --file when it is ready.
@@ -14,6 +14,10 @@
 //   POST /login/oauth/access_token           code "good-code", or a refresh token it issued
 //   GET  /user, /user/installations, /user/installations/{id}/repositories   with the user's token
 //   DELETE /applications/{client}/token
+//   GET  /login/oauth/authorize, /apps/{slug}/installations/new   the pages Studio's windows open on github.com; with
+//        --callback (the dashboard's /integrations/github/authorize) they redirect there like GitHub does, with
+//        code=good-code and the state, or setup_action=install. A browser test that sends github.com to this origin
+//        reaches Studio's landing page with them.
 // Repository acme/app (installation token "inst-token")
 //   GET  /repos/{o}/{r}/git/trees/{sha}, git/blobs/{sha}, contents/{path}, pulls/{n}/files, branches, commits/{ref}
 //   POST /repos/{o}/{r}/check-runs, PATCH .../check-runs/{id}
@@ -36,6 +40,7 @@ const { values: opt } = parseArgs({
     key: { type: 'string' },
     'client-secret': { type: 'string', default: 'client-secret' },
     file: { type: 'string' },
+    callback: { type: 'string' },
   },
 })
 const APP_ID = opt['app-id']
@@ -167,6 +172,24 @@ route('GET', '/user/installations/{id}/repositories', async (req, res) =>
 route('DELETE', '/applications/{client}/token', async (req, res) => {
   if (!(req.headers.authorization || '').startsWith('Basic ')) return fail(res, 401, 'Requires authentication')
   res.writeHead(204)
+  res.end()
+})
+
+route('GET', '/login/oauth/authorize', async (req, res) => {
+  const q = new URL(req.url, 'http://x').searchParams
+  if (!opt.callback) return json(res, 200, { client_id: q.get('client_id'), state: q.get('state') })
+  const to = new URL(opt.callback)
+  to.searchParams.set('code', 'good-code')
+  to.searchParams.set('state', q.get('state') || '')
+  res.writeHead(302, { location: to.toString() })
+  res.end()
+})
+route('GET', '/apps/{slug}/installations/new', async (req, res) => {
+  if (!opt.callback) return json(res, 200, { app: 'installation page' })
+  const to = new URL(opt.callback)
+  to.searchParams.set('installation_id', String(INSTALLATION_ID))
+  to.searchParams.set('setup_action', 'install')
+  res.writeHead(302, { location: to.toString() })
   res.end()
 })
 

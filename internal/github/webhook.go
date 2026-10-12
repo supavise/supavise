@@ -46,20 +46,23 @@ func res(status int, format string, a ...any) WebhookResult {
 // rateLimiter is a token bucket for the receiver: the signature check is cheap but a body is not
 // free to read, and the route has no credentials.
 type rateLimiter struct {
-	mu     sync.Mutex
-	tokens float64
-	last   time.Time
-	now    func() time.Time
+	mu          sync.Mutex
+	tokens      float64
+	last        time.Time
+	now         func() time.Time
+	rate, burst float64
 }
 
 const (
-	hookRate  = 30.0  // deliveries per second, sustained
+	hookRate  = 30.0  // signed deliveries per second, sustained
 	hookBurst = 120.0 // and at once
+	badRate   = 100.0 // unsigned ones
+	badBurst  = 300.0
 )
 
-func (l *rateLimiter) init(now func() time.Time) {
-	l.now = now
-	l.tokens = hookBurst
+func (l *rateLimiter) init(now func() time.Time, rate, burst float64) {
+	l.now, l.rate, l.burst = now, rate, burst
+	l.tokens = burst
 	l.last = now()
 }
 
@@ -67,7 +70,7 @@ func (l *rateLimiter) allow() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	l.tokens = min(hookBurst, l.tokens+now.Sub(l.last).Seconds()*hookRate)
+	l.tokens = min(l.burst, l.tokens+now.Sub(l.last).Seconds()*l.rate)
 	l.last = now
 	if l.tokens < 1 {
 		return false
@@ -149,9 +152,6 @@ type refPayload struct {
 
 // HandleWebhook verifies and handles one delivery.
 func (s *Service) HandleWebhook(ctx context.Context, d Delivery) WebhookResult {
-	if !s.limit.allow() {
-		return res(http.StatusTooManyRequests, "too many deliveries")
-	}
 	app, err := s.App(ctx)
 	if err != nil {
 		if errors.Is(err, ErrNotConfigured) {
@@ -160,8 +160,16 @@ func (s *Service) HandleWebhook(ctx context.Context, d Delivery) WebhookResult {
 		s.log.Error("a GitHub webhook arrived but the App cannot be read", "err", err)
 		return res(http.StatusServiceUnavailable, "the GitHub App cannot be read")
 	}
+	// A delivery that is not signed by GitHub is answered from its own, wider allowance, so that a flood
+	// of forgeries cannot use up the allowance of the real ones.
 	if !SignatureOK(app.WebhookSecret, d.Body, d.Signature) {
+		if !s.badLimit.allow() {
+			return res(http.StatusTooManyRequests, "too many deliveries")
+		}
 		return res(http.StatusUnauthorized, "the signature does not match")
+	}
+	if !s.limit.allow() {
+		return res(http.StatusTooManyRequests, "too many deliveries")
 	}
 	if d.ID == "" || d.Event == "" {
 		return res(http.StatusBadRequest, "X-GitHub-Delivery and X-GitHub-Event are required")
