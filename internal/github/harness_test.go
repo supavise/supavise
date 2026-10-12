@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ type fakeDB struct {
 	applyLog  []string // ref/version, in order
 	unlocked  []string // ref/version of migrations applied without the project's apply lock
 	failAt    string   // a version whose migration fails
+	failMsg   string   // what its error says (a syntax error when empty)
 	failSeed  bool
 	bucketLag int // RunScripts that fail with "Storage schema is not ready" first
 	// gate holds the migration gateAt until it is closed, or until the context ends; entered is told
@@ -72,6 +74,9 @@ func (d *fakeDB) Apply(ctx context.Context, ref string, ms []branching.Migration
 	defer d.mu.Unlock()
 	for _, m := range ms {
 		if m.Version == d.failAt {
+			if d.failMsg != "" {
+				return branching.ApplyResult{}, errors.New(d.failMsg)
+			}
 			return branching.ApplyResult{}, fmt.Errorf("ERROR: syntax error at or near \"selec\" (SQLSTATE 42601)")
 		}
 		d.history[ref] = append(d.history[ref], m)
@@ -125,6 +130,22 @@ func newFakeBranches(db *fakeDB) *fakeBranches {
 	return &fakeBranches{db: db, branches: map[string]*branching.Branch{}, runs: map[string]*registry.BranchRun{}}
 }
 
+// failRun ends a run as the service does: the step that failed is DEAD and its log says why.
+func failRun(run *registry.BranchRun, err error) {
+	run.Status = registry.RunFailed
+	step := "migrate"
+	if strings.Contains(err.Error(), "nope") {
+		step = "seed"
+	}
+	for i := range run.Steps {
+		if run.Steps[i].Name == step {
+			run.Steps[i].Status = registry.StepDead
+			run.Steps[i].Log += "FAILED: " + err.Error() + "\n"
+		}
+	}
+	run.Failure = step + ": " + err.Error()
+}
+
 func (f *fakeBranches) run(ref string) *registry.BranchRun {
 	f.n++
 	id := fmt.Sprintf("run-%d", f.n)
@@ -158,7 +179,7 @@ func (f *fakeBranches) Create(ctx context.Context, ref string, in branching.Crea
 	}
 	f.creates = append(f.creates, in)
 	newRef := secrets.NewRef()
-	b := &branching.Branch{ID: secrets.NewUUID(), Name: in.Name, Ref: newRef, ParentRef: ref, GitBranch: in.GitBranch, Persistent: in.Persistent,
+	b := &branching.Branch{ID: secrets.NewUUID(), Name: in.Name, Ref: newRef, ParentRef: ref, GitBranch: in.GitBranch, Persistent: in.Persistent, WithData: in.WithData,
 		State: registry.BranchCreatingProject, ProjectStatus: registry.StatusActiveHealthy, CreatedAt: time.Now()}
 	run := f.run(newRef)
 	b.RunID = run.ID
@@ -183,7 +204,7 @@ func (f *fakeBranches) Create(ctx context.Context, ref string, in branching.Crea
 	defer f.mu.Unlock()
 	if err != nil {
 		detail = err.Error()
-		run.Status = registry.RunFailed
+		failRun(run, err)
 	}
 	b.State, b.Detail = state, detail
 	c := *b
@@ -253,7 +274,7 @@ func (f *fakeBranches) Drive(ctx context.Context, idOrRef, op string, fn branchi
 	defer f.mu.Unlock()
 	if err != nil {
 		b.State, b.Detail = registry.BranchMigrationsFailed, err.Error()
-		run.Status = registry.RunFailed
+		failRun(run, err)
 	} else {
 		b.State, b.Detail = registry.BranchFunctionsDeployed, detail
 	}

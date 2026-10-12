@@ -46,6 +46,18 @@ type repoSource struct {
 	plan   *ConfigPlan
 	hashes map[string]string
 	stats  runStats
+	// secrets are the values env(NAME) read from the branch's secrets: no report repeats them.
+	secrets []string
+}
+
+// knownSecrets returns the values of the secrets this run read.
+func (r *repoSource) knownSecrets() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.secrets...)
 }
 
 type runStats struct {
@@ -177,7 +189,15 @@ func (r *repoSource) configure(ctx context.Context, run *branching.Run, ref stri
 	}
 	in := PlanInput{Doc: doc, Ref: ref, Persistent: r.persistent, Branch: ref != r.conn.ProjectRef}
 	if h := r.s.host; h != nil {
-		in.Env = func(name string) (string, bool, error) { return h.FunctionSecret(ctx, ref, name) }
+		in.Env = func(name string) (string, bool, error) {
+			v, ok, err := h.FunctionSecret(ctx, ref, name)
+			if ok && v != "" {
+				r.mu.Lock()
+				r.secrets = append(r.secrets, v)
+				r.mu.Unlock()
+			}
+			return v, ok, err
+		}
 	}
 	in.Template = func(rel string) (string, bool) {
 		if !r.sn.Has(rel) {
