@@ -171,6 +171,11 @@ func (s *Service) Restore(ctx context.Context, idOrRef string) (*Branch, error) 
 		if err != nil {
 			return nil, err
 		}
+		// A scheduled branch holds no slot (checkLimits), so a restore takes one: when the caps were
+		// filled meanwhile, it waits until a branch is deleted or the cap is raised.
+		if err := s.checkLimits(ctx, b.ParentRef, ""); err != nil {
+			return nil, fmt.Errorf("%w; branch %s stays scheduled for deletion", err, b.Name)
+		}
 		nb := *p.Branch
 		nb.DeletionScheduledAt = nil
 		if err := s.reg.UpdateBranch(ctx, b.Ref, &nb); err != nil {

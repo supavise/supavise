@@ -614,7 +614,11 @@ A branch homed on a server that is gone cannot be deleted until the server is ba
 
 ## Limits and guards
 
-`[branching] max_per_project` (10) and `max_total` (50): every branch is a cluster. Branch names are
+`[branching] max_per_project` (10) and `max_total` (50): every branch is a cluster. A branch scheduled for deletion
+holds no slot of either (the hosted platform has no cap to fill, and deleting a branch is how a user makes room), but
+its name stays taken, and Restore asks for a slot (`checkLimits` without a name): with none free it answers 400 with
+the cap and leaves the branch scheduled. A branch that failed to build (`MIGRATIONS_FAILED`, `FUNCTIONS_FAILED`) is
+listed by the dashboard until it is deleted or reset, and counts. Branch names are
 git-branch-like (`A-Za-z0-9._/-`, 100 characters); `main` is reserved. `notify_url` must be http(s), and the
 call refuses loopback, private, link-local, shared (100.64.0.0/10), benchmarking (198.18.0.0/15),
 IETF-reserved (192.0.0.0/24, 240.0.0.0/4) and NAT64 (64:ff9b::/96) addresses at connect time unless

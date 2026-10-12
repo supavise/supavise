@@ -120,11 +120,15 @@ def wait_status(parent, name, want, timeout=300):
     return last or {}
 
 
+made = []  # the branches created, for the clean-up before the branch with data (the stack allows 10 per project)
+
+
 def new_branch(name, **kw):
     code, br = call("POST", f"/v1/projects/{PARENT}/branches", {"branch_name": name, **kw})
     if code != 201:
         check(False, f"create {name} answers 201 (got {code} {br})")
         return None
+    made.append(br)
     b = wait_status(PARENT, name, "FUNCTIONS_DEPLOYED")
     return b if b.get("status") == "FUNCTIONS_DEPLOYED" else None
 
@@ -415,6 +419,12 @@ if sb:
     check(int(sql(sb["project_ref"], "select count(*) n from pg_namespace where nspname = 'exposed_x'")[0]["n"]) == 1, "and the schema is there")
 
 # ==== 7. a branch with data ===================================================================================================
+# The sections above made ten branches, as many as [branching] max_per_project allows, and are done with them: deleting a
+# branch gives its slot back, which the branch below needs.
+for br in made:
+    code, _ = call("DELETE", f"/v1/branches/{br['id']}")
+    check(code == 200, f"branch {br.get('name')} is deleted to make room ({code})")
+made.clear()
 for q in ("alter system set work_mem = '97MB'", "alter system set statement_timeout = '13s'", "select pg_reload_conf()"):
     psql(ADMIN_DSN, q)
 dbr = new_branch(f"data-{tag}", with_data=True)
