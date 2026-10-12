@@ -442,6 +442,7 @@ func TestIntegrationBranching(t *testing.T) {
 	// --- reset: the branch is recreated from the parent, keeping ref, id and credentials ------
 	st.exec(schema.Ref, `insert into public.items values (555, 'scratch')`)
 	oldKeys, _ := eng.Keys(ctx, schema.Ref)
+	ownHistory := st.migrations(schema.Ref)
 	if _, err := st.svc.Reset(ctx, schema.ID, ActionInput{}); err != nil {
 		t.Fatal(err)
 	}
@@ -452,8 +453,17 @@ func TestIntegrationBranching(t *testing.T) {
 	if n := st.count(reset.Ref, "public.items"); n != 1 { // only the seed again
 		t.Fatalf("items after reset = %d", n)
 	}
-	if got := st.migrations(reset.Ref); got[len(got)-1] != "20260112000000" {
-		t.Fatalf("migrations after reset = %v", got)
+	// A schema-only reset replays the branch's own history, as hosted does: the migration only the
+	// branch has (the unmerged "feature") survives, and the one only the parent has (the "hotfix")
+	// is not taken in: that is what a push is for.
+	got := st.migrations(reset.Ref)
+	if strings.Join(got, ",") != strings.Join(ownHistory, ",") || got[len(got)-1] != "20260113000000" {
+		t.Fatalf("migrations after reset = %v, want the branch's own %v", got, ownHistory)
+	}
+	for _, v := range got {
+		if v == "20260112000000" {
+			t.Fatalf("a reset took in the parent's migration %s: %v", v, got)
+		}
 	}
 	newKeys, _ := eng.Keys(ctx, reset.Ref)
 	if newKeys.DBPassword != oldKeys.DBPassword || newKeys.JWTSecret != oldKeys.JWTSecret {
