@@ -656,7 +656,11 @@ bsql() { api POST "$BCFG/database/query" -d "$(python3 -c 'import json,sys; prin
 [[ $(api GET "$BCFG/config/database/postgres" | json_get 'd["statement_timeout"]') == 7s ]] || fail "a non-sizing Postgres setting did not reach the branch"
 [[ $(bsql "show max_connections" | json_get 'd[0]["max_connections"]') != 40 ]] || fail "the parent's max_connections was copied: a branch has the sizing of its own class"
 [[ $(bsql "select polname from pg_policy order by 1" | json_get '",".join(r["polname"] for r in d)') == br_objects,br_read ]] || fail "the branch lacks the policies (one on storage.objects) of the SQL editor: $(bsql "select polname from pg_policy")"
-[[ $(bsql "select tgname from pg_trigger where not tgisinternal" | json_get '",".join(r["tgname"] for r in d)') == br_on_signup ]] || fail "the branch lacks the trigger on auth.users"
+# The branch runs Storage and Realtime of its own, which create triggers of their own on their tables (storage.objects
+# and storage.buckets, realtime.subscription), so the check is for the trigger of the SQL editor, by name, table and function.
+[[ $(bsql "select exists (select 1 from pg_trigger where not tgisinternal and tgrelid = 'auth.users'::regclass and tgname = 'br_on_signup'
+    and tgfoid = 'public.br_signup()'::regprocedure) as t" | json_get 'd[0]["t"]') == True ]] \
+  || fail "the branch lacks the trigger on auth.users (it has: $(bsql "select tgrelid::regclass::text || '.' || tgname::text as n from pg_trigger where not tgisinternal order by 1" | json_get '", ".join(r["n"] for r in d)'))"
 [[ $(bsql "select to_regclass('public.br_notes') is not null as t" | json_get 'd[0]["t"]') == True ]] || fail "the branch lacks the table of the SQL editor"
 [[ $(api GET "$CFG/database/migrations" | json_get 'len(d)') == 1 && $(api GET "$CFG/database/migrations" | json_get 'd[0]["name"]') == remote_schema ]] || fail "the parent's history was not initialised with the baseline: $(api GET "$CFG/database/migrations")"
 must 200 DELETE "/v1/branches/$BR_ID"
