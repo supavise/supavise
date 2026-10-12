@@ -68,3 +68,20 @@ func TestGitHubSectionFromTOMLAndEnv(t *testing.T) {
 }
 
 func reflectValue(c *Config) reflect.Value { return reflect.ValueOf(c).Elem() }
+
+func TestGitHubBuildsDefaultToThreeAndStayWithinBounds(t *testing.T) {
+	var g GitHub
+	if g.Builds() != DefaultGitHubBuilds || DefaultGitHubBuilds != 3 {
+		t.Fatalf("default builds = %d", g.Builds())
+	}
+	g.MaxConcurrentBuilds = 5
+	if g.Builds() != 5 || g.validate() != nil {
+		t.Fatalf("builds = %d, %v", g.Builds(), g.validate())
+	}
+	for _, n := range []int{-1, MaxGitHubBuilds + 1} {
+		g.MaxConcurrentBuilds = n
+		if err := g.validate(); err == nil || !strings.Contains(err.Error(), "max_concurrent_builds") {
+			t.Fatalf("max_concurrent_builds = %d: %v", n, err)
+		}
+	}
+}
