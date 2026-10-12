@@ -340,15 +340,6 @@ func TestPersistentBranchIsNotWarned(t *testing.T) {
 	}
 }
 
-func hasEvent(evs []registry.Event, kind string) bool {
-	for _, e := range evs {
-		if e.Kind == kind {
-			return true
-		}
-	}
-	return false
-}
-
 // ---- the archive ------------------------------------------------------------------------------
 
 // archiveHarness is a harness whose service has a backup store (a directory) with WAL under the refs of
