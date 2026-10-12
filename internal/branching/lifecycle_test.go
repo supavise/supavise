@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -54,6 +55,63 @@ func TestScheduledDeletePausesAndRestoreResumes(t *testing.T) {
 	// Nothing to restore now.
 	if _, err := h.svc.Restore(ctx, b.Ref); !isConflict(err) {
 		t.Fatalf("restore of a running, unscheduled branch: %v", err)
+	}
+}
+
+// A branch scheduled for deletion holds no slot of [branching] max_per_project or max_total, as on the
+// hosted platform where deleting a branch makes room for the next one; its name stays taken, a branch that
+// failed still counts, and Restore asks for a slot and leaves the branch scheduled when there is none.
+func TestScheduledBranchHoldsNoSlot(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.Branching.MaxPerProject = 2 })
+	ctx := context.Background()
+	a := h.create("a", nil)
+	h.create("b", nil)
+	if _, err := h.svc.Create(ctx, parentRef, CreateInput{Name: "c"}); !errors.Is(err, ErrLimit) {
+		t.Fatalf("a third branch with two of two: %v", err)
+	}
+	if _, err := h.svc.Delete(ctx, a.Ref, DeleteOptions{Schedule: true}); err != nil {
+		t.Fatal(err)
+	}
+	// The scheduled branch has made room for one, and its name is still its own.
+	if _, err := h.svc.Create(ctx, parentRef, CreateInput{Name: "a"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("the name of a scheduled branch: %v", err)
+	}
+	c := h.create("c", nil)
+	if _, err := h.svc.Create(ctx, parentRef, CreateInput{Name: "d"}); !errors.Is(err, ErrLimit) {
+		t.Fatalf("a branch past the cap: %v", err)
+	}
+	// The slot is gone, so the restore waits, says why and leaves the branch scheduled.
+	_, err := h.svc.Restore(ctx, a.Ref)
+	if !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), "max_per_project") || !strings.Contains(err.Error(), "stays scheduled for deletion") {
+		t.Fatalf("restore without a slot: %v", err)
+	}
+	if got, err := h.svc.Resolve(ctx, a.Ref); err != nil || got.DeletionScheduledAt == nil || h.eng.resumed[a.Ref] != 0 {
+		t.Fatalf("branch after the refused restore: %+v, %v, resumes %d", got, err, h.eng.resumed[a.Ref])
+	}
+	// A branch gone for good frees the slot, and the restore goes through.
+	if _, err := h.svc.Delete(ctx, c.Ref, DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	back, err := h.svc.Restore(ctx, a.Ref)
+	if err != nil || back.DeletionScheduledAt != nil || back.ProjectStatus != registry.StatusActiveHealthy {
+		t.Fatalf("restore with a slot: %+v, %v", back, err)
+	}
+}
+
+// The node-wide cap leaves a scheduled branch out too, and Restore asks for its slot.
+func TestScheduledBranchHoldsNoNodeSlot(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.Branching.MaxPerProject, c.Branching.MaxTotal = 5, 1 })
+	ctx := context.Background()
+	a := h.create("a", nil)
+	if _, err := h.svc.Delete(ctx, a.Ref, DeleteOptions{Schedule: true}); err != nil {
+		t.Fatal(err)
+	}
+	h.create("b", nil)
+	if _, err := h.svc.Create(ctx, parentRef, CreateInput{Name: "c"}); !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), "max_total") {
+		t.Fatalf("a second branch with one of one: %v", err)
+	}
+	if _, err := h.svc.Restore(ctx, a.Ref); !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), "max_total") {
+		t.Fatalf("restore without a node slot: %v", err)
 	}
 }
 

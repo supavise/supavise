@@ -224,6 +224,12 @@ func (s *Service) expiry(ttl time.Duration) *time.Time {
 	return &t
 }
 
+// checkLimits refuses a new branch called name when the project or the node is at its cap; Restore calls
+// it without a name to ask for the slot of a branch it brings back. A branch that is scheduled for
+// deletion holds no slot: deleting a branch is what makes room for the next one, and the scheduled one is
+// paused and waits for the sweeper. A branch that failed to build still counts, since the dashboard lists
+// it until its owner deletes or resets it. The name is taken by every row, a scheduled one included,
+// because Restore gives the row its name back.
 func (s *Service) checkLimits(ctx context.Context, parentRef, name string) error {
 	all, err := s.reg.ListProjects(ctx)
 	if err != nil {
@@ -235,12 +241,15 @@ func (s *Service) checkLimits(ctx context.Context, parentRef, name string) error
 		if q.Branch == nil {
 			continue
 		}
+		if name != "" && q.Branch.ParentRef == parentRef && q.Branch.Name == name {
+			return conflict("project %s already has a branch named %q", parentRef, name)
+		}
+		if q.Branch.DeletionScheduledAt != nil {
+			continue
+		}
 		every++
 		if q.Branch.ParentRef == parentRef {
 			mine++
-			if q.Branch.Name == name {
-				return conflict("project %s already has a branch named %q", parentRef, name)
-			}
 		}
 	}
 	if mine >= perProject {
