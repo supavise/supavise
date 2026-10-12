@@ -220,6 +220,42 @@ func TestProjectHealthReportsActiveHealthy(t *testing.T) {
 	}
 }
 
+// The project home asks for services=functions (patch 0011) and reads the Edge Functions row from the entry named
+// functions; the five services it asks for in the other call come without it. A request that names no service gets the
+// six of the spec, as the API server does.
+func TestProjectHealthHonorsServices(t *testing.T) {
+	_, ts, tok := newTestServer(t, "")
+	for _, c := range []struct {
+		query string
+		want  []string
+	}{
+		{"", []string{"auth", "db", "pooler", "realtime", "rest", "storage"}},
+		{"?services=functions", []string{"functions"}},
+		{"?services=auth&services=realtime&services=rest&services=storage&services=db", []string{"auth", "db", "realtime", "rest", "storage"}},
+		{"?services=rest,functions", []string{"rest", "functions"}},
+	} {
+		code, body, _ := do(t, "GET", ts.URL+"/v1/projects/"+refA+"/health"+c.query, tok, "")
+		var out []struct {
+			Name    string `json:"name"`
+			Healthy bool   `json:"healthy"`
+			Status  string `json:"status"`
+		}
+		if code != 200 || json.Unmarshal(body, &out) != nil {
+			t.Fatalf("health%s: %d %s", c.query, code, body)
+		}
+		var got []string
+		for _, e := range out {
+			got = append(got, e.Name)
+			if !e.Healthy || e.Status != "ACTIVE_HEALTHY" {
+				t.Errorf("health%s: service %s healthy=%v status=%q", c.query, e.Name, e.Healthy, e.Status)
+			}
+		}
+		if strings.Join(got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("health%s: services %v, want %v", c.query, got, c.want)
+		}
+	}
+}
+
 func TestProjectsListsAndPagination(t *testing.T) {
 	_, ts, tok := newTestServer(t, "")
 	_, body, _ := do(t, "GET", ts.URL+"/platform/organizations/mock-org/projects?limit=1&offset=1&sort=name_asc", tok, "")
