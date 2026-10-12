@@ -28,9 +28,10 @@ import (
 // reports, so the page reads "01 Oct 2026 - 01 Nov 2026" and not the epoch.
 
 const (
-	// usageGiB is the unit of the figures Studio prints as GB. The daily charts format bytes in powers
-	// of 1024, and the summary uses the same unit, so the two agree.
-	usageGiB = float64(1 << 30)
+	// bytesPerGB is the unit of the figure Studio prints as GB next to the metric, and the one its
+	// tooltip table (formatUsage) and the 0.5 GB per-project check of the Database size section use: a
+	// decimal gigabyte. The daily charts format usage_original in powers of 1024 on their own.
+	bytesPerGB = 1e9
 	// usageMetricDatabaseSize is the metric the node reports, as named by the hosted API.
 	usageMetricDatabaseSize = "DATABASE_SIZE"
 	// maxUsageRange bounds the range of a request: the collector keeps 92 days of hourly means, and a
@@ -126,7 +127,10 @@ func (s *Server) sizeDays(ref string, start, end time.Time) (map[time.Time]float
 	return days, nil
 }
 
-func usageGB(bytes float64) float64 { return math.Round(bytes/usageGiB*1e6) / 1e6 }
+// usageGB is the "usage" of an entry, in decimal gigabytes. Only that field is in GB: "usage_original"
+// and each project allocation's "usage" are in bytes, which is how Studio reads them (formatUsage divides
+// an allocation by 1e9, and the project rows of the Database size section pass it to formatBytes).
+func usageGB(bytes float64) float64 { return math.Round(bytes/bytesPerGB*1e6) / 1e6 }
 
 // orgUsage answers GET /platform/organizations/{slug}/usage[?project_ref=&start=&end=].
 func (s *Server) orgUsage(w http.ResponseWriter, r *http.Request) error {
@@ -154,7 +158,7 @@ func (s *Server) orgUsage(w http.ResponseWriter, r *http.Request) error {
 		}
 		mean := sum / float64(len(days))
 		total += mean
-		allocations = append(allocations, map[string]any{"ref": p.Ref, "name": p.Name, "usage": usageGB(mean)})
+		allocations = append(allocations, map[string]any{"ref": p.Ref, "name": p.Name, "usage": math.Round(mean)})
 	}
 	usages := []map[string]any{}
 	if len(allocations) > 0 {
