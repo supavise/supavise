@@ -787,3 +787,31 @@ func TestADeployingBranchIsBusyForOtherProcesses(t *testing.T) {
 		t.Fatalf("sweep after the deploy: %+v %v", res, err)
 	}
 }
+
+func TestWakeResumesAPausedBranchAndLeavesARunningOneAlone(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	b := h.create("feat", nil)
+	if got, err := h.svc.Wake(ctx, b.Ref); err != nil || got.Ref != b.Ref || len(h.eng.resumed) != 0 {
+		t.Fatalf("wake of a running branch = %+v, %v, resumes %v", got, err, h.eng.resumed)
+	}
+	// Drive refuses a paused branch; Wake brings it back and Drive then takes it.
+	if err := h.reg.SetProjectStatus(ctx, b.Ref, registry.StatusInactive); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Drive(ctx, b.Ref, "push", func(context.Context, *Run) (string, error) { return "", nil }); !errors.Is(err, ErrConflict) {
+		t.Fatalf("drive of a paused branch: %v", err)
+	}
+	got, err := h.svc.Wake(ctx, b.Ref)
+	if err != nil || got.ProjectStatus != registry.StatusActiveHealthy || len(h.eng.resumed) != 1 || h.eng.resumed[0] != b.Ref {
+		t.Fatalf("wake of a paused branch = %+v, %v, resumes %v", got, err, h.eng.resumed)
+	}
+	if _, err := h.svc.Drive(ctx, b.Ref, "push", func(context.Context, *Run) (string, error) { return "ok", nil }); err != nil {
+		t.Fatalf("drive after the wake: %v", err)
+	}
+	h.wait(b.Ref)
+	// The default branch is not a branch to wake.
+	if _, err := h.svc.Wake(ctx, parentRef); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("wake of the default branch: %v", err)
+	}
+}

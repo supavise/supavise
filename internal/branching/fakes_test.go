@@ -33,6 +33,7 @@ type fakeEngine struct {
 	keptRecord map[string]bool
 	rotated    []string
 	paused     map[string]int
+	resumed    []string // refs Resume was called for
 
 	createErr error
 	// keysFailAfter, when > 0, makes Keys(parentRef) fail after that many successful calls.
@@ -130,7 +131,15 @@ func (f *fakeEngine) Pause(_ context.Context, ref string) error {
 	f.paused[ref]++
 	return nil
 }
-func (f *fakeEngine) Resume(context.Context, string) error { return nil }
+func (f *fakeEngine) Resume(ctx context.Context, ref string) error {
+	f.mu.Lock()
+	f.resumed = append(f.resumed, ref)
+	f.mu.Unlock()
+	if p, err := f.reg.GetProject(ctx, ref); err == nil && p.Status == registry.StatusInactive {
+		return f.reg.SetProjectStatus(ctx, ref, registry.StatusActiveHealthy)
+	}
+	return nil
+}
 func (f *fakeEngine) RotateKeys(_ context.Context, ref string) (*secrets.ProjectKeys, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
