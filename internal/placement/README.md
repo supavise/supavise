@@ -224,3 +224,9 @@ the ports is covered by the unit tests of `internal/lifecycle`.
   still works on the leader, where the shared services keep those files.
 - Create with a seed, and the optional capabilities of the Engine's plane (Postgres settings, role
   passwords, extensions, render checks), are not carried to another node.
+- Branches. `Engine.Create` homes a branch on its parent's node, so a `create` for a branch whose parent lives
+  on a follower goes to that follower with no seed: a schema-only branch works, replaying the parent's
+  migrations over the forwarded ports. A branch with data needs the seed (the clone of the parent's data
+  directory), which does not travel, so `branching` refuses it before it asks (`checkParentHere`, 409 naming the
+  server). Idle pause is not a placement feature: it runs only on a single server, because a follower's proxy
+  cannot wake a branch (its registry is read-only) and its requests are not counted on the leader.

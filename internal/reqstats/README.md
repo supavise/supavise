@@ -21,6 +21,10 @@ That is 12 KB per project, so 35 projects take about 430 KB. The hour ring is lo
 
 A project that has counted nothing for eight days is dropped. `Add` checks for such projects when a project first appears, at most once an hour, so the counts of branches that were created and deleted do not pile up. `Forget` drops one project at once: the Management API calls it when it deletes a project, and the metrics collector when its tick finds a project deleted or created again under the same ref (`internal/app/serve.go`), so that a ref used again starts at zero.
 
+## Last request and open requests
+
+`Last(ref)` is the time of the latest request counted for a project, to the nanosecond (`ok` false when none was counted since the process started), and `Active(ref)` the number being served now. `Touch(ref, t)` moves `Last` without counting a request: the Management API calls it for a call that ran SQL on the project, which is use the idle pause should see and not traffic for the request charts. The proxy brackets each forward with `Begin(ref)` and the function it returns. `Last` and `Active` are what the idle pause of branches reads (`internal/branching/README.md`, "Idle pause"): a branch is not idle while a WebSocket is open or a request arrived in the period. A project with an open request is not pruned. Both are in memory like the counts, so a restart of the daemon forgets them, and the idle pause starts its clocks again at the restart.
+
 ## Concurrency
 
 `Add` runs on the proxy's request path. Projects live in a `sync.Map`, so finding one takes no lock, and each project has its own mutex around a few integer operations; requests to different projects never wait for each other. `go test -bench AddParallel` measures about 27 ns per `Add` with four cores adding to 35 projects. `Series` holds one project's mutex while it copies a few hundred slots.

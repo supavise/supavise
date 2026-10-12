@@ -10,6 +10,7 @@ import (
 	"time"
 
 	v1 "github.com/supavise/supavise/internal/api/gen/v1"
+	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/lifecycle"
 	"github.com/supavise/supavise/internal/members"
@@ -60,6 +61,7 @@ func (s *Server) routesProjects(add func(string, handlerFunc)) {
 	add("POST /platform/projects/{ref}/restart", s.platformRestart)
 	add("POST /platform/projects/{ref}/restart-services", s.restartProject(http.StatusCreated))
 	add("GET /platform/projects/{ref}/status", s.platformStatus)
+	add("GET /platform/projects/{ref}/pause/status", s.platformPauseStatus)
 	add("GET /platform/organizations/{slug}/projects", s.orgProjects)
 }
 
@@ -105,6 +107,12 @@ func (s *Server) v1GetProject(w http.ResponseWriter, r *http.Request) error {
 	p, err := s.loadProject(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		return err
+	}
+	// A branch is not a project of the v1 API: hosted answers 404 for its ref, which is what keeps
+	// `supabase link --project-ref <branch>` pointing the CLI at the parent. Studio reads a branch
+	// through /platform/projects/{ref}, and every other v1 route accepts a branch ref.
+	if p.Branch != nil {
+		return errNoProject
 	}
 	v, err := s.v1Project(r.Context(), p)
 	if err != nil {
@@ -368,6 +376,16 @@ func (s *Server) deleteProject(r *http.Request) (*registry.Project, error) {
 		return nil, err
 	}
 	defer cancel()
+	// A branch goes through the branch service, the way DELETE /v1/branches/{id} does: an ephemeral
+	// branch takes no final backup and leaves nothing in the archive, and the delete is an event of
+	// the parent. Deleting it as a project would keep both.
+	if p.Branch != nil && s.branches != nil {
+		if _, err := s.branches.Delete(ctx, p.Ref, branching.DeleteOptions{}); err != nil {
+			return nil, mapBranchErr(err)
+		}
+		s.projectGone(ctx, p.Ref)
+		return p, nil
+	}
 	if err := s.removeReplicasFirst(ctx, p.Ref); err != nil {
 		return nil, err
 	}
@@ -409,7 +427,13 @@ func (s *Server) restoreProject(status int) handlerFunc {
 			return err
 		}
 		defer cancel()
-		if err := s.mgr.Resume(ctx, p.Ref); err != nil {
+		// Resuming a branch that waits to be deleted cancels the deletion: the paused page offers Resume,
+		// and a branch that runs again must not be removed at the deadline of a deletion nobody wants now.
+		if p.Branch != nil && p.Branch.DeletionScheduledAt != nil && s.branches != nil {
+			if _, err := s.branches.Restore(ctx, p.Ref); err != nil {
+				return mapBranchErr(err)
+			}
+		} else if err := s.mgr.Resume(ctx, p.Ref); err != nil {
 			return mapErr(err)
 		}
 		s.functionsGone(ctx, p.Ref)

@@ -451,7 +451,7 @@ jobs:
   # the egress isolation of a branch with data under real systemd units.
   branching-xfs:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

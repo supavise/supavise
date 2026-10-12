@@ -169,6 +169,9 @@ func (s *Server) listBranches(w http.ResponseWriter, r *http.Request) error {
 		writeJSON(w, http.StatusOK, []any{})
 		return nil
 	}
+	if err := s.refuseBranchRef(r.Context(), r.PathValue("ref")); err != nil {
+		return err
+	}
 	list, err := s.branches.List(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		return s.branchProjectErr(err)

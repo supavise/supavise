@@ -146,6 +146,9 @@ type OpenOptions struct {
 	Replicas ReplicaFleet
 	// RestoreCommandFor builds restore_command for a project's cluster (PlaneOptions.RestoreCommandFor).
 	RestoreCommandFor func(ref string) string
+	// Objects removes a project's Storage objects from the S3 bucket when the project is deleted or a
+	// branch is reset (Engine.SetObjectRemover). Nil: none.
+	Objects ObjectRemover
 }
 
 func (o *OpenOptions) log() *slog.Logger {
@@ -316,6 +319,7 @@ func Open(ctx context.Context, cfg *config.Config, o OpenOptions) (*Node, error)
 	node.Plane = NewPostgresPlane(cfg, sup, arts, reg, po)
 	node.Engine = NewEngine(cfg, reg, sec, arts, node.Plane, Options{Log: o.log(), Fleet: o.Fleet, Backup: bk, Timers: o.timers(cfg, sup), Settings: node.Settings, UpgradeNotify: o.UpgradeNotify,
 		NodeID: nodeID, ReadOnly: o.ReadOnly, Replicas: o.Replicas})
+	node.Engine.SetObjectRemover(o.Objects)
 	node.Engine.SetNode(func() NodeResources { return DetectNode(cfg) })
 	return node, nil
 }

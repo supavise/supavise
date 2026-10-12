@@ -98,6 +98,11 @@ type project struct {
 	minutes [minuteSlots]slot
 	hours   [hourSlots]slot
 	last    int64 // unix minute of the latest count; Prune drops idle projects
+
+	// lastAt is the time of the latest count in Unix nanoseconds, and open the requests being
+	// served now. The idle pause of branches reads both (Last, Active).
+	lastAt atomic.Int64
+	open   atomic.Int64
 }
 
 // Counter holds the counts of every project. The zero value is not usable; use New.
@@ -126,6 +131,12 @@ func (c *Counter) Add(ref string, s Service, t time.Time) {
 	p := v.(*project)
 	min := t.Unix()/60 + 1
 	hr := t.Unix()/3600 + 1
+	for ns := t.UnixNano(); ; {
+		cur := p.lastAt.Load()
+		if cur >= ns || p.lastAt.CompareAndSwap(cur, ns) {
+			break
+		}
+	}
 	p.mu.Lock()
 	p.bump(&p.minutes[min%minuteSlots], min, s)
 	p.bump(&p.hours[hr%hourSlots], hr, s)
@@ -268,11 +279,66 @@ func (c *Counter) Prune(now time.Time) {
 		p.mu.Lock()
 		old := p.last != 0 && p.last < cutoff // last is 0 until the first count lands
 		p.mu.Unlock()
-		if old {
+		if old && p.open.Load() == 0 {
 			c.projects.Delete(k)
 		}
 		return true
 	})
+}
+
+// Last is the time of the latest request counted for ref, to the nanosecond; ok is false when none
+// was counted since the process started (or since the project was last forgotten or pruned).
+func (c *Counter) Last(ref string) (t time.Time, ok bool) {
+	v, found := c.projects.Load(ref)
+	if !found {
+		return time.Time{}, false
+	}
+	ns := v.(*project).lastAt.Load()
+	if ns == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(0, ns), true
+}
+
+// Touch records that ref was used at t without counting a request: a Management API call that ran SQL
+// on a project is use the idle pause of branches should see, and is not a request to the project's API,
+// so it stays out of the dashboard's request charts. Last reports the latest of the Touch and Add times.
+// It is safe for concurrent use.
+func (c *Counter) Touch(ref string, t time.Time) {
+	v, ok := c.projects.Load(ref)
+	if !ok {
+		v, _ = c.projects.LoadOrStore(ref, &project{})
+	}
+	p := v.(*project)
+	for ns := t.UnixNano(); ; {
+		cur := p.lastAt.Load()
+		if cur >= ns || p.lastAt.CompareAndSwap(cur, ns) {
+			return
+		}
+	}
+}
+
+// Begin marks a request to ref as being served and returns the function that marks it done. A
+// WebSocket or a long poll is a request for as long as it lasts, which Active reports: a branch with
+// a client connected is not idle however long ago the client asked.
+func (c *Counter) Begin(ref string) (end func()) {
+	v, ok := c.projects.Load(ref)
+	if !ok {
+		v, _ = c.projects.LoadOrStore(ref, &project{})
+	}
+	p := v.(*project)
+	p.open.Add(1)
+	var once sync.Once
+	return func() { once.Do(func() { p.open.Add(-1) }) }
+}
+
+// Active is the number of requests to ref being served now.
+func (c *Counter) Active(ref string) int {
+	v, ok := c.projects.Load(ref)
+	if !ok {
+		return 0
+	}
+	return int(v.(*project).open.Load())
 }
 
 // Forget drops the counts of a project, for a project that was deleted.

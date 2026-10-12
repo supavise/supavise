@@ -40,6 +40,7 @@ func (s *Service) purgeArchive(ctx context.Context, ref string) error {
 type SweepResult struct {
 	Expired []string          // refs of branches deleted because their expiry or scheduled deletion lapsed
 	Stale   []string          // refs whose interrupted operation was marked failed
+	Warned  []string          // refs of branches with a hostname that were warned about their expiry
 	Failed  map[string]string // ref -> error, for branches that could not be deleted
 }
 
@@ -58,6 +59,8 @@ func (s *Service) Sweep(ctx context.Context, dryRun bool) (*SweepResult, error) 
 	}
 	res := &SweepResult{Failed: map[string]string{}}
 	now := s.now()
+	// The warnings are posted after the deletions: a notify_url that does not answer must not hold them up.
+	var notices []expiryNotice
 	for i := range all {
 		p := &all[i]
 		if p.Branch == nil {
@@ -79,6 +82,9 @@ func (s *Service) Sweep(ctx context.Context, dryRun bool) (*SweepResult, error) 
 		lapsed := (!b.Persistent && b.ExpiresAt != nil && !b.ExpiresAt.After(now)) ||
 			(b.DeletionScheduledAt != nil && !b.DeletionScheduledAt.After(now))
 		if !lapsed {
+			if !dryRun && s.warnExpiring(ctx, b, now, &notices) {
+				res.Warned = append(res.Warned, p.Ref)
+			}
 			continue
 		}
 		if dryRun {
@@ -93,6 +99,7 @@ func (s *Service) Sweep(ctx context.Context, dryRun bool) (*SweepResult, error) 
 		s.log.Info("deleted a lapsed branch", "ref", p.Ref, "name", b.Name, "parent", b.ParentRef)
 		res.Expired = append(res.Expired, p.Ref)
 	}
+	s.sendExpiryNotices(ctx, notices)
 	return res, ctx.Err()
 }
 

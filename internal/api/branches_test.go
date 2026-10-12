@@ -608,6 +608,7 @@ func TestBranchDefaultBranchRoutes(t *testing.T) {
 
 func TestBranchStatusRequestReviewAndFailureFields(t *testing.T) {
 	f := newFixture(t)
+	f.cfg.Branching.DefaultTTL = "7d" // a branch has no lifetime unless the node gives one ([branching] default_ttl)
 	f.bdb.migs[testRef] = []branching.Migration{{Version: "20260101000000", Name: "init", Statements: []string{"create table t (id int)"}}}
 	rec := f.do("POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "feat"})
 	ref, id := jsonField(t, rec, "project_ref").(string), jsonField(t, rec, "id").(string)

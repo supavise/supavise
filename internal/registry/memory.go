@@ -50,6 +50,11 @@ type Memory struct {
 	// and defaultGit the Git branch each default branch tracks, by project ref.
 	branchRuns []*BranchRun
 	defaultGit map[string]string
+
+	// pauses and expiryWarned are the lifecycle store (pause.go): why a project is paused and the
+	// expiry warnings sent, by project ref.
+	pauses       map[string]Pause
+	expiryWarned map[string]ExpiryWarning
 }
 
 func NewMemory() *Memory {
@@ -362,6 +367,8 @@ func (m *Memory) DeleteProject(_ context.Context, ref string) error {
 	delete(m.hostnames, ref)
 	delete(m.advisorRules, ref)
 	delete(m.defaultGit, ref)
+	delete(m.pauses, ref)
+	delete(m.expiryWarned, ref)
 	delete(m.vanity, ref)
 	delete(m.dataAPI, ref)
 	for h, r := range m.routes {

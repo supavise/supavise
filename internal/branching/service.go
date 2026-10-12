@@ -11,12 +11,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/supavise/supavise/internal/backup"
 	"github.com/supavise/supavise/internal/config"
@@ -59,6 +62,12 @@ type Deps struct {
 	// StaleAfter is how long a branch may sit in a busy state with no process working on it
 	// before the sweeper marks the operation failed (default 30 minutes).
 	StaleAfter time.Duration
+	// Activity tells the idle pause when a project last served an HTTP request (*reqstats.Counter).
+	// Nil: the service never pauses a branch for idleness, because it could not see the requests.
+	Activity Activity
+	// NodeID is the id of the node this service runs on, for the projects homed on it. Empty means
+	// every project is this node's (a server outside a cluster, and tests).
+	NodeID string
 }
 
 // FunctionSource reads the Edge Function deployments stored for a project. Digests maps function
@@ -82,6 +91,16 @@ type Service struct {
 	http *http.Client
 
 	createWait, opTimeout, staleAfter time.Duration
+
+	// The idle pause and the wake of paused branches (idle.go, idlegate.go).
+	activity Activity
+	nodeID   string
+	idle     idleState
+	wakes    singleflight.Group
+	// dbActivity replaces the database read of a sweep (tests); nil reads pg_stat_activity.
+	dbActivity func(ctx context.Context, ref string) (time.Duration, error)
+	// listen binds the wake gate of a sleeping branch (tests replace it).
+	listen func(port int) (net.Listener, error)
 
 	// instance, host and pid say who runs this service's operations: they are recorded in
 	// the started event of every operation, so that another process (the sweeper of a
@@ -123,7 +142,7 @@ func New(d Deps) (*Service, error) {
 	s := &Service{
 		cfg: d.Cfg, reg: d.Registry, sec: d.Secrets, eng: d.Engine, bk: d.Backup, db: d.DB, fns: d.Functions, log: d.Log, now: d.Now,
 		http: d.HTTPClient, createWait: d.CreateWait, opTimeout: d.OpTimeout, staleAfter: d.StaleAfter,
-		detect: nil, runs: map[string]*run{},
+		detect: nil, runs: map[string]*run{}, activity: d.Activity, nodeID: d.NodeID, idle: newIdleState(), listen: listenLoopback,
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -150,6 +169,11 @@ func New(d Deps) (*Service, error) {
 	}
 	s.detect = func(srcData, dstParent string) (string, string, string) {
 		return detectClone(srcData, dstParent)
+	}
+	if s.nodeID == "" {
+		if n, ok := d.Engine.(nodeOfEngine); ok {
+			s.nodeID = n.NodeID()
+		}
 	}
 	s.instance, s.pid = secrets.NewUUID(), os.Getpid()
 	s.host, _ = os.Hostname()

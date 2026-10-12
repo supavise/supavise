@@ -141,6 +141,7 @@ func matrixCases() []routeCase {
 		// project: reading
 		rc("YYYYYN", "GET", pp, nil),
 		rc("YYYYYN", "GET", pp+"/status", nil),
+		rc("YYYYYN", "GET", pp+"/pause/status", nil),
 		rc("YYYYYN", "GET", pp+"/settings", nil),
 		rc("YYYYYN", "GET", pp+"/members", nil),
 		rc("YYYYYN", "GET", p+"/health", nil),

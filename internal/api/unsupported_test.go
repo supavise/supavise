@@ -74,6 +74,36 @@ func TestNoJWTSecretUpdateRuns(t *testing.T) {
 	}
 }
 
+// Settings > General > Custom domains works for projects and branches, so the profile shows it, unless
+// the node's certificates come from a DNS-01 wildcard, which cannot serve a hostname of its own.
+func TestProfileShowsCustomDomainsUnlessTheNodeIssuesOnlyAWildcard(t *testing.T) {
+	disabled := func(t *testing.T, mode string) map[string]bool {
+		t.Helper()
+		f := newFixture(t)
+		f.cfg.TLS.Mode = mode
+		rec := f.do("GET", "/platform/profile", nil)
+		var prof struct {
+			DisabledFeatures []string `json:"disabled_features"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &prof); err != nil {
+			t.Fatal(err)
+		}
+		have := map[string]bool{}
+		for _, d := range prof.DisabledFeatures {
+			have[d] = true
+		}
+		return have
+	}
+	for _, mode := range []string{"", "auto", "http01", "off"} {
+		if disabled(t, mode)["project_settings:custom_domains"] {
+			t.Errorf("tls.mode %q hides the Custom domains page", mode)
+		}
+	}
+	if !disabled(t, "dns01")["project_settings:custom_domains"] {
+		t.Error("tls.mode dns01 shows a page whose claims the node refuses")
+	}
+}
+
 // The profile hides the pages of features a node cannot offer.
 func TestProfileHidesWhatCannotWork(t *testing.T) {
 	f := newFixture(t)
@@ -96,7 +126,7 @@ func TestProfileHidesWhatCannotWork(t *testing.T) {
 	// Logs and Reports stay: they say what is missing. Third-party Auth stays too: services could accept
 	// a JWKS (PostgREST, Storage and Realtime take one), hosted offers it to every project, and the page
 	// is not unbuildable, so its "Add provider" answers with the reason (unsupported.go) instead of vanishing.
-	for _, keep := range []string{"logs:all", "reports:all", "authentication:third_party_auth"} {
+	for _, keep := range []string{"logs:all", "reports:all", "authentication:third_party_auth", "project_settings:custom_domains"} {
 		if have[keep] {
 			t.Errorf("disabled_features hides %s", keep)
 		}
