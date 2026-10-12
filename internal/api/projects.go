@@ -12,6 +12,7 @@ import (
 	v1 "github.com/supavise/supavise/internal/api/gen/v1"
 	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/config"
+	"github.com/supavise/supavise/internal/health"
 	"github.com/supavise/supavise/internal/lifecycle"
 	"github.com/supavise/supavise/internal/members"
 	"github.com/supavise/supavise/internal/registry"
@@ -581,8 +582,60 @@ func (s *Server) v1Health(w http.ResponseWriter, r *http.Request) error {
 		}
 		out = append(out, e)
 	}
+	if want["functions"] {
+		out = append(out, s.functionsHealth(r.Context()))
+	}
 	writeJSON(w, http.StatusOK, out)
 	return nil
+}
+
+// functionsHealth is the entry of services=functions in GET /v1/projects/{ref}/health: the state of the
+// node's Edge Runtime, which serves the functions of every project. The spec's service enum has no such
+// service, so the entry is added only when the request names it, and Studio's project home asks for
+// it: upstream's Edge Functions status probes a function that Supabase runs on its own platform
+// (obuldanrptloktxcffvn.supabase.co), which reports the hosted platform and not this node, and on a
+// network without internet access made the whole project read Unhealthy for good. Status is
+// ACTIVE_HEALTHY, COMING_UP or UNHEALTHY as for the other services, and DISABLED when [functions] is off,
+// the state Studio shows without alarm.
+func (s *Server) functionsHealth(ctx context.Context) v1.V1ServiceHealthResponseOutput {
+	e := v1.V1ServiceHealthResponseOutput{Name: "functions"}
+	fail := func(status, msg string) v1.V1ServiceHealthResponseOutput {
+		e.Status = v1.V1ServiceHealthResponseOutputStatus(status)
+		if msg != "" {
+			e.Error = &msg
+		}
+		return e
+	}
+	if !s.cfg.Functions.Enabled {
+		return fail("DISABLED", "Edge Functions are off on this node ([functions] enabled)")
+	}
+	// Without a health source (tests, the dev mock) nothing can say otherwise.
+	var comp *health.Component
+	if s.healthSrc != nil {
+		hctx, cancel := context.WithTimeout(ctx, healthTimeout)
+		defer cancel()
+		rep, err := s.healthSrc.Report(hctx)
+		if err != nil {
+			return fail("UNHEALTHY", "The node's health could not be checked")
+		}
+		for i := range rep.Components {
+			if rep.Components[i].Name == config.SvcEdgeRuntime {
+				comp = &rep.Components[i]
+			}
+		}
+		if comp == nil {
+			return fail("UNHEALTHY", "The node does not report its Edge Runtime")
+		}
+	}
+	switch {
+	case comp == nil, comp.State == health.OK:
+		e.Healthy, e.Status = true, "ACTIVE_HEALTHY"
+		return e
+	case comp.State == health.Warn:
+		return fail("COMING_UP", comp.Detail)
+	default:
+		return fail("UNHEALTHY", comp.Detail)
+	}
 }
 
 // v1Pooler describes the shared Supavisor entries of a project, the primary's and one for each

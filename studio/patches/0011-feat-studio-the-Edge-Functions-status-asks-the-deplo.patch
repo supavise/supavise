@@ -1,0 +1,110 @@
+From 228a43a1f3e0f5a84ce4872fc2da0c96b7a6b043 Mon Sep 17 00:00:00 2001
+From: supavise <supavise@users.noreply.invalid>
+Date: Sun, 11 Oct 2026 12:11:00 -0700
+Subject: [PATCH 11/11] feat(studio): the Edge Functions status asks the
+ deployment, not Supabase's platform
+
+The status on the project home probed a health-check function that
+Supabase runs on its own platform. It reports that platform and not the
+deployment, it is blocked or unreachable without internet access, and a
+failed probe made the Edge Functions row, and so the whole project, read
+Unhealthy and poll every five seconds for ever. The row now reads the
+project's health from the Management API with services=functions, which
+a deployment can answer for its own Edge Runtime, and shows Disabled for
+a deployment that has none.
+---
+ .../interfaces/ProjectHome/ServiceStatus.tsx  | 17 +++++++-----
+ .../edge-functions-status-query.ts            | 26 ++++++++++++++-----
+ 2 files changed, 31 insertions(+), 12 deletions(-)
+
+diff --git a/apps/studio/components/interfaces/ProjectHome/ServiceStatus.tsx b/apps/studio/components/interfaces/ProjectHome/ServiceStatus.tsx
+index ae4df4aa..3afb8d05 100644
+--- a/apps/studio/components/interfaces/ProjectHome/ServiceStatus.tsx
++++ b/apps/studio/components/interfaces/ProjectHome/ServiceStatus.tsx
+@@ -159,7 +159,10 @@ export const ServiceStatus = () => {
+   )
+   const { data: edgeFunctionsStatus } = useEdgeFunctionServiceStatusQuery(
+     { projectRef: ref },
+-    { refetchInterval: (query) => (!query.state.data?.healthy ? 5000 : false) }
++    {
++      refetchInterval: (query) =>
++        !query.state.data?.healthy && !query.state.data?.disabled ? 5000 : false,
++    }
+   )
+ 
+   const authStatus = status?.find((service) => service.name === 'auth')
+@@ -248,11 +251,13 @@ export const ServiceStatus = () => {
+             error: undefined,
+             docsUrl: `${DOCS_URL}/guides/functions/troubleshooting`,
+             isLoading,
+-            status: edgeFunctionsStatus?.healthy
+-              ? ('ACTIVE_HEALTHY' as const)
+-              : isLoading
+-                ? ('COMING_UP' as const)
+-                : ('UNHEALTHY' as const),
++            status: edgeFunctionsStatus?.disabled
++              ? ('DISABLED' as const)
++              : edgeFunctionsStatus?.healthy
++                ? ('ACTIVE_HEALTHY' as const)
++                : isLoading
++                  ? ('COMING_UP' as const)
++                  : ('UNHEALTHY' as const),
+             logsUrl: isUnifiedLogsEnabled
+               ? '/logs?filter=log_type:eq:edge+function'
+               : '/logs/edge-functions-logs',
+diff --git a/apps/studio/data/service-status/edge-functions-status-query.ts b/apps/studio/data/service-status/edge-functions-status-query.ts
+index b3c78106..2a3e3316 100644
+--- a/apps/studio/data/service-status/edge-functions-status-query.ts
++++ b/apps/studio/data/service-status/edge-functions-status-query.ts
+@@ -1,20 +1,34 @@
+ import { useQuery } from '@tanstack/react-query'
+ 
+ import { serviceStatusKeys } from './keys'
++import { get } from '@/data/fetchers'
+ import type { ResponseError, UseCustomQueryOptions } from '@/types'
+ 
+ export type EdgeFunctionServiceStatusVariables = {
+   projectRef?: string
+ }
+ 
+-export async function getEdgeFunctionServiceStatus(signal?: AbortSignal) {
++// [Supavise] Upstream asks a function that Supabase runs on its own platform
++// (https://obuldanrptloktxcffvn.supabase.co/functions/v1/health-check), which answers for that platform and
++// not for the deployment, and fails for good where Supabase is unreachable. The Management API reports the
++// deployment's own Edge Runtime as the `functions` service of the project's health. The spec lists no such
++// service, so the name is cast, and a Management API that does not know it answers without the entry, which
++// reads as unhealthy.
++export async function getEdgeFunctionServiceStatus(
++  projectRef?: string,
++  signal?: AbortSignal
++): Promise<{ healthy: boolean; disabled?: boolean }> {
++  if (!projectRef) return { healthy: false }
+   try {
+-    const res = await fetch('https://obuldanrptloktxcffvn.supabase.co/functions/v1/health-check', {
+-      method: 'GET',
++    const { data, error } = await get('/v1/projects/{ref}/health', {
++      params: { path: { ref: projectRef }, query: { services: ['functions' as never] } },
+       signal,
+     })
+-    const response = await res.json()
+-    return response as { healthy: boolean }
++    if (error) return { healthy: false }
++    const entry = (data as { name: string; healthy: boolean; status?: string }[]).find(
++      (service) => service.name === 'functions'
++    )
++    return { healthy: entry?.healthy === true, disabled: entry?.status === 'DISABLED' }
+   } catch (err) {
+     return { healthy: false }
+   }
+@@ -36,7 +50,7 @@ export const useEdgeFunctionServiceStatusQuery = <TData = EdgeFunctionServiceSta
+ ) =>
+   useQuery<EdgeFunctionServiceStatusData, EdgeFunctionServiceStatusError, TData>({
+     queryKey: serviceStatusKeys.edgeFunctions(projectRef),
+-    queryFn: ({ signal }) => getEdgeFunctionServiceStatus(signal),
++    queryFn: ({ signal }) => getEdgeFunctionServiceStatus(projectRef, signal),
+     enabled: enabled && typeof projectRef !== 'undefined',
+     ...options,
+   })
+-- 
+2.50.1 (Apple Git-155)
+
