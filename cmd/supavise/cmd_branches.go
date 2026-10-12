@@ -348,7 +348,7 @@ CLI and MCP server.`,
 	push := action("push", "Bring the parent's new migrations, schema changes and Edge Functions into the branch (rebase)", func(ctx context.Context, s *branching.Service, ref string, in branching.ActionInput) (string, error) {
 		return s.Push(ctx, ref, in)
 	})
-	push.Flags().BoolVar(&force, "force", false, "push despite versions that differ in content (they are skipped)")
+	push.Flags().BoolVar(&force, "force", false, "push despite versions that differ in content (they are skipped); also takes the parent's version of an Edge Function that the branch has in another form and has no recorded base for")
 
 	diff := run("diff <id-or-ref|name>", "Show what the branch changed in its schema, as SQL (nothing when it changed none)", cobra.ExactArgs(1), func(ctx context.Context, cmd *cobra.Command, svc *branching.Service, a []string) error {
 		b, err := selectBranch(ctx, svc, project, a[0])

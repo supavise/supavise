@@ -75,9 +75,8 @@ func (s *Service) doMerge(ctx context.Context, b *Branch, parent *registry.Proje
 	if err != nil {
 		return "", err
 	}
-	if len(fm.conflicts) > 0 && !in.Force {
-		return "", fmt.Errorf("%w: the branch and the parent both changed the Edge Function(s) %s; update the branch (push) or use force to deploy the branch's version",
-			ErrDiverged, strings.Join(fm.conflicts, ", "))
+	if err := fm.refuse(in.Force); err != nil {
+		return "", err
 	}
 	s.phase(ctx, StepMigrate)
 	own := withoutPushed(branchMigs)

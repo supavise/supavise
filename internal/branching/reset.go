@@ -97,8 +97,11 @@ func (s *Service) Reset(ctx context.Context, idOrRef string, in ActionInput) (st
 		info.State, info.Detail, info.CloneMethod = registry.BranchCreatingProject, "recreating the project", ""
 		if !info.Persistent {
 			// The branch keeps the lifetime it was given, but a reset never leaves it less than
-			// resetMinLife: it would otherwise expire while the agent starts using it again.
-			if floor := s.now().Add(resetMinLife).UTC(); info.ExpiresAt == nil || info.ExpiresAt.Before(floor) {
+			// resetMinLife: it would otherwise expire while the agent starts using it again. A branch
+			// that never expires (the default, and every branch a node made with default_ttl off) stays
+			// that way: giving it a floor would hand the sweeper a branch to delete a quarter of an hour
+			// after its reset.
+			if floor := s.now().Add(resetMinLife).UTC(); info.ExpiresAt != nil && info.ExpiresAt.Before(floor) {
 				info.ExpiresAt = &floor
 			}
 		}
