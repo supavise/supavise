@@ -13,7 +13,9 @@ import (
 // migrations the branch lacks and, for the schema changes the parent got outside migrations (the
 // SQL editor, the Table Editor), the statements that make the branch have them too, in one
 // transaction. The parent's Edge Functions that are new or changed are copied over the branch's
-// (functions only the branch has stay, nothing is deleted). Migrations the branch added itself stay,
+// (functions only the branch has stay, nothing is deleted; a function with no recorded base, as every
+// function of a branch an earlier release made, stays as the branch has it unless Force is set).
+// Migrations the branch added itself stay,
 // and so do its own schema changes. It refuses when a version exists on both sides with different
 // content, or when the parent and the branch changed the same schema object differently, unless Force
 // is set (the parent's version then wins and the differing version is skipped). Data is never
@@ -93,7 +95,7 @@ func (s *Service) doPush(ctx context.Context, b *Branch, parent *registry.Projec
 		}
 	}
 	s.phase(ctx, StepDeploy)
-	fnNote, err := s.pushFunctions(ctx, b, parent)
+	fnNote, err := s.pushFunctions(ctx, b, parent, in.Force)
 	if err != nil {
 		return "", err
 	}

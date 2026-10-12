@@ -374,8 +374,9 @@ Schema-only branches copy nothing and are not checked.
   rules as the history flow apply to the parent's own migrations; `force` skips them.
   Either way the branch's Edge Functions are deployed to the parent: a function the branch created, or changed since it was made
   (its digest differs from the base), is copied over the parent's; a function only the parent changed is left alone; one **both
-  changed** fails the merge before anything runs, naming the slugs (`force` deploys the branch's version); nothing is ever deleted
-  from the parent. The merge ends by moving the schema base to where the two sides now agree. A merge that finds nothing says
+  changed** fails the merge before anything runs, naming the slugs (`force` deploys the branch's version); so does one the parent has
+  in another form when the base has no entry for it (a branch made by v0.3.x has no base at all: nobody can tell who changed it, so
+  only `force` deploys it); nothing is ever deleted from the parent. The merge ends by moving the schema base to where the two sides now agree. A merge that finds nothing says
   "nothing to merge". The branch is kept.
 * **Push** (the rebase, `POST .../push`, Studio's "Update branch") brings the parent into the branch: its migrations the branch lacks
   (a version that differs in content stops it unless forced); then the parent's **schema changes that were never migrations** (the
@@ -398,7 +399,7 @@ Schema-only branches copy nothing and are not checked.
   fail without touching the branch is checked first (the parent runs, a with_data branch can still get its data, the parent's
   credentials can be read). A later failure leaves the branch registered as `MIGRATIONS_FAILED` with `INIT_FAILED` project status under
   the same id, so it can be reset again or deleted. A schema-only branch keeps its credentials, its compute class and its schema
-  base; a branch with data gets new credentials as at creation and a new base. Its lifetime is kept, with at least 15 minutes left, and
+  base; a branch with data gets new credentials as at creation and a new base. Its lifetime is kept, with at least 15 minutes left and
   the branch stays resolvable (its `status` is `CREATING_PROJECT` meanwhile). A branch that recorded no history, or whose state is
   not a working one (a failed creation, a failed merge) and whose cluster cannot be read, is reset from the parent's history as a new
   branch is, and the run log says which history was used. A working branch (`FUNCTIONS_DEPLOYED`, `MIGRATIONS_PASSED`) whose history
@@ -571,6 +572,9 @@ Limits:
 
 * A merge moves migrations (or the recorded schema diff) and Edge Functions, never data, settings, Storage objects or function secrets.
 * The schema engine covers the object classes listed in "The schema engine"; the rest is named in the output, not carried.
+* A branch made by v0.3.x has no Edge Function base: a push keeps the branch's copy of every function that the parent has in another
+  form (the run log names them; `force` takes the parent's), because v0.3.x copied no functions and every function such a branch
+  holds is its own work. A push of any branch does the same for a function with no entry in its base.
 * A branch made by v0.3.x has no schema base, so its diff compares it with the parent as it is (additions and changes only) until a
   merge sets one. In a cluster, a v0.3.x server that runs an operation on a branch does not keep the base or the function base up
   to date (the next diff may list changes that already crossed, and Studio's merge then fails with an "already exists" and rolls
