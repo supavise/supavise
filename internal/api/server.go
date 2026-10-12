@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/supavise/supavise/internal/advisors"
@@ -121,6 +122,9 @@ type Deps struct {
 	// organization), Audit (registry events on the system project) and Log. A caller sets what it must
 	// provide itself, such as Alert, which internal/app wires to the alerts notifier.
 	OAuth *oauth.Service
+	// Audit keeps the audit log (audit.go). Empty derives it from Registry like Store: the registry's database
+	// for a Postgres registry, memory otherwise.
+	Audit AuditStore
 	// Requests holds the counts of the requests the edge proxy served to each project's API
 	// (internal/reqstats); the dashboard's request charts (usage.api-counts, usage.api-requests-count)
 	// are answered from it. Nil: those endpoints say that nothing counts requests here.
@@ -205,6 +209,15 @@ type Server struct {
 
 	// requests is Deps.Requests (analytics.go).
 	requests *reqstats.Counter
+
+	// audit is the audit log; auditPruned is when a Prune last ran, in Unix nanoseconds (audit.go).
+	audit       AuditStore
+	auditPruned atomic.Int64
+	// auditRefusedBy counts the refused requests each user added in the current minute (auditRefusedPerMinute).
+	auditRefusedBy auditThrottle
+
+	// clones are the restores to a new project this process is running (clone.go).
+	clones cloneTracker
 
 	handler http.Handler
 }
@@ -294,6 +307,13 @@ func NewServer(d Deps) (*Server, error) {
 		pgmetaKeyMu: make(chan struct{}, 1), roEnsured: map[string]readOnlyEnsured{},
 	}
 	s.requests = d.Requests
+	if s.audit = d.Audit; s.audit == nil {
+		if pg, ok := d.Registry.(*registry.Postgres); ok {
+			s.audit = NewPGAuditStore(pg.Pool())
+		} else {
+			s.audit = NewMemoryAuditStore()
+		}
+	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
@@ -531,6 +551,11 @@ func (s *Server) implemented() map[string]route {
 	s.routesWebhooks(add)
 	s.routesAnalytics(add)
 	s.routesUnsupported(add)
+	s.routesConfigCat(add)
+	s.routesRestGraphQL(add)
+	s.routesAuthExtras(add)
+	s.routesAudit(add)
+	s.routesClone(add)
 	// Read replicas and failover: one registration function per file, so that each part of the
 	// work adds its routes without editing this one.
 	s.routesReplicas(add)
@@ -548,6 +573,13 @@ func (s *Server) implemented() map[string]route {
 	r := m["GET /platform/cli/login/{session_id}"]
 	r.auth = authNone
 	m["GET /platform/cli/login/{session_id}"] = r
+	// Routes the dashboard reads without signing in (publicRoutes).
+	for _, key := range publicRoutes {
+		if rt, ok := m[key]; ok {
+			rt.auth = authNone
+			m[key] = rt
+		}
+	}
 	// So do the OAuth endpoints a client calls before it has a token (oauthPublicRoutes).
 	for _, key := range oauthPublicRoutes {
 		if rt, ok := m[key]; ok {
@@ -616,21 +648,30 @@ func (s *Server) unknown(w http.ResponseWriter, r *http.Request) error {
 // error envelope. key is the route in "METHOD /template" form (empty for a path no spec lists).
 func (s *Server) wrap(key string, kind authKind, h handlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var audited func(status int)
 		if kind != authNone {
 			p, err := s.auth.authenticate(r, kind)
 			if err != nil {
 				s.fail(w, r, err)
 				return
 			}
+			// Before the role check, so that a refused attempt is in the audit log too.
+			audited = s.auditBegin(r, key, p)
 			ctx, err := s.authorize(r, key, p)
 			if err != nil {
 				s.fail(w, r, err)
+				if audited != nil {
+					audited(statusOf(w))
+				}
 				return
 			}
 			r = r.WithContext(withPrincipal(ctx, p))
 		}
 		if err := h(w, r); err != nil {
 			s.fail(w, r, err)
+		}
+		if audited != nil {
+			audited(statusOf(w))
 		}
 	})
 }
@@ -655,6 +696,14 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+}
+
+// statusOf is the status the middleware's writer saw, 0 when nothing was written.
+func statusOf(w http.ResponseWriter) int {
+	if sw, ok := w.(*statusWriter); ok {
+		return sw.status
+	}
+	return 0
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -683,6 +732,26 @@ func newRequestID() string {
 	return hex.EncodeToString(b)
 }
 
+// maxRequestID is the longest X-Request-Id the API keeps; the proxy bounds the header the same way.
+const maxRequestID = 128
+
+// validRequestID reports whether a client's X-Request-Id is short and made of letters, digits, '-', '_' and
+// '.'. Anything else is replaced by a generated id: the id is echoed in the response, written to the log and
+// stored in the audit log, so its size and bytes are not the client's to choose.
+func validRequestID(id string) bool {
+	if id == "" || len(id) > maxRequestID {
+		return false
+	}
+	for _, c := range id {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // middleware adds the request id, CORS, panic recovery and debug logging.
 func (s *Server) middleware(next http.Handler) http.Handler {
 	allowed := map[string]bool{}
@@ -692,7 +761,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 	allowed[s.cfg.DashboardURL()] = true
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-Id")
-		if id == "" {
+		if !validRequestID(id) {
 			id = newRequestID()
 		}
 		w.Header().Set("X-Request-Id", id)

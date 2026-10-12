@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts a packaged supavise Studio build on a loopback port and checks that it is a platform-mode
-# build whose placeholders are replaced, twice with different values, that the MCP route of patch
+# build with patch 0005 in it, whose placeholders are replaced, twice with different values, that the MCP route of patch
 # 0004 answers (with and without the node's MCP settings), and that missing required values stop it
 # with exit code 78.
 #
@@ -168,6 +168,15 @@ check_round() { # api origin, hosts-regex-literal, mcp url, project-url-host-suf
     [[ -z "$child" ]] || printf 'verify: studio server RSS: %s MB\n' "$(ps -o rss= -p "$child" | awk '{printf "%d", $1/1024}')" >&2
   fi
 }
+
+# Patch 0005 (branching dialog): the flag that enables Include data without the PITR add-on is read by
+# name in the client bundle, so the string is in some static chunk of a build that has the patch.
+check_patch_0005() {
+  grep -rlF --include='*.js' 'supaviseBranchClones' "$ROOT/app/apps/studio/.next/static/chunks" > "$TMP/p5.files" 2>/dev/null || true
+  [[ -s "$TMP/p5.files" ]] || fail "no client chunk mentions supaviseBranchClones (patch 0005 is not in this build)"
+  ok "patch 0005: the branching dialog reads supaviseBranchClones ($(wc -l < "$TMP/p5.files" | tr -d ' ') chunk)"
+}
+check_patch_0005
 
 # round 1: every setting, including the node's MCP settings (127.0.0.1:9 is never contacted)
 start "https://api.one.test/platform" "https://auth.one.test/auth/v1" "https://studio.one.test" "*.api.one.test, db.one.test:8443" \

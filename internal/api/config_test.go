@@ -217,9 +217,9 @@ func TestPostgRESTRealtimeStorageConfig(t *testing.T) {
 	if got["fileSizeLimit"] != float64(52428800) || caps["list_v2"] != true {
 		t.Fatalf("storage defaults: %v", got)
 	}
-	got = bodyMap(t, f.mustDo("PATCH", st, map[string]any{"fileSizeLimit": 209715200, "features": map[string]any{"imageTransformation": map[string]any{"enabled": true}}}, 200))
+	got = bodyMap(t, f.mustDo("PATCH", st, map[string]any{"fileSizeLimit": 209715200, "features": map[string]any{"imageTransformation": map[string]any{"enabled": false}, "s3Protocol": map[string]any{"enabled": false}}}, 200))
 	feats := got["features"].(map[string]any)
-	if got["fileSizeLimit"] != float64(209715200) || feats["imageTransformation"].(map[string]any)["enabled"] != true || feats["s3Protocol"].(map[string]any)["enabled"] != true {
+	if got["fileSizeLimit"] != float64(209715200) || feats["imageTransformation"].(map[string]any)["enabled"] != false || feats["s3Protocol"].(map[string]any)["enabled"] != false {
 		t.Fatalf("storage after patch: %v", got)
 	}
 	rec := f.mustDo("PATCH", "/v1/projects/"+testRef+"/config/storage", map[string]any{"fileSizeLimit": 1048576}, 200)
@@ -829,10 +829,10 @@ func specBound(p *float64) any {
 	return *p
 }
 
-// platformOnly are settings only Studio's twin lists; they are not stored.
+// platformOnly are settings only Studio's twin lists that are not stored (config_auth.go refuses a change of them).
 var platformOnly = map[string]bool{
-	"audit_log_disable_postgres": true, "index_worker_ensure_user_search_indexes_exist": true,
-	"mailer_subjects_custom_contents": true, "mailer_templates_custom_contents": true, "mfa_allow_low_aal": true,
+	"index_worker_ensure_user_search_indexes_exist": true,
+	"mailer_subjects_custom_contents":               true, "mailer_templates_custom_contents": true, "mfa_allow_low_aal": true,
 }
 
 // A rollback after a failed apply must bring the database back on the restored settings

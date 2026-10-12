@@ -287,6 +287,24 @@ func matrixCases() []routeCase {
 		rc("YYYYNN", "GET", "/platform/projects/"+secondRef, nil),
 		rc("YYYYNN", "POST", "/v1/projects/"+secondRef+"/database/query", sql),
 		rc("YYYYNN", "GET", "/v1/projects/"+secondRef+"/api-keys", nil),
+		// the dashboard's dead ends: the audit log (every member with an organization-wide role reads it, a
+		// member scoped to one project does not, and a person reads their own on the account page), the Data API documents and GraphQL (a write to the data),
+		// the Auth admin calls, Restore to a new project (as a restore in place: Owner and Administrator;
+		// the lists are read like the Backups page), the paused project's storage archive, the daily stats
+		rc("YYYYNN", "GET", org+"/audit?iso_timestamp_start=2026-10-10T00:00:00Z&iso_timestamp_end=2026-10-11T00:00:00Z", nil),
+		rc("YYYYYY", "GET", "/platform/profile/audit?iso_timestamp_start=2026-10-10T00:00:00Z&iso_timestamp_end=2026-10-11T00:00:00Z", nil),
+		rc("YYYYYN", "GET", pp+"/api/rest", nil),
+		rc("YYYNYN", "POST", pp+"/api/graphql", map[string]any{"query": "{ __typename }"}),
+		rd("YYNNNN", "POST", "/platform/auth/"+testRef+"/templates/confirmation/reset", nil),
+		rd("YYYNYN", "DELETE", "/platform/auth/"+testRef+"/users/a0000000-0000-4000-8000-000000000001/factors", nil),
+		rc("YYYYYN", "GET", "/platform/database/"+testRef+"/clone", nil),
+		rc("YYYYYN", "GET", "/platform/database/"+testRef+"/clone/status", nil),
+		rd("YYNNNN", "POST", "/platform/database/"+testRef+"/clone", map[string]any{"cloneBackupId": 1, "newProjectName": "n", "newDbPass": "a-long-new-password"}),
+		rc("YYYYYN", "GET", "/platform/storage/"+testRef+"/archive", nil),
+		rc("YYYNYN", "POST", "/platform/storage/"+testRef+"/archive", nil),
+		rc("YYNNNN", "POST", "/platform/database/"+testRef+"/backups/download", map[string]any{"id": 1}),
+		rc("YYYYYN", "GET", pp+"/daily-stats?attribute=total_requests&startDate=2026-10-10T00:00:00Z&endDate=2026-10-11T00:00:00Z", nil),
+		rc("YYYYYY", "PUT", "/platform/update-email", map[string]any{"newEmail": "x@example.test"}),
 		// default deny: a write nobody named needs the Owner role, or the right over the project
 		rc("YNNNNN", "POST", "/platform/zzz-unknown", map[string]any{}),
 		rc("YNNNNN", "DELETE", "/platform/organizations/default/audit-placeholder", nil),
@@ -454,8 +472,10 @@ func TestImplementedRoutesOpenToEveryUserAreAllowlisted(t *testing.T) {
 	// The OAuth endpoints of /v1 are the clients' own: authorize, token and revoke carry no session (they
 	// are authNone, so the rule never decides), the project-claim stub is open like its siblings, and the
 	// feedback form answers every user with the same refusal (unsupported.go).
-	// The resource warnings are a list too: they name only the projects the caller can see.
-	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/platform/feedback/send$|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/platform/telemetry/feature-flags$|/v1/oauth/)`)
+	// The resource warnings are a list too: they name only the projects the caller can see. Updating the
+	// address of the caller's own account is refused with a reason (unsupported.go), and the ConfigCat flag
+	// document is the same for everyone and needs no sign-in (configcat.go).
+	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/platform/feedback/send$|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/platform/telemetry/feature-flags$|/v1/oauth/|/platform/update-email$|/configuration-files/)`)
 	for key := range newFixture(t).srv.implemented() {
 		m, p, _ := strings.Cut(key, " ")
 		if n := routeNeed(m, p); n.kind == needAny && !open.MatchString(p) {

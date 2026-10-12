@@ -1,0 +1,202 @@
+From 29337d57939aae564d6f3ea5e6ef6ffc518412e8 Mon Sep 17 00:00:00 2001
+From: supavise <supavise@users.noreply.invalid>
+Date: Sun, 11 Oct 2026 13:33:32 -0700
+Subject: [PATCH 5/5] feat(studio): branching dialog and menu stop offering
+ what the deployment has no way to do
+
+A deployment that runs its own control plane has no billing and clones the
+parent database itself, so four things in the branching and backup UI are wrong
+for it.
+
+Create branch printed hosted prices for compute and disk and a tax notice
+whatever the deployment: print them only when billing is enabled
+(useIsFeatureEnabled billing:all).
+
+Include data was disabled with a "Requires PITR" badge unless the project had
+the point-in-time-recovery add-on. A deployment says it can clone through the
+flag supaviseBranchClones (the same ConfigCat document that carries
+allowDataBranching), and the switch is enabled with either.
+
+The Create pull request item of a branch menu linked to github.com for any
+branch that had a git branch, connected repository or not. It appears only
+when the project has a GitHub connection, whose repository the row already
+receives.
+
+Restore to new project (Database > Backups) ended its confirmation and its
+create dialog with the same kind of block: hosted's compute and disk prices and
+the claim that the disk will be 1.5 times larger. AdditionalMonthlySpend, which
+both dialogs render, shows nothing unless billing is enabled.
+---
+ .../BranchManagement/CreateBranchModal.tsx    | 66 +++++++++++--------
+ .../interfaces/BranchManagement/Overview.tsx  |  5 +-
+ .../AdditionalMonthlySpend.tsx                |  6 ++
+ 3 files changed, 46 insertions(+), 31 deletions(-)
+
+diff --git a/apps/studio/components/interfaces/BranchManagement/CreateBranchModal.tsx b/apps/studio/components/interfaces/BranchManagement/CreateBranchModal.tsx
+index 4d61aa41..3ef9ffba 100644
+--- a/apps/studio/components/interfaces/BranchManagement/CreateBranchModal.tsx
++++ b/apps/studio/components/interfaces/BranchManagement/CreateBranchModal.tsx
+@@ -58,6 +58,7 @@ import { DesiredInstanceSize, instanceSizeSpecs } from '@/data/projects/new-proj
+ import { useProjectAddonsQuery } from '@/data/subscriptions/project-addons-query'
+ import { useCheckEntitlements } from '@/hooks/misc/useCheckEntitlements'
+ import { useAsyncCheckPermissions } from '@/hooks/misc/useCheckPermissions'
++import { useIsFeatureEnabled } from '@/hooks/misc/useIsFeatureEnabled'
+ import { useSelectedOrganizationQuery } from '@/hooks/misc/useSelectedOrganization'
+ import { useSelectedProjectQuery } from '@/hooks/misc/useSelectedProject'
+ import { BASE_PATH, IS_PLATFORM } from '@/lib/constants'
+@@ -73,6 +74,10 @@ export const CreateBranchModal = () => {
+   const { showCreateBranchModal, setShowCreateBranchModal } = useAppStateSnapshot()
+ 
+   const allowDataBranching = useFlag('allowDataBranching')
++  // A deployment that clones the parent database itself (copy-on-write or a base-backup restore) needs no
++  // point-in-time-recovery add-on for Include data, and has no billing to print prices from.
++  const branchClones = useFlag('supaviseBranchClones')
++  const { billingAll: showBranchPrices } = useIsFeatureEnabled(['billing:all'])
+ 
+   const [isGitBranchValid, setIsGitBranchValid] = useState(false)
+ 
+@@ -153,6 +158,7 @@ export const CreateBranchModal = () => {
+     ? (computeAddon.variant.identifier.split('ci_')[1] as DesiredInstanceSize)
+     : undefined
+   const hasPitrEnabled = (addons?.selected_addons ?? []).some((addon) => addon.type === 'pitr')
++  const canIncludeData = hasPitrEnabled || !!branchClones
+ 
+   const {
+     data: disk,
+@@ -420,7 +426,7 @@ export const CreateBranchModal = () => {
+                       label={
+                         <>
+                           <span className="mr-2">Include data</span>
+-                          {!hasPitrEnabled && <Badge variant="warning">Requires PITR</Badge>}
++                          {!canIncludeData && <Badge variant="warning">Requires PITR</Badge>}
+                         </>
+                       }
+                       layout="flex-row-reverse"
+@@ -430,7 +436,7 @@ export const CreateBranchModal = () => {
+                       <FormControl>
+                         <Switch
+                           aria-label="Include data"
+-                          disabled={!hasPitrEnabled}
++                          disabled={!canIncludeData}
+                           checked={field.value}
+                           onCheckedChange={field.onChange}
+                         />
+@@ -450,7 +456,7 @@ export const CreateBranchModal = () => {
+                 promptPlanUpgrade && 'opacity-25 pointer-events-none'
+               )}
+             >
+-              {withData && (
++              {showBranchPrices && withData && (
+                 <div className="flex flex-row gap-4">
+                   <div>
+                     <figure className="w-10 h-10 rounded-md bg-info-200 border border-info-400 flex items-center justify-center">
+@@ -580,34 +586,36 @@ export const CreateBranchModal = () => {
+                 </div>
+               )}
+ 
+-              <div className="flex flex-row gap-4">
+-                <div>
+-                  <figure className="w-10 h-10 rounded-md bg-info-200 border border-info-400 flex items-center justify-center">
+-                    <DollarSign className="text-info" size={20} strokeWidth={2} />
+-                  </figure>
+-                </div>
+-                <div className="flex flex-col gap-y-1">
+-                  <p className="text-sm text-foreground">
+-                    Branch compute is billed at $
+-                    {withData ? branchComputeSize.priceHourly : instanceSizeSpecs.micro.priceHourly}{' '}
+-                    per hour
+-                  </p>
+-                  <p className="text-sm text-foreground-light">
+-                    {withData ? (
+-                      <>
+-                        <code className="text-code-inline">{branchComputeSize.label}</code> compute
+-                        size is automatically selected to match your production branch. You may
+-                        downgrade after creation or pause the branch when not in use to save cost.
+-                      </>
+-                    ) : (
+-                      <>This cost will continue for as long as the branch has not been removed.</>
+-                    )}
+-                  </p>
++              {showBranchPrices && (
++                <div className="flex flex-row gap-4">
++                  <div>
++                    <figure className="w-10 h-10 rounded-md bg-info-200 border border-info-400 flex items-center justify-center">
++                      <DollarSign className="text-info" size={20} strokeWidth={2} />
++                    </figure>
++                  </div>
++                  <div className="flex flex-col gap-y-1">
++                    <p className="text-sm text-foreground">
++                      Branch compute is billed at $
++                      {withData ? branchComputeSize.priceHourly : instanceSizeSpecs.micro.priceHourly}{' '}
++                      per hour
++                    </p>
++                    <p className="text-sm text-foreground-light">
++                      {withData ? (
++                        <>
++                          <code className="text-code-inline">{branchComputeSize.label}</code> compute
++                          size is automatically selected to match your production branch. You may
++                          downgrade after creation or pause the branch when not in use to save cost.
++                        </>
++                      ) : (
++                        <>This cost will continue for as long as the branch has not been removed.</>
++                      )}
++                    </p>
++                  </div>
+                 </div>
+-              </div>
++              )}
+ 
+-              {!hasPitrEnabled && <BranchingPITRNotice />}
+-              <TaxDisclaimer />
++              {!canIncludeData && <BranchingPITRNotice />}
++              {showBranchPrices && <TaxDisclaimer />}
+             </DialogSection>
+ 
+             <DialogFooter className="justify-end gap-2" padding="medium">
+diff --git a/apps/studio/components/interfaces/BranchManagement/Overview.tsx b/apps/studio/components/interfaces/BranchManagement/Overview.tsx
+index 6b797f75..e31d49ed 100644
+--- a/apps/studio/components/interfaces/BranchManagement/Overview.tsx
++++ b/apps/studio/components/interfaces/BranchManagement/Overview.tsx
+@@ -230,6 +230,7 @@ export const Overview = ({
+ // Row actions for preview branches (non-main)
+ const PreviewBranchActions = ({
+   branch,
++  repo,
+   onSelectDeleteBranch,
+   generateCreatePullRequestURL,
+ }: {
+@@ -446,8 +447,8 @@ const PreviewBranchActions = ({
+             </>
+           )}
+ 
+-          {/* Create PR if applicable */}
+-          {branch.git_branch && branch.pr_number === undefined && (
++          {/* Create PR if applicable: only the repository of a GitHub connection has one to compare in */}
++          {repo !== '' && branch.git_branch && branch.pr_number === undefined && (
+             <DropdownMenuItem asChild className="gap-x-2">
+               <a
+                 target="_blank"
+diff --git a/apps/studio/components/interfaces/Database/Backups/RestoreToNewProject/AdditionalMonthlySpend.tsx b/apps/studio/components/interfaces/Database/Backups/RestoreToNewProject/AdditionalMonthlySpend.tsx
+index 71ec8011..2ff916f7 100644
+--- a/apps/studio/components/interfaces/Database/Backups/RestoreToNewProject/AdditionalMonthlySpend.tsx
++++ b/apps/studio/components/interfaces/Database/Backups/RestoreToNewProject/AdditionalMonthlySpend.tsx
+@@ -1,10 +1,16 @@
+ import { NewProjectPrice } from './RestoreToNewProject.utils'
++import { useIsFeatureEnabled } from '@/hooks/misc/useIsFeatureEnabled'
+ 
+ export const AdditionalMonthlySpend = ({
+   additionalMonthlySpend,
+ }: {
+   additionalMonthlySpend: NewProjectPrice
+ }) => {
++  // The block prints hosted's compute and disk prices and says the disk will be 1.5x larger. A deployment
++  // that has no billing sizes the new project itself, so none of it applies.
++  const { billingAll: showPrices } = useIsFeatureEnabled(['billing:all'])
++  if (!showPrices) return null
++
+   return (
+     <div className="text-sm text-foreground-lighter border-t p-5">
+       <p>
+-- 
+2.50.1 (Apple Git-155)
+

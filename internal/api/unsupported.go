@@ -45,6 +45,22 @@ func (s *Server) routesUnsupported(add func(string, handlerFunc)) {
 			"%s, run `supavise logs %s --service auth` to read the Auth log.", s.logsHost(r.Context(), p), p.Ref)
 	})
 
+	// The Download backups menu of a paused project. A stub answers the archive request with success, and
+	// Studio then shows a loading toast and asks for the archive every 5 seconds for ever
+	// (DownloadBackupsSection.tsx). A refusal ends it with the reason; the database item stays disabled
+	// because pause/status names no downloadable backup.
+	archiveMsg := "Supavise does not build storage archives. Restore the project, then copy its objects with any S3 client through the project's S3 endpoint (Storage > S3 connection)."
+	add("GET /platform/storage/{ref}/archive", s.refuse(http.StatusBadRequest, archiveMsg))
+	add("POST /platform/storage/{ref}/archive", s.refuse(http.StatusBadRequest, archiveMsg))
+	add("POST /platform/database/{ref}/backups/download", s.refuse(http.StatusBadRequest,
+		"Supavise does not build a downloadable backup file. `supavise backups list <ref>` shows the node's base backups, and `pg_dump` against the project's connection string takes a copy of the data."))
+
+	// Account > Preferences > Change email posts here. A stub answers "A confirmation email has been sent"
+	// and nothing is sent; the account's address is its sign-in, and a dashboard account has no flow that
+	// mails a confirmation to the new one.
+	add("PUT /platform/update-email", s.refuse(http.StatusBadRequest,
+		"This dashboard cannot change the email address of an account. An Owner can invite the new address (`supavise users invite <email> --role <role>`) and remove the old account (`supavise users remove`)."))
+
 	// The dashboard's Feedback button posts here; the message would go nowhere.
 	add("POST /platform/feedback/send", s.refuse(http.StatusBadRequest, "This dashboard does not send feedback anywhere. To report a problem with Supavise, open an issue at https://github.com/supavise/supavise."))
 }

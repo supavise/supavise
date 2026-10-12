@@ -146,14 +146,14 @@ type addonBody struct {
 }
 
 func (s *Server) platformSetAddon(w http.ResponseWriter, r *http.Request) error {
-	return s.setAddon(w, r, http.StatusCreated, "POST /platform/projects/{ref}/billing/addons")
+	return s.setAddon(w, r, http.StatusCreated)
 }
 
 func (s *Server) v1SetAddon(w http.ResponseWriter, r *http.Request) error {
-	return s.setAddon(w, r, http.StatusOK, "PATCH /v1/projects/{ref}/billing/addons")
+	return s.setAddon(w, r, http.StatusOK)
 }
 
-func (s *Server) setAddon(w http.ResponseWriter, r *http.Request, status int, key string) error {
+func (s *Server) setAddon(w http.ResponseWriter, r *http.Request, status int) error {
 	p, err := s.loadProject(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		return err
@@ -163,9 +163,7 @@ func (s *Server) setAddon(w http.ResponseWriter, r *http.Request, status int, ke
 		return err
 	}
 	if in.AddonType != "compute_instance" {
-		// Only compute is an add-on here; the others (PITR, IPv4, MFA, log drains) are not sold.
-		stubHandler(operationByKey(key))(w, r)
-		return nil
+		return errNoAddon(in.AddonType)
 	}
 	if in.AddonVariant == "" {
 		return inputError("addon_variant is required")
@@ -174,22 +172,48 @@ func (s *Server) setAddon(w http.ResponseWriter, r *http.Request, status int, ke
 }
 
 func (s *Server) platformRemoveAddon(w http.ResponseWriter, r *http.Request) error {
-	return s.removeAddon(w, r, "DELETE /platform/projects/{ref}/billing/addons/{addon_variant}")
+	return s.removeAddon(w, r)
 }
 
 func (s *Server) v1RemoveAddon(w http.ResponseWriter, r *http.Request) error {
-	return s.removeAddon(w, r, "DELETE /v1/projects/{ref}/billing/addons/{addon_variant}")
+	return s.removeAddon(w, r)
+}
+
+// errNoAddon is the answer to a change of an add-on other than compute. Only compute is an add-on here:
+// point-in-time recovery comes with the node's WAL archive, custom domains with the node, and IPv4,
+// MFA and log drains do not exist. A stub answered the change with success, so the PITR panel said
+// "Successfully updated" and nothing changed (PITRSidePanel.tsx). The reason is a 4xx, which the
+// dashboard shows as the error and does not retry.
+func errNoAddon(kind string) *Error {
+	switch kind {
+	case "pitr":
+		return errf(http.StatusBadRequest, "Point-in-time recovery is included on this node and cannot be switched on or off: its window is the node's backup retention ([backup] retention_days).")
+	case "custom_domain":
+		return errf(http.StatusBadRequest, "Custom domains are included on this node and need no add-on.")
+	}
+	return errf(http.StatusBadRequest, "This node does not sell add-ons of this kind; only the compute size can be changed.")
+}
+
+// addonTypeOf names the add-on type a variant identifier belongs to: the dashboard's pitr_7, pitr_14 and
+// pitr_28 and cd_default, anything else "" (unknown).
+func addonTypeOf(variant string) string {
+	switch {
+	case strings.HasPrefix(variant, "pitr_"):
+		return "pitr"
+	case strings.HasPrefix(variant, "cd_"):
+		return "custom_domain"
+	}
+	return ""
 }
 
 // removeAddon: taking the compute add-on away leaves the project on the free size, Nano.
-func (s *Server) removeAddon(w http.ResponseWriter, r *http.Request, key string) error {
+func (s *Server) removeAddon(w http.ResponseWriter, r *http.Request) error {
 	p, err := s.loadProject(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		return err
 	}
 	if !strings.HasPrefix(r.PathValue("addon_variant"), "ci_") {
-		stubHandler(operationByKey(key))(w, r)
-		return nil
+		return errNoAddon(addonTypeOf(r.PathValue("addon_variant")))
 	}
 	variant := r.PathValue("addon_variant")
 	if _, ok := lifecycle.ClassByVariant(variant); !ok {

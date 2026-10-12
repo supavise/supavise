@@ -134,7 +134,14 @@ func (s *Server) platformBackups(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	resp := base("GET /platform/database/{ref}/backups")
+	writeJSON(w, http.StatusOK, s.backupList("GET /platform/database/{ref}/backups", p, bi))
+	return nil
+}
+
+// backupList is the answer of Studio's backup list: GET /platform/database/{ref}/backups, and the
+// start of GET .../clone, which lists the same backups for Restore to a new project.
+func (s *Server) backupList(key string, p *registry.Project, bi backupInfo) map[string]any {
+	resp := base(key)
 	items := make([]any, 0, len(bi.items))
 	for _, it := range bi.items {
 		items = append(items, map[string]any{"id": it.id, "isPhysicalBackup": true, "project_id": projectNumID(p),
@@ -149,8 +156,7 @@ func (s *Server) platformBackups(w http.ResponseWriter, r *http.Request) error {
 		set(resp, "physicalBackupData.earliestPhysicalBackupDateUnix", bi.earliest.Unix())
 		set(resp, "physicalBackupData.latestPhysicalBackupDateUnix", bi.latest.Unix())
 	}
-	writeJSON(w, http.StatusOK, resp)
-	return nil
+	return resp
 }
 
 func (s *Server) v1Backups(w http.ResponseWriter, r *http.Request) error {
@@ -233,25 +239,9 @@ func (s *Server) restoreFromBackup(w http.ResponseWriter, r *http.Request, rawID
 		return err
 	}
 	id := int64(*rawID)
-	var picked *backup.Manifest
-	rows, err := s.reg.ListBackups(ctx, p.Ref)
+	picked, err := s.pickBackup(ctx, p, bi, id)
 	if err != nil {
 		return err
-	}
-	for _, row := range rows {
-		if row.ID == id && row.Kind == "base" {
-			for i := range bi.window.Backups {
-				if bi.window.Backups[i].ID == path.Base(row.Location) {
-					picked = &bi.window.Backups[i]
-				}
-			}
-			if picked == nil && row.Status == registry.BackupCompleted {
-				return errf(http.StatusBadRequest, "Backup %d cannot be restored: it is not on the history of the project's current timeline, or its WAL is no longer archived", id)
-			}
-		}
-	}
-	if picked == nil {
-		return errf(http.StatusNotFound, "Backup %d not found", id)
 	}
 	req := lifecycle.RestoreRequest{BackupID: picked.ID}
 	if rawTarget != "" {
@@ -265,6 +255,32 @@ func (s *Server) restoreFromBackup(w http.ResponseWriter, r *http.Request, rawID
 		req.Target = t
 	}
 	return s.startRestore(w, r, p, req)
+}
+
+// pickBackup finds the base backup the dashboard names by its id among the ones a restore can start from: 404
+// when the project has no such backup, 400 when it has but its history or its WAL is gone.
+func (s *Server) pickBackup(ctx context.Context, p *registry.Project, bi backupInfo, id int64) (*backup.Manifest, error) {
+	var picked *backup.Manifest
+	rows, err := s.reg.ListBackups(ctx, p.Ref)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row.ID == id && row.Kind == "base" {
+			for i := range bi.window.Backups {
+				if bi.window.Backups[i].ID == path.Base(row.Location) {
+					picked = &bi.window.Backups[i]
+				}
+			}
+			if picked == nil && row.Status == registry.BackupCompleted {
+				return nil, errf(http.StatusBadRequest, "Backup %d cannot be restored: it is not on the history of the project's current timeline, or its WAL is no longer archived", id)
+			}
+		}
+	}
+	if picked == nil {
+		return nil, errf(http.StatusNotFound, "Backup %d not found", id)
+	}
+	return picked, nil
 }
 
 // parseRecoveryTarget reads the optional time of restore-physical: RFC 3339 or Unix seconds.
@@ -412,7 +428,9 @@ func (s *Server) platformAddons(w http.ResponseWriter, r *http.Request) error {
 	set(resp, "ref", p.Ref)
 	selected, available := s.computeAddons(r.Context(), p, computeVariantPlatform)
 	set(resp, "available_addons", available)
-	if s.backups != nil {
+	// Reported only while the node keeps what point-in-time recovery needs (pitrEnabled): the Backups page sends
+	// a project with the add-on to its Point in time tab, and a node without the WAL archive has none.
+	if s.pitrEnabled() {
 		days, id, name := s.pitrAddon(p)
 		selected = append(selected, map[string]any{"type": "pitr", "variant": map[string]any{
 			"identifier": id, "name": name, "price": 0, "price_description": "Included", "price_type": "fixed",
@@ -438,7 +456,9 @@ func (s *Server) v1Addons(w http.ResponseWriter, r *http.Request) error {
 	resp := base("GET /v1/projects/{ref}/billing/addons")
 	selected, available := s.computeAddons(r.Context(), p, computeVariantV1)
 	set(resp, "available_addons", available)
-	if s.backups != nil {
+	// Reported only while the node keeps what point-in-time recovery needs (pitrEnabled): the Backups page sends
+	// a project with the add-on to its Point in time tab, and a node without the WAL archive has none.
+	if s.pitrEnabled() {
 		days, id, name := s.pitrAddon(p)
 		selected = append(selected, map[string]any{"type": "pitr", "variant": map[string]any{
 			"id": id, "name": name, "meta": map[string]any{"backup_duration_days": days},

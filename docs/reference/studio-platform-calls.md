@@ -74,12 +74,12 @@ These are the documented routes for which an empty stub is not enough: the page 
 | P1 | POST | `/platform/auth/{ref}/magiclink` | 201 no body |
 | P1 | POST | `/platform/auth/{ref}/otp` | 201 no body |
 | P1 | POST | `/platform/auth/{ref}/recover` | 201 no body |
-| P1 | POST | `/platform/auth/{ref}/templates/{template}/reset` | 200 `GoTrueConfigResponse` |
+| P1 | POST | `/platform/auth/{ref}/templates/{template}/reset` | 200 `GoTrueConfigResponse`: the project's config after the template's subject and body are cleared (`internal/api/auth_extras.go`). Studio caches the answer as the config, so the Site URL and the other templates must be in it. |
 | P1 | POST | `/platform/auth/{ref}/users` | 201 `CreateUserResponse_Output` |
 | P1 | PATCH | `/platform/auth/{ref}/users/{id}` | 200 `UpdateUserResponse_Output` |
 | P1 | DELETE | `/platform/auth/{ref}/users/{id}` | 200 no body |
-| P1 | DELETE | `/platform/auth/{ref}/users/{id}/factors` | 200 no body |
-| P1 | POST | `/platform/auth/{ref}/validate/spam` | 200 `ValidateSpamResponse_Output` |
+| P1 | DELETE | `/platform/auth/{ref}/users/{id}/factors` | 200 no body. Lists the user's factors through GoTrue's admin API (`GET /admin/users/{id}/factors`) and deletes each (`DELETE .../factors/{factor_id}`); `502` naming the factor GoTrue refuses (`auth_extras.go`). |
+| P1 | POST | `/platform/auth/{ref}/validate/spam` | 200 `ValidateSpamResponse_Output`. Still the stub's `{rules: []}`: no rule ever matches, because the SpamAssassin rules are hosted's. Nothing depends on it. |
 | P1 | POST | `/platform/cli/login` | 201 no body |
 | P0 | GET | `/platform/organizations` | 200 array of `OrganizationResponse_Output` |
 | P0 | GET | `/platform/organizations/{slug}` | 200 `OrganizationSlugResponse_Output` |
@@ -114,7 +114,7 @@ These are the documented routes for which an empty stub is not enough: the page 
 | P1 | PATCH | `/platform/projects/{ref}` | 200 `ProjectRefResponse_Output` (requires `id`, `name`, `ref`) |
 | P1 | GET | `/platform/telemetry/feature-flags` | 200 `{"dataApiRevokeOnCreateDefault": true}`. Studio reads this PostHog flag through `usePHFlag` to start the box "Automatically expose new tables" unchecked (hosted has had every user in the treatment arm since 2026-05-30); an empty object leaves the box checked, so a project created from the form would keep the grants. Studio logs an error to the console for each other flag it asks for and finds missing (`proBenefitWording`, the billing plan presentation); both are unused here |
 | P1 | POST | `/platform/projects/{ref}/api-keys/temporary` | 201 `TemporaryApiKeyResponse_Output` |
-| P1 | HEAD | `/platform/projects/{ref}/api/rest` | any 2xx means PostgREST is up; not in the spec (the spec has GET only) |
+| P1 | HEAD | `/platform/projects/{ref}/api/rest` | any 2xx means PostgREST is up; not in the spec (the spec has GET only). `200` while the project's PostgREST answers, `503` when it does not (`internal/api/rest_graphql.go`). |
 | P1 | GET | `/platform/projects/{ref}/config/pgbouncer` | 200 `PgbouncerConfigResponse_Output` |
 | P1 | PATCH | `/platform/projects/{ref}/config/pgbouncer` | 200 `UpdatePoolingConfigResponse_Output` (requires `pgbouncer_enabled`, `pgbouncer_status`) |
 | P1 | GET | `/platform/projects/{ref}/config/postgrest` | 200 `GetPostgrestConfigResponse_Output` |
@@ -342,7 +342,7 @@ A node has no log store and no hosted platform behind it. A stub that answers "s
 
 **Database Webhooks.** "Enable webhooks" (`POST /platform/database/{ref}/hook-enable`, `POST /v1/projects/{ref}/database/webhooks/enable`) runs `internal/api/webhooks.sql` as `supabase_admin`: `pg_net`, the `supabase_functions` schema with `hooks` and `migrations`, and `supabase_functions.http_request()`, owned by `supabase_functions_admin`. It answers `201` with no body and can run again. Studio then finds the `supabase_functions` schema (that is how it knows hooks are enabled), and creates, edits and drops a webhook as a trigger through `POST /platform/pg-meta/{ref}/query` as the `postgres` role; there is no other webhook call. The file is upstream's `docker/volumes/db/webhooks.sql` with six changes, listed in its header: it can run twice, the pg_net grants that the postgres artifact's own migration removes for pg_net 0.12 and newer are not applied again, the artifact's `grant_pg_net_access` event trigger is kept, and three keep a project member from turning the superuser script into superuser code: it refuses a `supabase_functions` schema that `supabase_admin` does not own (`400`, "The schema supabase_functions already exists and belongs to ..."), it inserts migration rows only into a table it creates in the same run (a trigger, default or rule the project put on an existing table never runs), and it leaves a `supabase_pg_net_admin` role alone. The first `postgres` role call that creates a schema of that name therefore blocks Enable until the schema is dropped or renamed.
 
-**Hosted features this server refuses.** Each answer is a `4xx`, which Studio shows as the reason and does not retry. `disabled_features` in the profile also hides `storage:analytics` and `storage:vectors` (Storage runs without the Iceberg catalog and vector services). Logs, Reports and Third-party Auth stay in the menus: Third-party Auth is a feature a server could offer later (PostgREST, Storage and Realtime accept a JWKS), so its page stays and an add is refused with the reason.
+**Hosted features this server refuses.** Each answer is a `4xx`, which Studio shows as the reason and does not retry. `disabled_features` in the profile also hides `storage:analytics` and `storage:vectors` (Storage runs without the Iceberg catalog and vector services), `organization:show_legal_documents` (Supabase Inc.'s own documents), `profile:show_account_deletion` (a request to Supabase's support desk) and `projects:transfer`, and `database:restore_to_new_project` on a node whose backup service cannot restore as a new project. The organization's SSO page (`organization:show_sso_settings`) is shown: its calls are the routes of `sso_routes.go`. Logs, Reports and Third-party Auth stay in the menus: Third-party Auth is a feature a server could offer later (PostgREST, Storage and Realtime accept a JWKS), so its page stays and an add is refused with the reason.
 
 | Call | Answer | Studio shows |
 |---|---|---|
@@ -351,17 +351,41 @@ A node has no log store and no hosted platform behind it. A stub that answers "s
 | `POST .../config/auth/third-party-auth` | `400` | The add dialog's error toast; the list stays empty, which is true |
 | `POST /platform/feedback/send` | `400` pointing to the project's issue tracker | "Failed to submit feedback" (the widget would otherwise say the feedback was sent) |
 | `GET .../analytics/endpoints/auth.metrics` | `400` | The Auth overview's error alert |
+| `GET`, `POST /platform/storage/{ref}/archive` | `400` "Supavise does not build storage archives..." | The paused project's Download backups > Storage objects: an error toast, where the stub made Studio poll every 5 seconds behind a loading toast for ever |
+| `POST /platform/database/{ref}/backups/download` | `400` pointing to `supavise backups list` and `pg_dump` | The error toast of Download backups |
+| `PUT /platform/update-email` | `400` pointing to `supavise users invite` and `remove` | "Failed to update email: ..." (the stub said a confirmation email had been sent) |
+| `POST`, `DELETE /platform/projects/{ref}/billing/addons` for `pitr`, `custom_domain` and any other type than `compute_instance` | `400` "included on this node" | The add-on panels' error toast, where the stub said "Successfully updated" |
+| `PATCH` of `config/storage` (`/platform` and `/v1`) that switches `features.imageTransformation.enabled` on | `400` "the node runs no imgproxy" | The Storage settings' error toast. A save that leaves it as it is, or switches it off, passes. |
+| `PATCH /platform/auth/{ref}/config` that would change `MFA_ALLOW_LOW_AAL` (or another name the node cannot honor) | `400` naming the setting and the reason, nothing saved | The MFA form's error toast. A value equal to what the GET reports passes. |
 
 The legacy JWT secret and the other signing-keys calls are in "Legacy JWT secret".
 
-Still answered by a stub and therefore empty or inert, unfixed: organization and profile audit logs (`GET /platform/organizations/{slug}/audit`, `/platform/profile/audit`: the pages list no events), email template spam validation (`POST /platform/auth/{ref}/validate/spam`: no rule ever matches), `daily-stats` (the Storage and Database report charts that read it), and the hosted integrations pages (GitHub, Vercel, AWS PrivateLink, replication, log drains, billing), most of which are hidden through `disabled_features`.
+Still answered by a stub and therefore empty or inert, unfixed: email template spam validation (`POST /platform/auth/{ref}/validate/spam`: no rule ever matches) and the hosted integrations pages (Vercel, AWS PrivateLink, replication, log drains, billing), most of which are hidden through `disabled_features`. The organization and account audit logs, `daily-stats`, `api/rest` and `api/graphql` have handlers now (below).
+
+**Dashboard dead ends closed by handlers.** Each of these was a stub that answered with an empty or zeroed success. The last column names the Studio page that shows the answer, for a browser run (the release's runtime crawl) and for a person checking by hand.
+
+| Call | Answer | Studio shows | Page to visit |
+|---|---|---|---|
+| `GET /configuration-files/configcat-proxy/frontend-v2/config_v6.json` (the API origin, no credentials, CORS for the dashboard) | ConfigCat's `config_v6.json`: `allowDataBranching` and `supaviseBranchClones` on, every other flag Studio reads off (`internal/api/configcat.go`) | The Create branch dialog's Include data switch (with patch 0005). Studio logs `Flag key "x" does not exist` for a key the document lacks, so a Studio bump that reads a new key needs the key added. | `/project/{ref}/branches`: open Create branch |
+| `GET`, `HEAD /platform/projects/{ref}/api/rest` | PostgREST's OpenAPI document, `503` when PostgREST is down | Integrations > Data API > Docs, the API docs side panel (tables, views and functions), the readiness ping | `/project/{ref}/integrations/data_api/docs` |
+| `POST /platform/projects/{ref}/api/graphql` | `graphql_public.graphql()` through the project's PostgREST as `service_role`, or as the role of `x-graphql-authorization` when that token verifies against the project's JWT secret | Integrations > GraphQL (GraphiQL): introspection and queries; Studio's default value of that header, the dashboard user's own token, is not forwarded | `/project/{ref}/integrations/graphiql/graphiql` |
+| `POST /platform/auth/{ref}/templates/{template}/reset` | the project's config, with that template's subject and body cleared | Auth > Emails > Reset to default; custom SMTP off | `/project/{ref}/auth/templates/{templateId}` |
+| `DELETE /platform/auth/{ref}/users/{id}/factors` | `200` after GoTrue deleted each factor | Auth > Users > Remove MFA factors | `/project/{ref}/auth/users` |
+| `PATCH /platform/auth/{ref}/config` with `AUDIT_LOG_DISABLE_POSTGRES` | stored and rendered as `GOTRUE_AUDIT_LOG_DISABLE_POSTGRES` | Auth > Audit Logs keeps its switch | `/project/{ref}/auth/audit-logs` |
+| `GET /platform/organizations/{slug}/audit`, `GET /platform/profile/audit` | the events of requests that changed something (`internal/api/audit.go`, table `supavise.audit_events`, `[api] audit_retention_days`), microsecond timestamps, at most 62 days a query (`400` "Time range exceeded" past it, which Studio tests for) and 5000 rows | Organization > Audit Logs and Account > Audit Logs. A project-scoped member has no organization-wide read, so the organization's page is refused for them. A refused request of somebody who is not a member of the organization it names is in that person's Account page only. | `/org/{slug}/audit` and `/account/audit` |
+| `GET`, `POST /platform/database/{ref}/clone`, `GET .../clone/status` | the backups to restore from, the start of a restore as a new project, and the clones of the project (`IN_PROGRESS`, `COMPLETED`, `FAILED`, `REMOVED`) from the source project's events (`internal/api/clone.go`) | Database > Backups > Restore to new project | `/project/{ref}/database/backups/restore-to-new-project` |
+| `GET /platform/projects/{ref}/daily-stats` | `AnalyticsData` for the request counts the edge proxy keeps (`total_requests`, `total_rest_requests`, `total_auth_requests`, `total_storage_requests`, `total_realtime_requests`, `total_func_invocations`), one point for each UTC day of the last eight, counted from the daemon's start; `hasNoData` for the other attributes | Reports > custom chart blocks | `/project/{ref}/observability/{id}`: a custom report with a chart block |
+
+**Shown, not yet seen in a browser.** The organization's SSO page (`/org/{slug}/sso`) was hidden through `disabled_features` (`organization:show_sso_settings`) and is shown since this release. Its four calls (`GET`, `POST`, `PUT` and `DELETE /platform/organizations/{slug}/sso`, `sso_routes.go`) match the page's source at the pinned commit, including the `404` "Failed to find an existing SSO Provider" that tells it no provider is set up, but no browser run has loaded the page: Studio shows an "unknown interface" for it while the key is disabled, so only a run with the key enabled can settle it. If it is a dead end, put the key back in `disabledFeatures` (`internal/api/identity.go`) and in the hide list of `unsupported_test.go`.
+
+Open page questions a browser run settles: whether Organization > Usage (`/org/{slug}/usage`) is reachable and how its zero state reads, whether the Auth report and the Edge Function overview draw an error or zeros when a log query answers a non-200 (they draw zeros for the `200` with `error` they get now), and how the Edge Function Test tab behaves on a vanity name with a digit.
 
 ## Where the spec and Studio disagree
 
 - `GET /platform/projects/{ref}/status`: the spec documents a 200 without a body; Studio reads `{status}`.
 - `POST /platform/pg-meta/{ref}/query`: the spec documents 201 and no body; Studio needs the row array. The spec also lists ten `GET /platform/pg-meta/{ref}/...` routes (tables, columns, ...) that Studio's client does not call in this version.
-- `HEAD /platform/projects/{ref}/api/rest`: only `GET` is in the spec; Studio sends `HEAD` to check that PostgREST is up. `GET /platform/projects/{ref}/api/rest` returns the PostgREST OpenAPI document (API docs page).
-- `GET /platform/projects/{ref}/daily-stats`, `.../infra-monitoring`, `GET /platform/organizations/{slug}/sso` and `GET /v1/projects/{ref}/jit-access`: the spec documents no body. Supavise answers `infra-monitoring` in the two shapes Studio reads (see "Utilization and resource warnings") and keeps the empty answer for the rest.
+- `HEAD /platform/projects/{ref}/api/rest`: only `GET` is in the spec; Studio sends `HEAD` to check that PostgREST is up. `GET /platform/projects/{ref}/api/rest` returns the PostgREST OpenAPI document (API docs page); both are handled by `internal/api/rest_graphql.go`. Before that the stub answered both with an empty `200`, which the docs page read as a TypeError and the ping as "up" whether or not PostgREST ran.
+- `GET /platform/projects/{ref}/daily-stats`, `.../infra-monitoring`, `GET /platform/organizations/{slug}/sso` and `GET /v1/projects/{ref}/jit-access`: the spec documents no body. Supavise answers `infra-monitoring` in the two shapes Studio reads (see "Utilization and resource warnings") and `daily-stats` as `AnalyticsData` (below), and keeps the empty answer for the rest.
 
 ## Studio's own /api routes
 

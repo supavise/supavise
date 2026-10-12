@@ -19,7 +19,7 @@ studio:
   # and the release tool refuse a difference). The build is <tag>-p<patchset>: the release asset
   # name, the directory under artifacts/studio and the pin `supavise upgrade` compares, so a new
   # patch set moves Studio on every node like a new tag does.
-  patchset: 3
+  patchset: 4
 cli:
   # The Supabase CLI release the conformance suite runs (tests/conformance/pins.env).
   version_tested: "2.120.0"

@@ -1,7 +1,11 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/supavise/supavise/internal/lifecycle"
@@ -82,6 +86,11 @@ func (s *Server) patchAuthConfig(key string, upper, hooksOnly bool) handlerFunc 
 		if err != nil {
 			return err
 		}
+		if upper && !hooksOnly {
+			if err := s.refuseUnsupportedAuthChanges(r.Context(), p.Ref, key, in); err != nil {
+				return err
+			}
+		}
 		patch := make(map[string]any, len(in))
 		for k, v := range in {
 			if upper {
@@ -106,6 +115,64 @@ func (s *Server) patchAuthConfig(key string, upper, hooksOnly bool) handlerFunc 
 		writeJSON(w, http.StatusOK, authView(key, ch.State, upper))
 		return nil
 	}
+}
+
+// authSettingReasons say why Studio's twin lists a setting this node cannot honor. They are the keys of the
+// platform spec's GoTrueConfigResponse that projectconfig.AuthSchema does not model. Any other unknown name
+// gets the generic reason.
+var authSettingReasons = map[string]string{
+	"MFA_ALLOW_LOW_AAL": "GoTrue sets it as a duration (GOTRUE_SESSIONS_ALLOW_LOW_AAL) and the switch has no value that maps to it, " +
+		"so a session of a user with an enrolled factor always needs the second factor",
+	"INDEX_WORKER_ENSURE_USER_SEARCH_INDEXES_EXIST": "this node does not run hosted's index worker",
+	"MAILER_SUBJECTS_CUSTOM_CONTENTS":               "it only reports which subjects are custom; set a subject with MAILER_SUBJECTS_<TEMPLATE>",
+	"MAILER_TEMPLATES_CUSTOM_CONTENTS":              "it only reports which templates are custom; set a template with MAILER_TEMPLATES_<TEMPLATE>_CONTENT",
+}
+
+// refuseUnsupportedAuthChanges answers 400, before anything is saved, when a PATCH of Studio's twin would
+// change a setting that this node does not model. Studio's forms save the fields they show, so a name that is
+// not a setting is refused only when its value differs from what the GET reports for it: a form that sends
+// the whole object back still saves. Without this the form toasts "Successfully updated" and the next read
+// shows the old value (Auth > Audit Logs and MFA before audit_log_disable_postgres was stored).
+func (s *Server) refuseUnsupportedAuthChanges(ctx context.Context, ref, key string, in map[string]any) error {
+	var unknown []string
+	for k := range in {
+		if _, ok := projectconfig.AuthSchema.Field(strings.ToLower(k)); !ok {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	st, err := s.settings.Get(ctx, ref, projectconfig.Auth)
+	if err != nil {
+		return err
+	}
+	cur := authView(key, st, true)
+	sort.Strings(unknown)
+	var refused []string
+	for _, k := range unknown {
+		have, ok := cur[k]
+		// A name the GET does not report is unchanged only when the patch clears it; one it reports, when the value is the same.
+		if (!ok && in[k] == nil) || (ok && sameJSON(have, in[k])) {
+			continue
+		}
+		reason := authSettingReasons[k]
+		if reason == "" {
+			reason = "it is not a setting of this node"
+		}
+		refused = append(refused, k+" ("+reason+")")
+	}
+	if len(refused) == 0 {
+		return nil
+	}
+	return errf(http.StatusBadRequest, "These settings cannot be changed on this Supavise node, and nothing was saved: %s.", strings.Join(refused, "; "))
+}
+
+// sameJSON reports whether two decoded JSON values are equal.
+func sameJSON(a, b any) bool {
+	x, err1 := json.Marshal(a)
+	y, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && bytes.Equal(x, y)
 }
 
 // applyBestEffort re-applies svc of ref without failing the request: the change that

@@ -117,8 +117,19 @@ providers are managed through `/v1/projects/{ref}/config/auth/sso/providers` (`i
 sign-on), which answers 404 until `saml_enabled` is on, as on hosted.
 
 **Stored, not rendered.** `nimbus_*` (hosted-only) and the response-only settings of the specs
-(`custom_oauth_max_providers`, Studio's `MFA_ALLOW_LOW_AAL`, `AUDIT_LOG_DISABLE_POSTGRES`, ...). The GET
-answers them with defaults.
+(`custom_oauth_max_providers`, ...). The GET answers them with defaults.
+
+**Rendered although only Studio lists it.** `audit_log_disable_postgres` (`GOTRUE_AUDIT_LOG_DISABLE_POSTGRES`,
+Auth > Audit Logs): Studio's twin lists it and the public API does not, but the setting is stored and rendered like
+any other, so the switch keeps its position after a reload.
+
+**Refused, not stored.** The names Studio's twin lists that this node cannot honor (`MFA_ALLOW_LOW_AAL`,
+`INDEX_WORKER_ENSURE_USER_SEARCH_INDEXES_EXIST`, the read-only `MAILER_*_CUSTOM_CONTENTS` markers). A PATCH of
+Studio's twin that would change one of them is answered 400 with the name and the reason, and saves nothing; a
+value equal to what the GET reports passes, so a form that sends the whole object still saves
+(`internal/api/config_auth.go`). The public API ignores names it does not know, as before. GoTrue models
+`MFA_ALLOW_LOW_AAL` as `GOTRUE_SESSIONS_ALLOW_LOW_AAL`, a duration; the mapping from the dashboard's boolean is not
+known, so the switch stays off.
 
 ### Secrets in responses
 

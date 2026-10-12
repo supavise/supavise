@@ -275,15 +275,18 @@ func TestStudioEnv(t *testing.T) {
 	cfg.Ports.Studio = 37040
 	env := studioEnv(cfg, false)
 	want := map[string]string{
-		"HOSTNAME":                      "127.0.0.1",
-		"PORT":                          "37040",
-		"NEXT_PUBLIC_API_URL":           "https://api.example.com/platform",
-		"NEXT_PUBLIC_GOTRUE_URL":        "https://api.example.com/auth/v1",
-		"NEXT_PUBLIC_SITE_URL":          "https://studio.example.com",
-		"CSP_EXTRA_PROJECT_HOSTS":       "*.api.example.com",
-		"NEXT_PUBLIC_MCP_URL":           "https://api.example.com/mcp",
-		"SUPAVISE_MANAGEMENT_API_URL":   "http://127.0.0.1:7000",
-		"SUPAVISE_PROJECT_URL_TEMPLATE": "https://{ref}.api.example.com",
+		"HOSTNAME":                        "127.0.0.1",
+		"PORT":                            "37040",
+		"NEXT_PUBLIC_API_URL":             "https://api.example.com/platform",
+		"NEXT_PUBLIC_GOTRUE_URL":          "https://api.example.com/auth/v1",
+		"NEXT_PUBLIC_SITE_URL":            "https://studio.example.com",
+		"CSP_EXTRA_PROJECT_HOSTS":         "*.api.example.com",
+		"NEXT_PUBLIC_CONFIGCAT_PROXY_URL": "https://api.example.com",
+		"NIMBUS_PROD_PROJECTS_URL":        "https://*.api.example.com",
+		"NIMBUS_PROD_PROJECTS_URL_WS":     "wss://*.api.example.com",
+		"NEXT_PUBLIC_MCP_URL":             "https://api.example.com/mcp",
+		"SUPAVISE_MANAGEMENT_API_URL":     "http://127.0.0.1:7000",
+		"SUPAVISE_PROJECT_URL_TEMPLATE":   "https://{ref}.api.example.com",
 	}
 	for k, v := range want {
 		if env[k] != v {
@@ -457,8 +460,9 @@ func TestStudioEnvCoversPlaceholders(t *testing.T) {
 	if !seen["NEXT_PUBLIC_MCP_URL"] {
 		t.Error("NEXT_PUBLIC_MCP_URL is not in studio/placeholders.json")
 	}
-	// Server-side variables of patch 0004: not placeholders (read per request), always set.
-	for _, k := range []string{"SUPAVISE_MANAGEMENT_API_URL", "SUPAVISE_PROJECT_URL_TEMPLATE"} {
+	// Server-side variables: not placeholders (read per request), always set. Patch 0004's two, and the hosts
+	// the Edge Function Test tab accepts.
+	for _, k := range []string{"SUPAVISE_MANAGEMENT_API_URL", "SUPAVISE_PROJECT_URL_TEMPLATE", "NIMBUS_PROD_PROJECTS_URL", "NIMBUS_PROD_PROJECTS_URL_WS"} {
 		if env[k] == "" {
 			t.Errorf("%s is not set", k)
 		}
