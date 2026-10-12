@@ -432,9 +432,17 @@ if dbr:
     conf = open(os.path.join(STATE, "projects", dbr["project_ref"], "postgres", "data", "postgresql.auto.conf")).read()
     check("work_mem" not in conf, "a data branch does not inherit the parent's sizing")
     check("statement_timeout" in conf, "and keeps its other settings")
-    code, p = call("GET", f"/v1/projects/{PARENT}")
-    code, b = call("GET", f"/v1/projects/{dbr['project_ref']}")
-    check(code == 200, f"the data branch is a project ({code})")
+    # GET /v1/projects/{branchRef} answers 404 like hosted (lifecycle.sh checks that), so the branch is read where hosted
+    # reads it: GET /v1/branches/{id} gives the branch project's own ref, status and database address.
+    end, code, b = time.time() + 60, 0, {}
+    while time.time() < end:
+        code, b = call("GET", f"/v1/branches/{dbr['id']}")
+        if code == 200 and b.get("status") == "ACTIVE_HEALTHY":
+            break
+        time.sleep(2)
+    b = b if isinstance(b, dict) else {}
+    check(code == 200 and b.get("ref") == dbr["project_ref"] and b.get("status") == "ACTIVE_HEALTHY" and b.get("db_host") and b.get("db_port"),
+          f"the data branch is a branch with a project of its own that is up ({code} {b.get('ref')} {b.get('status')})")
 for q in ("alter system reset work_mem", "alter system reset statement_timeout", "select pg_reload_conf()"):
     psql(ADMIN_DSN, q)
 
