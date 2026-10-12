@@ -1,0 +1,1119 @@
+{
+ "_comment": "Read by internal/api/studio_calls_test.go (the static gate) and by tests/linux/crawl (the runtime crawl). stubs: Studio calls that only a spec-derived stub answers (reach crawl: the crawl must see it; static: it is not reachable by the crawl). statuses: honest 4xx/5xx answers of handlers, by route and status. dom: page texts the crawl's oracles would flag. An entry needs a reason; an entry that no longer applies fails the run, so the lists only shrink.",
+ "stubs": [
+  {
+   "op": "POST /platform/auth/{ref}/templates/{template}/reset",
+   "reach": "static",
+   "reason": "The deadends lane of v0.4.0 adds a handler (template reset, Remove MFA factors); the entry goes with it."
+  },
+  {
+   "op": "DELETE /platform/auth/{ref}/users/{id}/factors",
+   "reach": "static",
+   "reason": "The deadends lane of v0.4.0 adds a handler (template reset, Remove MFA factors); the entry goes with it."
+  },
+  {
+   "op": "POST /platform/auth/{ref}/validate/spam",
+   "reach": "static",
+   "reason": "The node has no email spam-rule engine; the stub's empty rule list says that no rule matched, which is true here."
+  },
+  {
+   "op": "GET /platform/cloud-marketplace/buyers/{buyer_id}/contract-linking-eligibility",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "GET /platform/cloud-marketplace/buyers/{buyer_id}/onboarding-info",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "POST /platform/database/{ref}/backups/download",
+   "reach": "static",
+   "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/database/{ref}/backups/downloadable-backups",
+   "reach": "static",
+   "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
+  },
+  {
+   "op": "POST /platform/database/{ref}/backups/enable-physical-backups",
+   "reach": "static",
+   "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/database/{ref}/clone",
+   "reach": "static",
+   "reason": "Restore to a new project has no handler yet: the deadends lane of v0.4.0 adds it, and the entry goes with it. database:restore_to_new_project hides the page until then."
+  },
+  {
+   "op": "POST /platform/database/{ref}/clone",
+   "reach": "static",
+   "reason": "Restore to a new project has no handler yet: the deadends lane of v0.4.0 adds it, and the entry goes with it. database:restore_to_new_project hides the page until then."
+  },
+  {
+   "op": "GET /platform/database/{ref}/clone/status",
+   "reach": "static",
+   "reason": "Restore to a new project has no handler yet: the deadends lane of v0.4.0 adds it, and the entry goes with it. database:restore_to_new_project hides the page until then."
+  },
+  {
+   "op": "POST /platform/feedback/conversations/escalation",
+   "reach": "static",
+   "reason": "Studio's support widget talks to Supabase's help desk; a node has none, and the widget is not shown when billing is off."
+  },
+  {
+   "op": "POST /platform/feedback/conversations/messages",
+   "reach": "static",
+   "reason": "Studio's support widget talks to Supabase's help desk; a node has none, and the widget is not shown when billing is off."
+  },
+  {
+   "op": "POST /platform/feedback/conversations/resolve",
+   "reach": "static",
+   "reason": "Studio's support widget talks to Supabase's help desk; a node has none, and the widget is not shown when billing is off."
+  },
+  {
+   "op": "PATCH /platform/feedback/conversations/{conversation_id}/custom-fields",
+   "reach": "static",
+   "reason": "Studio's support widget talks to Supabase's help desk; a node has none, and the widget is not shown when billing is off."
+  },
+  {
+   "op": "POST /platform/feedback/downgrade",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "POST /platform/feedback/upgrade",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/integrations",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "DELETE /platform/integrations/github/authorization",
+   "reach": "static",
+   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/integrations/github/authorization",
+   "reach": "static",
+   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "POST /platform/integrations/github/authorization",
+   "reach": "static",
+   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/integrations/github/connections",
+   "reach": "static",
+   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "POST /platform/integrations/github/connections",
+   "reach": "static",
+   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "DELETE /platform/integrations/github/connections/{connection_id}",
+   "reach": "static",
+   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "PATCH /platform/integrations/github/connections/{connection_id}",
+   "reach": "static",
+   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/integrations/github/connections/{connection_id}/config",
+   "reach": "static",
+   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/integrations/github/repositories",
+   "reach": "static",
+   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/integrations/github/repositories/{repository_id}/branches/{branch_name}",
+   "reach": "static",
+   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/integrations/partners/{ref}",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "POST /platform/integrations/partners/{ref}/{listing_slug}",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "POST /platform/integrations/vercel",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "POST /platform/integrations/vercel/connections",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "DELETE /platform/integrations/vercel/connections/{connection_id}",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "PATCH /platform/integrations/vercel/connections/{connection_id}",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "POST /platform/integrations/vercel/connections/{connection_id}/sync-envs",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "GET /platform/integrations/vercel/projects/{organization_integration_id}",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "GET /platform/integrations/{slug}",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "* /platform/mcp",
+   "reach": "static",
+   "reason": "A path prefix that Studio builds other URLs from (the MCP URL builder, pg-meta routes); it is never requested as it stands."
+  },
+  {
+   "op": "GET /platform/mcp-tools-permissions",
+   "reach": "static",
+   "reason": "Scoped access tokens have no handler: the account page lists none, which is true. Personal access tokens and OAuth are the node's credentials."
+  },
+  {
+   "op": "GET /platform/notifications",
+   "reach": "static",
+   "reason": "Studio's notification panel asks when it is opened; a node has no notifications, and the stub's empty answer says so."
+  },
+  {
+   "op": "PATCH /platform/notifications",
+   "reach": "static",
+   "reason": "Studio's notification panel asks on every page; a node has no notifications, and the stub's empty answer says so."
+  },
+  {
+   "op": "POST /platform/organizations/cloud-marketplace",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "POST /platform/organizations/confirm-subscription",
+   "reach": "static",
+   "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
+  },
+  {
+   "op": "POST /platform/organizations/preview-creation",
+   "reach": "static",
+   "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/analytics/audit-log-drains",
+   "reach": "static",
+   "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/analytics/audit-log-drains",
+   "reach": "static",
+   "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
+  },
+  {
+   "op": "DELETE /platform/organizations/{slug}/analytics/audit-log-drains/{token}",
+   "reach": "static",
+   "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
+  },
+  {
+   "op": "PUT /platform/organizations/{slug}/analytics/audit-log-drains/{token}",
+   "reach": "static",
+   "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/analytics/audit-log-drains/{token}/test",
+   "reach": "static",
+   "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/apps",
+   "reach": "static",
+   "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/apps",
+   "reach": "static",
+   "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/apps/installations",
+   "reach": "static",
+   "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/apps/installations",
+   "reach": "static",
+   "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
+  },
+  {
+   "op": "DELETE /platform/organizations/{slug}/apps/installations/{installation_id}",
+   "reach": "static",
+   "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
+  },
+  {
+   "op": "DELETE /platform/organizations/{slug}/apps/{app_id}",
+   "reach": "static",
+   "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/apps/{app_id}/signing-keys",
+   "reach": "static",
+   "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/audit",
+   "reach": "static",
+   "reason": "Audit logs have no handler yet: the deadends lane of v0.4.0 records and lists them, and the entry goes with it."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/available-versions",
+   "reach": "static",
+   "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/billing/credits/balance",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/billing/credits/preview",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/billing/credits/redeem",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/billing/credits/top-up",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/billing/invoices",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "HEAD /platform/organizations/{slug}/billing/invoices",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/billing/invoices/upcoming",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/billing/invoices/{invoice_id}",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/billing/invoices/{invoice_id}/payment-link",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/billing/invoices/{invoice_id}/receipt",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/billing/plans",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "PUT /platform/organizations/{slug}/billing/subscription",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/billing/subscription/confirm",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/billing/subscription/preview",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/billing/upgrade-request",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "PUT /platform/organizations/{slug}/cloud-marketplace/link",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/cloud-marketplace/redirect",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/customer",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "PUT /platform/organizations/{slug}/customer",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/documents/iso27001-certificate",
+   "reach": "static",
+   "reason": "Legal documents (SOC 2 report, ISO certificate) are hosted compliance downloads; the deadends lane of v0.4.0 hides the page with organization:show_legal_documents, so nothing calls these."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/documents/soc2-type-2-report",
+   "reach": "static",
+   "reason": "Legal documents (SOC 2 report, ISO certificate) are hosted compliance downloads; the deadends lane of v0.4.0 hides the page with organization:show_legal_documents, so nothing calls these."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/documents/standard-security-questionnaire",
+   "reach": "static",
+   "reason": "Legal documents (SOC 2 report, ISO certificate) are hosted compliance downloads; the deadends lane of v0.4.0 hides the page with organization:show_legal_documents, so nothing calls these."
+  },
+  {
+   "op": "DELETE /platform/organizations/{slug}/payments",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/payments",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "PUT /platform/organizations/{slug}/payments/default",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "POST /platform/organizations/{slug}/payments/setup-intent",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/tax-ids",
+   "reach": "static",
+   "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/usage",
+   "reach": "static",
+   "reason": "Organization usage is a billing page; the deadends lane of v0.4.0 decides whether it is reachable, and the entry goes with that decision."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/usage/daily",
+   "reach": "static",
+   "reason": "Organization usage is a billing page; the deadends lane of v0.4.0 decides whether it is reachable, and the entry goes with that decision."
+  },
+  {
+   "op": "* /platform/pg-meta",
+   "reach": "static",
+   "reason": "A path prefix that Studio builds other URLs from (the MCP URL builder, pg-meta routes); it is never requested as it stands."
+  },
+  {
+   "op": "* /platform/platform",
+   "reach": "static",
+   "reason": "A path prefix that Studio builds other URLs from (the MCP URL builder, pg-meta routes); it is never requested as it stands."
+  },
+  {
+   "op": "GET /platform/profile/audit",
+   "reach": "static",
+   "reason": "Audit logs have no handler yet: the deadends lane of v0.4.0 records and lists them, and the entry goes with it."
+  },
+  {
+   "op": "POST /platform/profile/audit-login",
+   "reach": "crawl",
+   "reason": "Audit logs have no handler yet: the deadends lane of v0.4.0 records and lists them, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/profile/scoped-access-tokens",
+   "reach": "static",
+   "reason": "Scoped access tokens have no handler: the account page lists none, which is true. Personal access tokens and OAuth are the node's credentials."
+  },
+  {
+   "op": "POST /platform/profile/scoped-access-tokens",
+   "reach": "static",
+   "reason": "Scoped access tokens have no handler: the account page lists none, which is true. Personal access tokens and OAuth are the node's credentials."
+  },
+  {
+   "op": "DELETE /platform/profile/scoped-access-tokens/{id}",
+   "reach": "static",
+   "reason": "Scoped access tokens have no handler: the account page lists none, which is true. Personal access tokens and OAuth are the node's credentials."
+  },
+  {
+   "op": "GET /platform/profile/scoped-access-tokens/{id}",
+   "reach": "static",
+   "reason": "Scoped access tokens have no handler: the account page lists none, which is true. Personal access tokens and OAuth are the node's credentials."
+  },
+  {
+   "op": "* /platform/projects/{projectRef}/api/graphql",
+   "reach": "static",
+   "reason": "The Data API docs call the project's REST and GraphQL endpoints through the Management API; the deadends lane of v0.4.0 adds the handlers, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/projects/{projectRef}/ha-admin/v1/gateways",
+   "reach": "static",
+   "reason": "The high-availability admin API is hosted infrastructure; project_creation:show_high_availability hides its pages."
+  },
+  {
+   "op": "GET /platform/projects/{projectRef}/ha-admin/v1/poolers",
+   "reach": "static",
+   "reason": "The high-availability admin API is hosted infrastructure; project_creation:show_high_availability hides its pages."
+  },
+  {
+   "op": "GET /platform/projects/{ref}/analytics/log-drains",
+   "reach": "static",
+   "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
+  },
+  {
+   "op": "POST /platform/projects/{ref}/analytics/log-drains",
+   "reach": "static",
+   "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
+  },
+  {
+   "op": "DELETE /platform/projects/{ref}/analytics/log-drains/{token}",
+   "reach": "static",
+   "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
+  },
+  {
+   "op": "PUT /platform/projects/{ref}/analytics/log-drains/{token}",
+   "reach": "static",
+   "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
+  },
+  {
+   "op": "POST /platform/projects/{ref}/analytics/log-drains/{token}/test",
+   "reach": "static",
+   "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
+  },
+  {
+   "op": "GET /platform/projects/{ref}/api/rest",
+   "reach": "static",
+   "reason": "The Data API docs call the project's REST and GraphQL endpoints through the Management API; the deadends lane of v0.4.0 adds the handlers, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/projects/{ref}/daily-stats",
+   "reach": "static",
+   "reason": "The Reports pages read daily stats; the deadends lane of v0.4.0 answers from the metrics store, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/projects/{ref}/pause/status",
+   "reach": "static",
+   "reason": "The lifecycle lane of v0.4.0 adds the pause status handler (can_restore for any paused project); the entry goes with it."
+  },
+  {
+   "op": "GET /platform/projects/{ref}/privatelink/associations",
+   "reach": "static",
+   "reason": "AWS PrivateLink is hosted infrastructure: profile.disabled_features holds integrations:aws_private_link."
+  },
+  {
+   "op": "POST /platform/projects/{ref}/privatelink/associations/aws-account",
+   "reach": "static",
+   "reason": "AWS PrivateLink is hosted infrastructure: profile.disabled_features holds integrations:aws_private_link."
+  },
+  {
+   "op": "DELETE /platform/projects/{ref}/privatelink/associations/aws-account/{aws_account_id}",
+   "reach": "static",
+   "reason": "AWS PrivateLink is hosted infrastructure: profile.disabled_features holds integrations:aws_private_link."
+  },
+  {
+   "op": "DELETE /platform/projects/{ref}/privatelink/associations/aws-account/{aws_account_id}/database/{database_identifier}",
+   "reach": "static",
+   "reason": "AWS PrivateLink is hosted infrastructure: profile.disabled_features holds integrations:aws_private_link."
+  },
+  {
+   "op": "GET /platform/projects/{ref}/resources/{id}",
+   "reach": "static",
+   "reason": "A hosted project-lifecycle call that no page of this node reaches (no hibernation, transfer or marketplace resources); the stub's empty answer is what a project without them reports."
+  },
+  {
+   "op": "PATCH /platform/projects/{ref}/resources/{id}",
+   "reach": "static",
+   "reason": "A hosted project-lifecycle call that no page of this node reaches (no hibernation, transfer or marketplace resources); the stub's empty answer is what a project without them reports."
+  },
+  {
+   "op": "GET /platform/projects/{ref}/restore/versions",
+   "reach": "static",
+   "reason": "A hosted project-lifecycle call that no page of this node reaches (no hibernation, transfer or marketplace resources); the stub's empty answer is what a project without them reports."
+  },
+  {
+   "op": "PATCH /platform/projects/{ref}/settings/sensitivity",
+   "reach": "static",
+   "reason": "A hosted project-lifecycle call that no page of this node reaches (no hibernation, transfer or marketplace resources); the stub's empty answer is what a project without them reports."
+  },
+  {
+   "op": "POST /platform/projects/{ref}/transfer",
+   "reach": "static",
+   "reason": "A hosted project-lifecycle call that no page of this node reaches (no hibernation, transfer or marketplace resources); the stub's empty answer is what a project without them reports."
+  },
+  {
+   "op": "POST /platform/projects/{ref}/transfer/preview",
+   "reach": "static",
+   "reason": "A hosted project-lifecycle call that no page of this node reaches (no hibernation, transfer or marketplace resources); the stub's empty answer is what a project without them reports."
+  },
+  {
+   "op": "POST /platform/projects/{ref}/wake",
+   "reach": "static",
+   "reason": "A hosted project-lifecycle call that no page of this node reaches (no hibernation, transfer or marketplace resources); the stub's empty answer is what a project without them reports."
+  },
+  {
+   "op": "GET /platform/replication/v2/{ref}/sources/{source_id}/publications",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "DELETE /platform/replication/v2/{ref}/sources/{source_id}/publications/{publication_name}",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/v2/{ref}/sources/{source_id}/publications/{publication_name}",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "PUT /platform/replication/v2/{ref}/sources/{source_id}/publications/{publication_name}",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/v2/{ref}/sources/{source_id}/tables",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/v2/{ref}/sources/{source_id}/tables/{table_id}/columns",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/{ref}/destinations",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/replication/{ref}/destinations-pipelines",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "DELETE /platform/replication/{ref}/destinations-pipelines/{destination_id}/{pipeline_id}",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/replication/{ref}/destinations-pipelines/{destination_id}/{pipeline_id}",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/replication/{ref}/destinations/validate",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/{ref}/destinations/{destination_id}",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/{ref}/pipelines",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/replication/{ref}/pipelines/validate",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/{ref}/pipelines/{pipeline_id}",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/{ref}/pipelines/{pipeline_id}/replication-status",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/replication/{ref}/pipelines/{pipeline_id}/restart",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/replication/{ref}/pipelines/{pipeline_id}/rollback-tables",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/replication/{ref}/pipelines/{pipeline_id}/start",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/{ref}/pipelines/{pipeline_id}/status",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/replication/{ref}/pipelines/{pipeline_id}/stop",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/{ref}/pipelines/{pipeline_id}/version",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/replication/{ref}/pipelines/{pipeline_id}/version",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/{ref}/sources",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "GET /platform/replication/{ref}/sources/{source_id}/publications/{publication_name}/cost-estimate",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "DELETE /platform/replication/{ref}/tenants",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/replication/{ref}/tenants-sources",
+   "reach": "static",
+   "reason": "Replication (ETL pipelines) is a hosted add-on: profile.disabled_features holds database:replication, so Studio does not show its pages."
+  },
+  {
+   "op": "POST /platform/reset-password",
+   "reach": "static",
+   "reason": "Sign-up, password reset and e-mail change go through GoTrue on a node; these hosted-platform calls are only made by hosted sign-in pages that the Supavise build replaces."
+  },
+  {
+   "op": "POST /platform/signup",
+   "reach": "static",
+   "reason": "Sign-up, password reset and e-mail change go through GoTrue on a node; these hosted-platform calls are only made by hosted sign-in pages that the Supavise build replaces."
+  },
+  {
+   "op": "GET /platform/storage/{ref}/analytics-buckets",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "POST /platform/storage/{ref}/analytics-buckets",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "DELETE /platform/storage/{ref}/analytics-buckets/{id}",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "GET /platform/storage/{ref}/analytics-buckets/{id}/namespaces",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "POST /platform/storage/{ref}/analytics-buckets/{id}/namespaces",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "DELETE /platform/storage/{ref}/analytics-buckets/{id}/namespaces/{namespace}",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "GET /platform/storage/{ref}/analytics-buckets/{id}/namespaces/{namespace}/tables",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "POST /platform/storage/{ref}/analytics-buckets/{id}/namespaces/{namespace}/tables",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "DELETE /platform/storage/{ref}/analytics-buckets/{id}/namespaces/{namespace}/tables/{table}",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "GET /platform/storage/{ref}/archive",
+   "reach": "static",
+   "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
+  },
+  {
+   "op": "POST /platform/storage/{ref}/archive",
+   "reach": "static",
+   "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
+  },
+  {
+   "op": "GET /platform/storage/{ref}/vector-buckets",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "POST /platform/storage/{ref}/vector-buckets",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "DELETE /platform/storage/{ref}/vector-buckets/{id}",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "GET /platform/storage/{ref}/vector-buckets/{id}",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "GET /platform/storage/{ref}/vector-buckets/{id}/indexes",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "POST /platform/storage/{ref}/vector-buckets/{id}/indexes",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "DELETE /platform/storage/{ref}/vector-buckets/{id}/indexes/{indexName}",
+   "reach": "static",
+   "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
+  },
+  {
+   "op": "POST /platform/stripe/atlas/application",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "POST /platform/stripe/atlas/application/complete",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "GET /platform/stripe/invoices/overdue",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "GET /platform/stripe/projects/provisioning/account_requests/{id}",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "POST /platform/stripe/projects/provisioning/account_requests/{id}/confirm",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "POST /platform/stripe/setup-intent",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "POST /platform/telemetry/feature-flags/track",
+   "reach": "static",
+   "reason": "Telemetry is off (NEXT_PUBLIC_ENVIRONMENT=prod without consent), so Studio does not send these; the stub only keeps a stray call from failing."
+  },
+  {
+   "op": "POST /platform/telemetry/reset",
+   "reach": "static",
+   "reason": "Telemetry is off (NEXT_PUBLIC_ENVIRONMENT=prod without consent), so Studio does not send these; the stub only keeps a stray call from failing."
+  },
+  {
+   "op": "PUT /platform/update-email",
+   "reach": "static",
+   "reason": "Sign-up, password reset and e-mail change go through GoTrue on a node; these hosted-platform calls are only made by hosted sign-in pages that the Supavise build replaces."
+  },
+  {
+   "op": "GET /platform/vercel/redirect/{installation_id}",
+   "reach": "static",
+   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+  },
+  {
+   "op": "GET /platform/warehouse/{ref}/catalog",
+   "reach": "static",
+   "reason": "The warehouse (analytics catalog) is a hosted feature; no page of this node links to it."
+  },
+  {
+   "op": "POST /platform/warehouse/{ref}/catalog",
+   "reach": "static",
+   "reason": "The warehouse (analytics catalog) is a hosted feature; no page of this node links to it."
+  },
+  {
+   "op": "POST /platform/warehouse/{ref}/setup",
+   "reach": "static",
+   "reason": "The warehouse (analytics catalog) is a hosted feature; no page of this node links to it."
+  },
+  {
+   "op": "GET /platform/warehouse/{ref}/setup-status",
+   "reach": "static",
+   "reason": "The warehouse (analytics catalog) is a hosted feature; no page of this node links to it."
+  },
+  {
+   "op": "GET /v1/organizations/{slug}/project-claim/{token}",
+   "reach": "static",
+   "reason": "Project claims are a hosted marketplace flow; no page of a node links to them."
+  },
+  {
+   "op": "POST /v1/organizations/{slug}/project-claim/{token}",
+   "reach": "static",
+   "reason": "Project claims are a hosted marketplace flow; no page of a node links to them."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/actions",
+   "reach": "static",
+   "reason": "Action runs have no handler yet: the runs lane of v0.4.0 (internal/api/actions.go) replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/actions/{run_id}",
+   "reach": "static",
+   "reason": "Action runs have no handler yet: the runs lane of v0.4.0 (internal/api/actions.go) replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/actions/{run_id}/logs",
+   "reach": "static",
+   "reason": "Action runs have no handler yet: the runs lane of v0.4.0 (internal/api/actions.go) replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/config/auth/signing-keys",
+   "reach": "static",
+   "reason": "Read-only mode, the signing key list and compute changes are answered with the empty state of a project that has none; Supavise signs with the legacy secret only (docs/reference/studio-platform-calls.md)."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/config/auth/third-party-auth",
+   "reach": "static",
+   "reason": "Read-only mode, the signing key list and compute changes are answered with the empty state of a project that has none; Supavise signs with the legacy secret only (docs/reference/studio-platform-calls.md)."
+  },
+  {
+   "op": "PUT /v1/projects/{ref}/database/jit",
+   "reach": "static",
+   "reason": "Just-in-time database access is a hosted feature; the stub answers the disabled state, and the pages that read it show it as off."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/database/jit/list",
+   "reach": "static",
+   "reason": "Just-in-time database access is a hosted feature; the stub answers the disabled state, and the pages that read it show it as off."
+  },
+  {
+   "op": "DELETE /v1/projects/{ref}/database/jit/{user_id}",
+   "reach": "static",
+   "reason": "Just-in-time database access is a hosted feature; the stub answers the disabled state, and the pages that read it show it as off."
+  },
+  {
+   "op": "PUT /v1/projects/{ref}/database/migrations",
+   "reach": "static",
+   "reason": "The dashboard merge records its diff migration here; the content lane of v0.4.0 replaces this stub, and the entry goes with it."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/jit-access",
+   "reach": "static",
+   "reason": "Just-in-time database access is a hosted feature; the stub answers the disabled state, and the pages that read it show it as off."
+  },
+  {
+   "op": "PUT /v1/projects/{ref}/jit-access",
+   "reach": "static",
+   "reason": "Just-in-time database access is a hosted feature; the stub answers the disabled state, and the pages that read it show it as off."
+  },
+  {
+   "op": "DELETE /v1/projects/{ref}/network-bans",
+   "reach": "static",
+   "reason": "Network restrictions are enforced by hosted infrastructure: profile.disabled_features holds database:network_restrictions."
+  },
+  {
+   "op": "POST /v1/projects/{ref}/network-bans/retrieve",
+   "reach": "static",
+   "reason": "Network restrictions are enforced by hosted infrastructure: profile.disabled_features holds database:network_restrictions."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/network-restrictions",
+   "reach": "static",
+   "reason": "Network restrictions are enforced by hosted infrastructure: profile.disabled_features holds database:network_restrictions."
+  },
+  {
+   "op": "POST /v1/projects/{ref}/network-restrictions/apply",
+   "reach": "static",
+   "reason": "Network restrictions are enforced by hosted infrastructure: profile.disabled_features holds database:network_restrictions."
+  },
+  {
+   "op": "POST /v1/projects/{ref}/readonly/temporary-disable",
+   "reach": "static",
+   "reason": "Read-only mode, the signing key list and compute changes are answered with the empty state of a project that has none; Supavise signs with the legacy secret only (docs/reference/studio-platform-calls.md)."
+  },
+  {
+   "op": "GET /v2/projects/{ref}/compute",
+   "reach": "static",
+   "reason": "Read-only mode, the signing key list and compute changes are answered with the empty state of a project that has none; Supavise signs with the legacy secret only (docs/reference/studio-platform-calls.md)."
+  },
+  {
+   "op": "GET /v2/projects/{ref}/compute/{name}",
+   "reach": "static",
+   "reason": "Read-only mode, the signing key list and compute changes are answered with the empty state of a project that has none; Supavise signs with the legacy secret only (docs/reference/studio-platform-calls.md)."
+  }
+ ],
+ "statuses": [
+  {
+   "op": "POST /platform/feedback/send",
+   "status": 400,
+   "reach": "static",
+   "reason": "The dashboard's Feedback button would send the message nowhere; the refusal points to the issue tracker."
+  },
+  {
+   "op": "GET /platform/projects/{ref}/analytics/endpoints/auth.metrics",
+   "status": 400,
+   "reach": "crawl",
+   "reason": "The Auth overview's usage numbers come from logs, which a node does not keep; Studio shows its error alert and the message names supavise logs."
+  },
+  {
+   "op": "GET /platform/telemetry/feature-flags",
+   "status": 401,
+   "reach": "crawl",
+   "reason": "Studio asks for the feature flags before the session exists, on the sign-in page; the call is repeated once the session is there."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/actions/{run_id}",
+   "status": 404,
+   "reach": "static",
+   "reason": "A run is owned by one ref: the branch for a create, a push and a reset, the parent for a merge. Studio polls a run under both refs and stops on the 404 of the one that does not own it, as it does on hosted."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/actions/{run_id}/logs",
+   "status": 404,
+   "reach": "static",
+   "reason": "The log of a run answers under the ref that owns the run only; Studio asks both refs, as on hosted."
+  },
+  {
+   "op": "POST /v1/projects/{ref}/config/auth/signing-keys",
+   "status": 501,
+   "reach": "static",
+   "reason": "GoTrue here signs with the legacy secret only; the buttons that create a key answer a refusal that Studio shows as a toast."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/config/auth/signing-keys/legacy",
+   "status": 404,
+   "reach": "crawl",
+   "reason": "The legacy secret is not migrated to a signing key, as on a hosted project that has not migrated; Studio then offers Change legacy JWT secret."
+  },
+  {
+   "op": "POST /v1/projects/{ref}/config/auth/signing-keys/legacy",
+   "status": 501,
+   "reach": "static",
+   "reason": "Migrating the legacy secret to a signing key is not supported; the dialog shows the refusal."
+  },
+  {
+   "op": "DELETE /v1/projects/{ref}/config/auth/signing-keys/{id}",
+   "status": 501,
+   "reach": "static",
+   "reason": "No signing key exists to delete; the page lists none."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/config/auth/signing-keys/{id}",
+   "status": 404,
+   "reach": "static",
+   "reason": "A signing key has no id here (HS256 with the legacy secret only); the JWT keys page lists none, so it never asks for one."
+  },
+  {
+   "op": "PATCH /v1/projects/{ref}/config/auth/signing-keys/{id}",
+   "status": 501,
+   "reach": "static",
+   "reason": "No signing key exists to rotate or revoke; the page lists none."
+  },
+  {
+   "op": "POST /v1/projects/{ref}/config/auth/third-party-auth",
+   "status": 400,
+   "reach": "static",
+   "reason": "The services of a node accept the project's own JWTs only; the add dialog shows the reason in its error toast."
+  },
+  {
+   "op": "DELETE /v1/projects/{ref}/config/auth/third-party-auth/{tpa_id}",
+   "status": 404,
+   "reach": "static",
+   "reason": "The list is empty, so no integration has an id to delete."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/config/auth/third-party-auth/{tpa_id}",
+   "status": 404,
+   "reach": "static",
+   "reason": "The list is empty, so no integration has an id to read."
+  },
+  {
+   "op": "GET /v1/projects/{ref}/ssl-enforcement",
+   "status": 400,
+   "reach": "crawl",
+   "reason": "Database settings reads it and shows the switch disabled with \"Your project does not have access to SSL enforcement\"; Studio matches the message text."
+  },
+  {
+   "op": "PUT /v1/projects/{ref}/ssl-enforcement",
+   "status": 400,
+   "reach": "static",
+   "reason": "The switch is disabled, so Studio never sends the update; the refusal is for API clients."
+  }
+ ],
+ "dom": [
+  {
+   "route": "/project/[ref]/logs/*",
+   "text": "Error fetching",
+   "reach": "static",
+   "reason": "A node keeps no log store, so a log page shows the explicit error that points to `supavise logs`, which reads the journal; a stub that answered with an empty table would read as \"no errors\"."
+  },
+  {
+   "route": "/project/[ref]/functions/[functionSlug]/logs",
+   "text": "Error fetching",
+   "reach": "static",
+   "reason": "The function's log page is a log query, which a node answers with the explicit error that points to `supavise logs`."
+  },
+  {
+   "route": "/project/[ref]/functions/[functionSlug]/invocations",
+   "text": "Error fetching",
+   "reach": "static",
+   "reason": "The invocations list is a log query, which a node answers with the explicit error that points to `supavise logs`."
+  },
+  {
+   "route": "/project/[ref]/auth/audit-logs",
+   "text": "Error fetching",
+   "reach": "static",
+   "reason": "The Auth audit log page is a log query, which a node answers with the explicit error that points to `supavise logs`."
+  }
+ ]
+}

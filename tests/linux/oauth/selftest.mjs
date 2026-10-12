@@ -36,7 +36,7 @@ writeFileSync(
     owner_pat: node.pat,
     password: "walk-password-" + Date.now(),
     cli: [process.execPath, join(here, "fake-cli.mjs")],
-    stdio: { smoke: join(here, "stdio-probe.mjs"), roles: join(here, "stdio-probe.mjs") },
+    stdio: { smoke: join(here, "stdio-probe.mjs"), roles: join(here, "stdio-probe.mjs"), branches: join(here, "stdio-probe.mjs") },
     mcp,
   }),
   { mode: 0o600 },

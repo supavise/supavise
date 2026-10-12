@@ -25,9 +25,10 @@ log() { printf '%s cli: %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 bad() { log "FAIL: $*"; FAILS=$((FAILS + 1)); }
 
 # cli ARGS...: the CLI in the project directory with the node's profile and the token in the
-# environment (never in argv). The keyring and telemetry are off; there is no terminal.
+# environment (never in argv). The keyring and telemetry are off; there is no terminal. The CLI uses
+# SUPABASE_DB_PASSWORD as given, so a step on a branch sets CLI_DBPASS to the branch's own password.
 cli() {
-  (cd "$PROJ" && env HOME="$WORK/cli-home" SUPABASE_ACCESS_TOKEN="$PAT" SUPABASE_DB_PASSWORD="$DBPASS" \
+  (cd "$PROJ" && env HOME="$WORK/cli-home" SUPABASE_ACCESS_TOKEN="$PAT" SUPABASE_DB_PASSWORD="${CLI_DBPASS:-$DBPASS}" \
     SUPABASE_NO_KEYRING=1 DO_NOT_TRACK=1 SUPABASE_DISABLE_UPDATE_CHECK=1 \
     "$SUPABASE_CLI" --profile "$PROFILE" "$@" </dev/null)
 }
@@ -55,9 +56,10 @@ mapi() { # METHOD PATH [curl args]: the Management API
   local m=$1 p=$2; shift 2
   curl -sS -m 60 -X "$m" -H "Authorization: Bearer $PAT" -H 'Content-Type: application/json' "$@" "$API_URL$p"
 }
-query() { # SQL: rows as JSON through database/query
-  mapi POST "/v1/projects/$REF/database/query" -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$1")"
+query_on() { # REF SQL: rows as JSON through database/query
+  mapi POST "/v1/projects/$1/database/query" -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$2")"
 }
+query() { query_on "$REF" "$1"; } # SQL: rows of the project
 
 step version --version && has "$LAST" "${SUPABASE_CLI_VERSION:-.}" "the CLI is not the pinned version"
 
@@ -177,6 +179,167 @@ step functions-delete functions delete "$SLUG" --project-ref "$REF" --yes
 step secrets-unset secrets unset CONF_CLI_SECRET --yes
 step secrets-list-after secrets list
 if grep -qF CONF_CLI_SECRET "$LAST"; then bad "secrets unset left the secret in the list"; fi
+
+# ---- branches ------------------------------------------------------------------------------------------------------
+# The branches commands of the CLI (create, list, get -o env, update, pause, unpause, delete, disable), `link <branch name>`
+# (which keeps the PARENT cached, so that `branches` still works afterwards), and the commands that take a branch's own
+# ref: db push (through the pooler, after linking the branch), functions deploy, secrets set and config push with a
+# [remotes] block. The branch is created after the migration above, so it replays that history.
+BR=clibr
+BR2=clibr2
+jpy() { python3 -c 'import json,sys; d=json.load(sys.stdin); print('"$1"')'; } # a Python expression over the JSON on stdin
+# cli_quiet ARGS...: the CLI with its output kept in $QUIET and never on disk (a branch's environment holds its database
+# password and JWT secret, and the log directory is uploaded).
+cli_quiet() {
+  N=$((N + 1))
+  log "supabase $*"
+  if ! QUIET=$(cli "$@" 2>&1); then bad "supabase ${*:1:3} exited non-zero"; QUIET=""; return 1; fi
+}
+# branch_ready NAME: waits for the branch's create to finish and its project to run; sets BID and BREF.
+branch_ready() {
+  local name=$1 j st="" i
+  for ((i = 0; i < 180; i++)); do
+    j=$(mapi GET "/v1/projects/$REF/branches/$name" 2>/dev/null || true)
+    st=$(jpy 'd["status"]' <<<"$j" 2>/dev/null || true)
+    [[ $st == FUNCTIONS_DEPLOYED ]] && break
+    [[ $st == *FAILED ]] && { bad "branch $name is $st"; return 1; }
+    sleep 3
+  done
+  [[ $st == FUNCTIONS_DEPLOYED ]] || { bad "branch $name did not finish its create (status '$st')"; return 1; }
+  BID=$(jpy 'd["id"]' <<<"$j")
+  BREF=$(jpy 'd["project_ref"]' <<<"$j")
+  for ((i = 0; i < 60; i++)); do
+    [[ $(mapi GET "/v1/branches/$BID" | jpy 'd["status"]' 2>/dev/null || true) == ACTIVE_HEALTHY ]] && return 0
+    sleep 2
+  done
+  bad "the project of branch $name does not run"
+  return 1
+}
+
+if step branches-create branches create "$BR" --project-ref "$REF" && branch_ready "$BR"; then
+  step branches-list branches list --project-ref "$REF" -o json && has "$LAST" "$BR" "branches list does not show the branch"
+  has "$LAST" "$BREF" "branches list does not show the branch's project ref"
+
+  # -o env needs the branch's api-keys and pooler config (the CLI reads both for the ref of the branch)
+  if cli_quiet branches get "$BR" --project-ref "$REF" -o env; then
+    for want in POSTGRES_URL= POSTGRES_URL_NON_POOLING= SUPABASE_URL= SUPABASE_JWT_SECRET= SUPABASE_ANON_KEY= SUPABASE_SERVICE_ROLE_KEY=; do
+      grep -qF -- "$want" <<<"$QUIET" || bad "branches get -o env has no $want"
+    done
+    grep -qF -- "$BREF" <<<"$QUIET" || bad "branches get -o env does not name the branch's project ref"
+    grep -qF -- "******" <<<"$QUIET" && bad "branches get -o env masks a value: the CLI got no password or JWT secret from the node"
+  fi
+  QUIET=""
+  if cli_quiet branches get "$BR" --project-ref "$REF"; then
+    grep -qF -- "$BREF" <<<"$QUIET" || true # the table has host, port, user, password and JWT secret; its shape is the CLI's
+  fi
+  QUIET=""
+
+  # persistent, a notify URL, and a rename back
+  step branches-update branches update "$BR" --persistent --notify-url "https://example.com/supavise-conformance" --project-ref "$REF"
+  upd=$(mapi GET "/v1/projects/$REF/branches/$BR")
+  [[ $(jpy 'd["persistent"]' <<<"$upd") == True ]] || bad "branches update --persistent did not persist: $upd"
+  [[ $(jpy 'd.get("notify_url")' <<<"$upd") == "https://example.com/supavise-conformance" ]] || bad "branches update --notify-url did not store the URL: $upd"
+  step branches-update-back branches update "$BR" --no-persistent --project-ref "$REF"
+  [[ $(mapi GET "/v1/projects/$REF/branches/$BR" | jpy 'd["persistent"]') == False ]] || bad "branches update --no-persistent did not clear persistent"
+
+  # pause and unpause: the CLI calls POST /v1/projects/{branch ref}/pause and /restore
+  step branches-pause branches pause "$BR" --project-ref "$REF"
+  inactive=0
+  for ((i = 0; i < 90; i++)); do
+    [[ $(mapi GET "/v1/branches/$BID" | jpy 'd["status"]' 2>/dev/null || true) == INACTIVE ]] && { inactive=1; break; }
+    sleep 2
+  done
+  [[ $inactive -eq 1 ]] || bad "branches pause did not pause the branch's project"
+  step branches-unpause branches unpause "$BR" --project-ref "$REF"
+  running=0
+  for ((i = 0; i < 120; i++)); do
+    [[ $(mapi GET "/v1/branches/$BID" | jpy 'd["status"]' 2>/dev/null || true) == ACTIVE_HEALTHY ]] && { running=1; break; }
+    sleep 2
+  done
+  [[ $running -eq 1 ]] || bad "branches unpause did not bring the branch's project back"
+
+  # Linking a branch by NAME: the branch's project becomes the linked ref, the parent stays cached (GET /v1/projects/{branch}
+  # answers 404, which the CLI takes as "this is a branch"), and `branches` still works without --project-ref.
+  # A branch has a database password of its own (the parent's does not open it): link and db push use it.
+  CLI_DBPASS=$(mapi GET "/v1/branches/$BID" | jpy 'd["db_pass"]' 2>/dev/null || true)
+  [[ -n $CLI_DBPASS && $CLI_DBPASS != None ]] || bad "GET /v1/branches/<id> returned no db_pass for the branch"
+  step link-branch link "$BR" --yes
+  [[ $(cat "$PROJ/supabase/.temp/project-ref" 2>/dev/null) == "$BREF" ]] || bad "link <branch> did not record the branch's project ref"
+  cached=$(cat "$PROJ/supabase/.temp/linked-project.json" 2>/dev/null || true)
+  [[ $cached == *"$REF"* && $cached != *"$BREF"* ]] || bad "link <branch> replaced the cached parent: $cached"
+  step branches-list-linked branches list -o json && has "$LAST" "$BR" "branches list after link <branch> does not list the branch (the parent is not cached)"
+
+  # db push to the linked branch, through the pooler: a migration only the branch has
+  step migration-new-branch migration new conf_branch_only
+  BMIG=$(ls "$PROJ"/supabase/migrations/*_conf_branch_only.sql 2>/dev/null | head -1)
+  if [[ -z $BMIG ]]; then bad "migration new wrote no file for the branch"; else
+    printf 'create table public.conf_branch_only (id int primary key);\n' >"$BMIG"
+    step db-push-branch db push --yes && has "$LAST" "Finished supabase db push" "db push to the branch did not finish"
+    present=$(query_on "$BREF" "select to_regclass('public.conf_branch_only') is not null as present")
+    [[ $present == *true* ]] || bad "the branch has no table from the pushed migration: $present"
+    onparent=$(query "select to_regclass('public.conf_branch_only') is not null as present")
+    [[ $onparent == *false* ]] || bad "db push to the branch reached the parent: $onparent"
+  fi
+  unset CLI_DBPASS
+
+  # functions deploy, secrets set and config push with a [remotes] block, each with the branch's own ref
+  BSLUG=cliconfbr
+  mkdir -p "$PROJ/supabase/functions/$BSLUG"
+  cat >"$PROJ/supabase/functions/$BSLUG/index.ts" <<'TS'
+Deno.serve(() => new Response(JSON.stringify({ from: 'cli-branch' }), { headers: { 'Content-Type': 'application/json' } }))
+TS
+  step functions-deploy-branch functions deploy "$BSLUG" --use-api --project-ref "$BREF"
+  step functions-list-branch functions list --project-ref "$BREF" && has "$LAST" "$BSLUG" "functions list does not show the function deployed to the branch"
+  step functions-list-parent functions list --project-ref "$REF"
+  if grep -qF "$BSLUG" "$LAST"; then bad "a function deployed to the branch is on the parent"; fi
+  step secrets-set-branch secrets set CONF_BRANCH_SECRET=branch-only --project-ref "$BREF"
+  step secrets-list-branch secrets list --project-ref "$BREF" && has "$LAST" "CONF_BRANCH_SECRET" "secrets list does not show the secret set on the branch"
+  step secrets-list-parent secrets list --project-ref "$REF"
+  if grep -qF CONF_BRANCH_SECRET "$LAST"; then bad "a secret set on the branch is on the parent"; fi
+
+  cp "$PROJ/supabase/config.toml" "$WORK/config.toml.orig"
+  cat >"$PROJ/supabase/config.toml" <<TOML
+project_id = "cli-conformance"
+
+[api]
+enabled = true
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+
+[remotes.$BR]
+project_id = "$BREF"
+
+[remotes.$BR.auth]
+site_url = "http://cli-branch.example.test"
+TOML
+  step config-push-branch config push --project-ref "$BREF" --yes
+  [[ $(mapi GET "/v1/projects/$BREF/config/auth" | jpy 'd.get("site_url")') == "http://cli-branch.example.test" ]] || bad "config push did not set the branch's site_url from its [remotes] block"
+  [[ $(mapi GET "/v1/projects/$REF/config/auth" | jpy 'd.get("site_url")') != "http://cli-branch.example.test" ]] || bad "config push to the branch changed the parent's site_url"
+  cp "$WORK/config.toml.orig" "$PROJ/supabase/config.toml"
+
+  # back to the parent, then delete the branch by name
+  step link-parent link --project-ref "$REF" --yes
+  step branches-delete branches delete "$BR" --project-ref "$REF" --yes
+  gone=0
+  for ((i = 0; i < 90; i++)); do
+    [[ $(mapi GET "/v1/projects/$REF/branches" | jpy 'any(b["name"] == "'"$BR"'" for b in d)' 2>/dev/null || true) == False ]] && { gone=1; break; }
+    sleep 2
+  done
+  [[ $gone -eq 1 ]] || bad "branches delete left the branch in the list"
+fi
+
+# `branches disable` removes every preview branch of the project (it is unlisted in the CLI's help)
+if step branches-create-2 branches create "$BR2" --project-ref "$REF" && branch_ready "$BR2"; then
+  step branches-disable branches disable --project-ref "$REF" --yes
+  gone=0
+  for ((i = 0; i < 90; i++)); do
+    [[ $(mapi GET "/v1/projects/$REF/branches" | jpy 'len([b for b in d if not b.get("is_default")])' 2>/dev/null || true) == 0 ]] && { gone=1; break; }
+    sleep 2
+  done
+  [[ $gone -eq 1 ]] || bad "branches disable left a preview branch"
+fi
 
 step unlink unlink --yes
 

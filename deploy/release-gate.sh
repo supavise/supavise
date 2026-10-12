@@ -14,9 +14,14 @@
 # whose name starts with it (any case) must exist and every such job must have succeeded. The
 # default list is the whole of ci.yml and linux.yml, the conformance suite (the job `suites` of
 # conformance.yml, both architectures), the upgrade test (the jobs of linux.yml named
-# `upgrade...`) and the two-server release test (the jobs `two-servers` of replication.yml). That
-# workflow runs on pushes to integrate/** (both architectures) and ws/** branches listed in it (amd64
-# only), not on main: dispatch it on the commit to tag, `gh workflow run replication.yml --ref <branch>`,
+# `upgrade...`), the two-server release test (the jobs `two-servers` of replication.yml), the
+# remote MCP end to end on the Studio build (the job `mcp-e2e` of studio.yml) and the Studio crawl
+# (the job `crawl` of studio-crawl.yml: every page of the dashboard against the real daemon, in a
+# browser). studio.yml and studio-crawl.yml run on every push to main (their `changes` job skips
+# only the parts a push did not touch), so the tagged commit has a run of both; if it has none, the
+# gate says so and `gh workflow run studio.yml --ref main` starts one. The two-server release test
+# does not run on main: its workflow runs on pushes to integrate/** (both architectures) and ws/** branches
+# listed in it (amd64 only). Dispatch it on the commit to tag, `gh workflow run replication.yml --ref <branch>`,
 # which runs both architectures. Rename the upgrade test's job and this gate fails closed, with a message that names
 # what it did not find: change the prefix here.
 #
@@ -30,7 +35,7 @@ set -euo pipefail
 sha=${1:-}
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "usage: $0 COMMIT_SHA (40 hex characters)" >&2; exit 2; }
 repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}
-required=${REQUIRED:-"ci.yml linux.yml conformance.yml:suites linux.yml:upgrade replication.yml:two-servers"}
+required=${REQUIRED:-"ci.yml linux.yml conformance.yml:suites linux.yml:upgrade replication.yml:two-servers studio.yml:mcp-e2e studio-crawl.yml:crawl"}
 timeout=${GATE_TIMEOUT_SECONDS:-10800}
 poll=${GATE_POLL_SECONDS:-60}
 grace=${GATE_GRACE_SECONDS:-300}

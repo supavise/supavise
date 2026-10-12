@@ -1,0 +1,9 @@
+{
+  "name": "supavise-studio-scan",
+  "private": true,
+  "type": "module",
+  "description": "The TypeScript parser that studio/scan-calls.mjs uses; install with `npm ci --prefix studio/scan`.",
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

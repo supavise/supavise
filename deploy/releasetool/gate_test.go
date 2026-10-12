@@ -101,6 +101,15 @@ func allGreen(t *testing.T, dir string) {
 	set(t, dir, p, b)
 	p, b = jobs(4, job("two-servers (amd64)", "success"), job("two-servers (arm64)", "success"))
 	set(t, dir, p, b)
+	// studio.yml (the job mcp-e2e among the Studio build's) and studio-crawl.yml (the job crawl among its checks)
+	p, b = runs("studio.yml", run(5, "completed", "success", "2026-10-07T01:00:00Z"))
+	set(t, dir, p, b)
+	p, b = jobs(5, job("changes", "success"), job("build (ubuntu-24.04, linux-amd64)", "skipped"), job("mcp-e2e", "success"))
+	set(t, dir, p, b)
+	p, b = runs("studio-crawl.yml", run(6, "completed", "success", "2026-10-07T01:00:00Z"))
+	set(t, dir, p, b)
+	p, b = jobs(6, job("changes", "success"), job("calls", "success"), job("selftest", "success"), job("crawl", "success"))
+	set(t, dir, p, b)
 }
 
 func TestGatePassesWhenEveryRequiredRunSucceeded(t *testing.T) {
@@ -111,7 +120,8 @@ func TestGatePassesWhenEveryRequiredRunSucceeded(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	if !strings.Contains(out, "2 job(s) of conformance.yml named suites*") || !strings.Contains(out, "2 job(s) of linux.yml named upgrade*") ||
-		!strings.Contains(out, "2 job(s) of replication.yml named two-servers*") {
+		!strings.Contains(out, "2 job(s) of replication.yml named two-servers*") || !strings.Contains(out, "1 job(s) of studio.yml named mcp-e2e*") ||
+		!strings.Contains(out, "1 job(s) of studio-crawl.yml named crawl*") {
 		t.Errorf("the gate should say which jobs it saw:\n%s", out)
 	}
 }
@@ -145,6 +155,26 @@ func TestGateRefuses(t *testing.T) {
 			p, b := runs("replication.yml")
 			set(t, dir, p, b)
 		}, "replication.yml has no run on " + sha},
+		"the remote MCP end to end failed": {func(t *testing.T, dir string) {
+			p, b := jobs(5, job("changes", "success"), job("mcp-e2e", "failure"))
+			set(t, dir, p, b)
+		}, "mcp-e2e (failure)"},
+		"the remote MCP end to end is missing": {func(t *testing.T, dir string) {
+			p, b := jobs(5, job("changes", "success"), job("build (ubuntu-24.04, linux-amd64)", "success"))
+			set(t, dir, p, b)
+		}, "no job named mcp-e2e*"},
+		"the Studio crawl failed": {func(t *testing.T, dir string) {
+			p, b := jobs(6, job("changes", "success"), job("calls", "success"), job("crawl", "failure"))
+			set(t, dir, p, b)
+		}, "crawl (failure)"},
+		"the Studio crawl was skipped": {func(t *testing.T, dir string) {
+			p, b := jobs(6, job("changes", "success"), job("crawl", "skipped"))
+			set(t, dir, p, b)
+		}, "crawl (skipped)"},
+		"the Studio crawl never ran on the commit": {func(t *testing.T, dir string) {
+			p, b := runs("studio-crawl.yml")
+			set(t, dir, p, b)
+		}, "studio-crawl.yml has no run on " + sha},
 		"ci failed": {func(t *testing.T, dir string) {
 			p, b := runs("ci.yml", run(1, "completed", "failure", "2026-10-07T01:00:00Z"))
 			set(t, dir, p, b)
