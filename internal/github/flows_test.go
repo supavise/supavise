@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/config"
+	"github.com/supavise/supavise/internal/projectconfig"
 	"github.com/supavise/supavise/internal/registry"
 )
 
@@ -520,5 +522,103 @@ func TestABurstOfPullRequestsRunsAtMostTheConfiguredNumberOfBuilds(t *testing.T)
 	h.svc.wg.Wait()
 	if got := len(h.br.names()); got != 5 {
 		t.Fatalf("branches after the burst = %v, want all five built in turn", h.br.names())
+	}
+}
+
+// PostgREST does not start on a schema that does not exist, and the migrations of a commit may make the
+// schema its config.toml exposes: PostgREST's settings are saved after the migrations, in one save, and the
+// other services' settings stay before them.
+func TestThePostgRESTSettingsOfConfigTomlAreSavedAfterTheMigrationsThatMayMakeTheirSchemas(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(map[string]string{
+		"supabase/migrations/20240102000000_api.sql": "create schema api;",
+		"supabase/config.toml":                       "project_id = \"app\"\n[api]\nschemas = [\"public\", \"graphql_public\", \"api\"]\nmax_rows = 500\n[auth]\nsite_url = \"https://app.example.com\"\n",
+	}))
+	h.deliver("pull_request", "d1", h.prEvent("opened", 1, "feature", "sha-1"))
+	b := h.br.byName("feature")
+	if b == nil || b.State != registry.BranchFunctionsDeployed {
+		t.Fatalf("the run did not finish: %+v", b)
+	}
+	var steps []string
+	for _, e := range h.db.timeline {
+		steps = append(steps, strings.TrimSuffix(strings.Replace(e, b.Ref, "branch", 1), "@"+b.Ref))
+	}
+	want := []string{"save auth@branch", "migrate branch/20240101000000", "migrate branch/20240102000000", "save postgrest@branch"}
+	if !slices.Equal(steps, want) {
+		t.Fatalf("order of the steps:\n got %v\nwant %v", steps, want)
+	}
+	pr := h.host.patches["postgrest@"+b.Ref]
+	if pr["db_schema"] != "public,graphql_public,api" || pr["max_rows"] != int64(500) {
+		t.Fatalf("postgrest settings = %v", pr)
+	}
+
+	// A later commit that does not touch the migrations saves the settings in the same place.
+	h.db.mu.Lock()
+	h.db.timeline = nil
+	h.db.mu.Unlock()
+	h.gh.setCommit("sha-2", repoFiles(map[string]string{
+		"supabase/migrations/20240102000000_api.sql": "create schema api;",
+		"supabase/config.toml":                       "project_id = \"app\"\n[api]\nschemas = [\"public\", \"graphql_public\", \"api\"]\nmax_rows = 400\n",
+	}))
+	h.deliver("pull_request", "d2", h.prEvent("synchronize", 1, "feature", "sha-2"))
+	if got := h.host.patches["postgrest@"+b.Ref]["max_rows"]; got != int64(400) {
+		t.Fatalf("max_rows after the second commit = %v", got)
+	}
+}
+
+// A list that still names a schema the node cannot find after the migrations fails the run with the node's
+// message, at the migrate step and after the migrations are applied, so the next commit starts from there.
+func TestAConfigTomlSchemaTheMigrationsDoNotMakeFailsTheRunWithTheNodesMessage(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(map[string]string{
+		"supabase/config.toml": "project_id = \"app\"\n[api]\nschemas = [\"public\", \"nope\"]\n",
+	}))
+	// The node's answer for a schema it cannot find (the API checks the database before it restarts PostgREST).
+	h.host.saveErr = map[projectconfig.Service]error{projectconfig.PostgREST: errors.New("db_schema names a schema that does not exist in the database: nope")}
+	h.deliver("pull_request", "d1", h.prEvent("opened", 1, "feature", "sha-1"))
+	b := h.br.byName("feature")
+	if b == nil || b.State != registry.BranchMigrationsFailed || !strings.Contains(b.Detail, "does not exist in the database: nope") || !strings.Contains(b.Detail, "after the migrations") {
+		t.Fatalf("branch = %+v", b)
+	}
+	if got := h.db.applied(b.Ref); len(got) != 1 {
+		t.Fatalf("the migrations were not applied before the failure: %v", got)
+	}
+}
+
+// A new preview branch has none of the parent's credentials and no Edge Function secret, so a config.toml
+// that switches an OAuth provider on with env(NAME) cannot give it a secret on the first run. The run
+// finishes without the switch (the node would refuse it); once the branch has the secret, the next commit
+// switches the provider on, and a secret the branch holds from then on is enough.
+func TestAFirstRunThatCannotGiveAProviderItsSecretFinishesAndALaterCommitSwitchesItOn(t *testing.T) {
+	h := newHarness(t)
+	const cfg = "project_id = \"app\"\n[auth]\nsite_url = \"https://app.example.com\"\n[auth.external.github]\nenabled = true\nclient_id = \"id\"\nsecret = \"env(GH_SECRET)\"\n"
+	h.gh.setCommit("sha-1", repoFiles(map[string]string{"supabase/config.toml": cfg}))
+	h.deliver("pull_request", "d1", h.prEvent("opened", 1, "feature", "sha-1"))
+	b := h.br.byName("feature")
+	if b == nil || b.State != registry.BranchFunctionsDeployed {
+		t.Fatalf("the first run did not finish: %+v", b)
+	}
+	key := "auth@" + b.Ref
+	if a := h.host.patches[key]; a["site_url"] != "https://app.example.com" || a["external_github_client_id"] != "id" {
+		t.Fatalf("the rest of config.toml did not apply: %v", a)
+	}
+	if _, on := h.host.patches[key]["external_github_enabled"]; on {
+		t.Fatalf("the provider was switched on without its secret: %v", h.host.patches[key])
+	}
+
+	h.host.secrets[b.Ref+"/GH_SECRET"] = "s3cret"
+	h.gh.setCommit("sha-2", repoFiles(map[string]string{"supabase/config.toml": cfg}))
+	h.deliver("pull_request", "d2", h.prEvent("synchronize", 1, "feature", "sha-2"))
+	if a := h.host.patches[key]; a["external_github_enabled"] != true || a["external_github_secret"] != "s3cret" {
+		t.Fatalf("the second run did not switch the provider on: %v", a)
+	}
+
+	// The branch holds the secret now: a commit whose env(GH_SECRET) cannot be read still switches it on.
+	h.host.patches[key]["external_github_enabled"] = false
+	delete(h.host.secrets, b.Ref+"/GH_SECRET")
+	h.gh.setCommit("sha-3", repoFiles(map[string]string{"supabase/config.toml": cfg}))
+	h.deliver("pull_request", "d3", h.prEvent("synchronize", 1, "feature", "sha-3"))
+	if got := h.host.patches[key]["external_github_enabled"]; got != true {
+		t.Fatalf("a provider whose secret the branch holds was left off: %v", h.host.patches[key])
 	}
 }

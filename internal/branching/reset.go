@@ -73,6 +73,7 @@ func (s *Service) Reset(ctx context.Context, idOrRef string, in ActionInput) (st
 			keys = nil
 		}
 	}
+	repoBuilt := !b.WithData && s.repositoryBuilt(ctx, b.Ref)
 	r, err := s.beginRun(ctx, b.Ref, "reset", b.Ref, parent.Ref)
 	if err != nil {
 		return "", err
@@ -124,9 +125,47 @@ func (s *Service) Reset(ctx context.Context, idOrRef string, in ActionInput) (st
 		j.upTo = in.MigrationVersion
 		j.history, j.useHistory = history, useHistory
 		j.keepExpiry = true
-		return s.doCreate(ctx, j)
+		j.repoBuilt = repoBuilt
+		detail, err := s.doCreate(ctx, j)
+		if err != nil {
+			return "", err
+		}
+		if repoBuilt {
+			s.forgetRepositorySeed(ctx, b.Ref)
+		}
+		return detail, nil
 	})
 	return r.id, nil
+}
+
+// repositoryBuilt reports whether a repository builds the schema-only branch ref: it is a branch a pull
+// request follows (the Git integration keeps a link for it). The repository's seed.sql is its seed. The
+// link does not say who made the branch, so a branch made by hand before the pull request counts too:
+// once it is reset, its data is gone and the next commit seeds it like a preview branch.
+func (s *Service) repositoryBuilt(ctx context.Context, ref string) bool {
+	st := registry.GitHubOf(s.reg)
+	if st == nil {
+		return false
+	}
+	_, err := st.GetGitHubBranchLink(ctx, ref)
+	return err == nil
+}
+
+// forgetRepositorySeed runs after a reset of a repository's branch: the reset rebuilt the schema from the
+// branch's own migrations and dropped the data, among it any seed. The link forgets that the seed was
+// applied, so that the next commit applies seed.sql again if the repository has one (a persistent branch
+// only when [db.seed] enabled = true, as before). A failure is logged: the reset itself stands.
+func (s *Service) forgetRepositorySeed(ctx context.Context, ref string) {
+	st := registry.GitHubOf(s.reg)
+	if st == nil {
+		return
+	}
+	if err := st.ClearGitHubBranchLinkSeed(ctx, ref); err != nil {
+		s.log.Warn("could not clear the record of the repository's seed on a reset branch", "ref", ref, "err", err)
+		s.logRun(ctx, "warning: the reset branch keeps the record that the repository's seed was applied, so a commit will not apply it again (close and reopen the pull request to seed again)")
+		return
+	}
+	s.logRun(ctx, "the reset dropped the data; the next commit to the pull request applies the repository's seed again, if it has one")
 }
 
 // preflightReset checks what a reset needs before the old cluster is removed: the same way

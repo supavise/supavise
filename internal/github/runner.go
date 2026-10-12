@@ -21,7 +21,8 @@ import (
 //	clone      list the supabase directory at the commit
 //	pull       the branch's project is made (a new branch only)
 //	health     the branch's database answers
-//	configure  config.toml, with its [remotes] block, saved as the branch's settings
+//	configure  config.toml, with its [remotes] block, saved as the branch's settings (PostgREST's
+//	           part waits for the end of migrate, which may make the schemas it exposes)
 //	migrate    the migrations the branch does not have yet, each in its own transaction
 //	seed       the seed files, once per branch: in the first run that gets this far
 //	deploy     Edge Functions that changed, and the Storage buckets of config.toml
@@ -178,6 +179,7 @@ func (r *repoSource) configure(ctx context.Context, run *branching.Run, ref stri
 	in := PlanInput{Doc: doc, Ref: ref, Persistent: r.persistent, Branch: ref != r.conn.ProjectRef}
 	if h := r.s.host; h != nil {
 		in.Env = func(name string) (string, bool, error) { return h.FunctionSecret(ctx, ref, name) }
+		in.Held = func(svc projectconfig.Service, key string) (bool, error) { return h.SettingSaved(ctx, ref, svc, key) }
 	}
 	in.Template = func(rel string) (string, bool) {
 		if !r.sn.Has(rel) {
@@ -202,6 +204,13 @@ func (r *repoSource) configure(ctx context.Context, run *branching.Run, ref stri
 	for _, svc := range []projectconfig.Service{projectconfig.Auth, projectconfig.PostgREST, projectconfig.Storage, projectconfig.Postgres} {
 		patch := plan.Patches[svc]
 		if len(patch) == 0 {
+			continue
+		}
+		if svc == projectconfig.PostgREST {
+			// PostgREST does not start on a schema that does not exist, and the migrations of this commit
+			// may make the schema [api] schemas names: its settings are saved when they have run
+			// (exposeSchemas), in one restart.
+			run.Logf("%s: %d setting(s) in config.toml, saved after the migrations", svc, len(patch))
 			continue
 		}
 		if h == nil {
@@ -289,6 +298,32 @@ func (r *repoSource) migrate(ctx context.Context, run *branching.Run, ref string
 		r.stats.migrations++
 		r.mu.Unlock()
 	}
+	return r.exposeSchemas(ctx, run, ref)
+}
+
+// exposeSchemas saves the PostgREST settings of config.toml, which configure held back: [api] schemas
+// names schemas that a migration of the same commit may have made, and PostgREST does not start on
+// one that is missing. The node refuses a list that still names a missing schema, with the name, in
+// seconds and not after a restart that times out (Host.SaveSettings).
+func (r *repoSource) exposeSchemas(ctx context.Context, run *branching.Run, ref string) error {
+	plan := r.currentPlan()
+	patch := plan.Patches[projectconfig.PostgREST]
+	if plan.Skipped != "" || len(patch) == 0 {
+		return nil
+	}
+	h := r.s.host
+	if h == nil {
+		run.Logf("warning: this node cannot save %s settings from config.toml", projectconfig.PostgREST)
+		return nil
+	}
+	changed, err := h.SaveSettings(ctx, ref, projectconfig.PostgREST, patch)
+	if err != nil {
+		return fmt.Errorf("save the %s settings of config.toml, after the migrations: %w", projectconfig.PostgREST, err)
+	}
+	run.Logf("%s: %d setting(s) in config.toml, %s", projectconfig.PostgREST, len(patch), changedWords(changed))
+	r.mu.Lock()
+	r.stats.configured = true
+	r.mu.Unlock()
 	return nil
 }
 

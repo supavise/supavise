@@ -32,17 +32,38 @@ version and the names of the changed settings, never values.
 
 ## Branches
 
-A branch starts on its parent's saved settings. `Manager.CopyForBranch(from, to)` (`branchcopy.go`) reads the parent's saved
+A branch starts on its parent's saved settings, less its credentials. `Manager.CopyForBranch(from, to, BranchCopyOptions)` (`branchcopy.go`) reads the parent's saved
 settings of Auth, PostgREST, Realtime, Storage and Postgres and saves them for the branch through the same `Patch` a save
 goes through, so the combination is validated; the lifecycle engine calls it before the branch's units first start
 (`lifecycle.Engine.copyInitialSettings`, with `CreateRequest.SettingsFrom`) and a reset or any later create over the same row
-does not call it again. Secrets are copied (`Seal` binds a value to no project). What is never copied is the list `branchExcluded`
-holds, with the reason: the settings that name the parent's address (`site_url`, `uri_allow_list`, `saml_external_url`, the WebAuthn
-relying party and the three switches that cannot run without it), the pool sizes and the Postgres settings of `SizingSettings` that the compute class
-puts on the command line, the Realtime tenant's pools and `suspend`, and the whole Pooler service. The JWT secret, the API keys,
-the database password, the custom hostname and the vanity subdomain are not settings, so they are never in the copy.
-`TestEverySettingThatLooksLikeAnAddressIsDecided` fails for a new setting whose name looks like an address until it is excluded or
-listed as kept, and `TestCopyForBranchSkipsWhatIdentifiesAddressesOrSizesTheParent` is the golden list.
+does not call it again. The result (`BranchCopy`) names what was copied, what was withheld and what was deferred, and the
+engine records the names, never a value, in the `project.settings_copied` event. Three lists keep settings out of a branch:
+
+- `branchExcluded` holds the settings that name the parent's address (`site_url`, `uri_allow_list`, `saml_external_url`, the WebAuthn
+  relying party and the three switches that cannot run without it), the pool sizes and the Postgres settings of `SizingSettings` that the compute class
+  puts on the command line, the Realtime tenant's pools and `suspend`, and the whole Pooler service.
+- `branchWithheld` (`BranchWithheld`, `BranchWithheldNames`) holds the credentials and the connections they belong to. Every sealed secret
+  is withheld (the SMTP password, the SMS providers' tokens and keys, the OAuth clients' secrets, the captcha secret, the hook secrets): sealing binds a
+  value to no project, and a branch's GoTrue can reach the outside even when its database cannot, so a copied credential would let the branch send
+  mail or SMS or call a hook as the parent. So that no provider is left half set up, and so that the copy is not refused as a whole, the settings
+  that validation ties to a secret go with it: the SMTP host, port and user; the SMS provider choice and every `sms_<provider>_*` setting; the
+  switch of every external OAuth provider (its client id stays); the captcha switch (its provider choice stays); and the uri and switch of every
+  hook that calls an HTTP(S) URL (a `pg-functions://` hook runs in the branch's own database and stays). The branch's owner sets its own, as
+  hosted keeps the secrets of each branch. Settings that only describe behavior stay, among them `mailer_autoconfirm`, so a parent that turned
+  auto-confirm off keeps it off on a branch that has no SMTP yet (its signups cannot send the confirmation mail until the branch has an SMTP
+  server). One behavior setting goes with the SMTP host: `mailer_allow_unverified_email_sign_ins`, when the parent saved an `smtp_host` and no
+  `mailer_autoconfirm`. Auto-confirm is then on only because SMTP is missing (`autoconfirm`), the branch has no SMTP host and runs with it on,
+  and GoTrue refuses unverified sign-ins next to auto-confirm; copying the setting would have the whole Auth copy refused.
+- PostgREST's `db_schema` is deferred, not excluded, for a branch whose database starts empty (`BranchCopyOptions.Seeded` false): PostgREST does not
+  start on a schema that does not exist, and the parent's schemas exist on the branch only after its migrations ran. `lifecycle.Engine`
+  passes `Seeded` when the create has a seed (a clone or a restored backup, whose schemas exist); `internal/branching` applies the list with
+  `ExposeSchemasThatExist` after the build (see its README).
+
+The JWT secret, the API keys, the database password, the custom hostname and the vanity subdomain are not settings, so they are never in the copy.
+`TestEverySettingThatLooksLikeAnAddressIsDecided` fails for a new setting whose name looks like an address until it is excluded, withheld or
+listed as kept, `TestCopyForBranchSkipsWhatIdentifiesAddressesOrSizesTheParent` is the golden list of the exclusions,
+`TestBranchWithheldNamesCoverEverySecretAndProviderConnection` fails for a new secret or provider setting until it is decided, and
+`TestCopyForBranchWithholdsCredentialsAndTheConnectionsTheyBelongTo` checks what a fully set up parent gives a branch.
 
 ## Schemas
 

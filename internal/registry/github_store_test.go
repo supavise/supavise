@@ -210,6 +210,16 @@ func testGitHubStore(t *testing.T, reg Registry) {
 	if empty, err := st.GitHubPRNumbers(ctx, nil); err != nil || len(empty) != 0 {
 		t.Fatalf("pr numbers of none = %v, %v", empty, err)
 	}
+	// A reset forgets the seed, which no put does; a branch with no link has nothing to forget.
+	if err := st.ClearGitHubBranchLinkSeed(ctx, branch); err != nil {
+		t.Fatal(err)
+	}
+	if gl, err = st.GetGitHubBranchLink(ctx, branch); err != nil || gl.SeededAt != nil || gl.HeadSHA != "def" || gl.PRNumber != 12 {
+		t.Fatalf("link after the seed was forgotten = %+v, %v", gl, err)
+	}
+	if err := st.ClearGitHubBranchLinkSeed(ctx, other); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("forgetting the seed of a branch with no link: %v", err)
+	}
 	if err := st.DeleteGitHubBranchLink(ctx, branch); err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -84,10 +85,15 @@ type PlanInput struct {
 	Ref        string
 	Persistent bool
 	// Branch is true when Ref is a branch and not the project the repository is connected to. A
-	// branch starts on its parent's saved settings, secrets included, so the repository must not be
-	// able to send those secrets somewhere else (dropInheritedSecrets).
+	// branch starts on its parent's saved settings, less the credentials, and its owner can give it
+	// secrets of its own, so the repository must not be able to send those somewhere else
+	// (dropInheritedSecrets).
 	Branch bool
 	Env    EnvLookup
+	// Held reports whether the project Ref has a value saved for a setting (a secret counts when one is
+	// sealed). A branch plan asks it before it leaves a switch out for want of a secret
+	// (holdBackSwitchesWithoutSecrets); nil means the branch holds none.
+	Held func(svc projectconfig.Service, key string) (bool, error)
 	// Template returns the content of a file named in the config (relative to supabase/).
 	Template func(rel string) (string, bool)
 }
@@ -459,6 +465,9 @@ func PlanConfig(in PlanInput) (*ConfigPlan, error) {
 	p.sweep()
 	if in.Branch {
 		p.dropInheritedSecrets()
+		if err := p.holdBackSwitchesWithoutSecrets(); err != nil {
+			return nil, err
+		}
 	}
 	sort.Strings(plan.Applied)
 	if in.Persistent && remote == "" {
@@ -469,13 +478,14 @@ func PlanConfig(in PlanInput) (*ConfigPlan, error) {
 	return plan, nil
 }
 
-// dropInheritedSecrets clears the secret a branch inherited from its parent when config.toml sends
-// the secret's destination somewhere else and gives the branch no secret of its own: the SMTP
-// password when the SMTP host is set, the client secret of an OAuth provider when its url is set.
-// Whoever can open a pull request chooses config.toml, and may have no access to the project's
-// secrets; a branch's mail or token requests go to the host the repository names, so the parent's
-// credential must not go with them. A secret that config.toml gives (env(NAME) of a secret of the
-// branch) is applied as before.
+// dropInheritedSecrets clears the secret a branch holds when config.toml sends the secret's
+// destination somewhere else and gives the branch no secret of its own: the SMTP password when the SMTP
+// host is set, the client secret of an OAuth provider when its url is set. A branch does not start
+// with its parent's credentials (projectconfig.BranchWithheld), so the secret is one somebody set on
+// the branch, or one an earlier commit gave it. Whoever can open a pull request chooses config.toml,
+// and may have no access to the branch's secrets; a branch's mail or token requests go to the host the
+// repository names, so the credential must not go with them. A secret that config.toml gives
+// (env(NAME) of a secret of the branch) is applied as before.
 func (p *planner) dropInheritedSecrets() {
 	auth := p.plan.Patches[projectconfig.Auth]
 	keys := make([]string, 0, len(auth))
@@ -501,8 +511,59 @@ func (p *planner) dropInheritedSecrets() {
 			continue
 		}
 		auth[secret] = nil
-		p.warn("%s sets where %s goes, so the secret the branch inherited from its project is cleared; give the branch its own with a secret set by env(NAME)", path, secret)
+		p.warn("%s sets where %s goes, so the secret the branch holds for it is cleared; give the branch its own with a secret set by env(NAME)", path, secret)
 	}
+}
+
+// holdBackSwitchesWithoutSecrets leaves the switch of an OAuth provider, of the captcha or of an
+// HTTP hook out of a branch's patch when the credential it needs is neither in the patch nor already
+// saved on the branch. A branch starts without its parent's credentials (projectconfig.BranchWithheld)
+// and a preview branch holds no Edge Function secret before its first run, so env(NAME) cannot be
+// read then. The node refuses a switch without its secret ("external_github_secret is required when
+// the provider is enabled"), and that refusal would fail the configure step, and with it the run,
+// before the migrations. The rest of the file applies; the switch follows on the first push after the
+// branch has the secret, and a secret somebody saved on the branch itself counts. A secret that
+// dropInheritedSecrets cleared is not held.
+func (p *planner) holdBackSwitchesWithoutSecrets() error {
+	auth := p.plan.Patches[projectconfig.Auth]
+	if len(auth) == 0 {
+		return nil
+	}
+	var failed error
+	have := func(secret string) bool {
+		if v, given := auth[secret]; given {
+			s, _ := v.(string)
+			return strings.TrimSpace(s) != ""
+		}
+		if p.in.Held == nil {
+			return false
+		}
+		ok, err := p.in.Held(projectconfig.Auth, secret)
+		if err != nil && failed == nil {
+			failed = fmt.Errorf("read whether the branch has %s: %w", secret, err)
+		}
+		return ok
+	}
+	hold := func(switchKey, path, secret string) {
+		if on, _ := auth[switchKey].(bool); !on || have(secret) {
+			return
+		}
+		delete(auth, switchKey)
+		p.plan.Applied = slices.DeleteFunc(p.plan.Applied, func(a string) bool { return a == path })
+		p.warn("%s is not applied: the branch has no %s yet, and the node refuses the switch without it (give the branch its own, for example secret = env(NAME) in config.toml with NAME set by supabase secrets set --project-ref <branch>, and push again)", path, secret)
+	}
+	for _, e := range extProviders {
+		if e != "apple" { // Sign in with Apple builds its client secret itself
+			hold("external_"+e+"_enabled", "auth.external."+e+".enabled", "external_"+e+"_secret")
+		}
+	}
+	hold("security_captcha_enabled", "auth.captcha.enabled", "security_captcha_secret")
+	for _, h := range hookNames {
+		if uri, _ := auth["hook_"+h+"_uri"].(string); strings.HasPrefix(strings.ToLower(uri), "http") {
+			hold("hook_"+h+"_enabled", "auth.hook."+h+".enabled", "hook_"+h+"_secrets")
+		}
+	}
+	return failed
 }
 
 func (p *planner) api() {
@@ -739,7 +800,13 @@ func (p *planner) storage() {
 	p.apply(one{"storage.file_size_limit", projectconfig.Storage, "fileSizeLimit", asBytes})
 	features := map[string]any{}
 	if v, ok := p.get("storage.image_transformation.enabled"); ok {
-		if b, ok := v.(bool); ok {
+		if b, ok := v.(bool); ok && b {
+			// The same refusal Studio and the CLI get from the node, as a warning here: an error would fail
+			// the configure step of every run of a repository that has the setting, and with it the Storage
+			// settings and the migrations that follow. `false` still applies, so a project that has it on can
+			// be switched off.
+			p.warn("storage.image_transformation.enabled = true is not applied: %s (set it to false)", projectconfig.NoImageTransformation)
+		} else if ok {
 			features["imageTransformation"] = map[string]any{"enabled": b}
 			p.plan.Applied = append(p.plan.Applied, "storage.image_transformation.enabled")
 		}

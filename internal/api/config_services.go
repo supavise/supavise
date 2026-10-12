@@ -129,22 +129,13 @@ func (s *Server) checkExposedSchemas(ctx context.Context, p *registry.Project, p
 	}
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	conn, err := pgx.Connect(cctx, dsn)
+	probe := lifecycle.MissingSchemas
+	if s.missingSchemas != nil {
+		probe = s.missingSchemas
+	}
+	missing, err := probe(cctx, dsn, want)
 	if err != nil {
 		return nil
-	}
-	defer conn.Close(context.WithoutCancel(ctx))
-	rows, err := conn.Query(cctx, `select n from unnest($1::text[]) as n where not exists (select 1 from pg_namespace where nspname = n)`, want)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var missing []string
-	for rows.Next() {
-		var n string
-		if rows.Scan(&n) == nil {
-			missing = append(missing, n)
-		}
 	}
 	if len(missing) > 0 {
 		return errf(http.StatusBadRequest, "db_schema names a schema that does not exist in the database: %s", strings.Join(missing, ", "))
@@ -243,7 +234,7 @@ func (s *Server) getStorage(key string) handlerFunc {
 // images through imgproxy, which a node does not run: the switch would save, the toast would say "Successfully
 // updated storage settings", and every render URL would answer 404. The reason is a 4xx, which the dashboard
 // and the CLI show as the error.
-var errNoImageTransformation = errf(http.StatusBadRequest, "Image transformation is not available on this Supavise node: Storage resizes images through imgproxy, which the node does not run, so a render URL would not work. "+
+var errNoImageTransformation = errf(http.StatusBadRequest, "Image transformation is not available on this Supavise node: "+projectconfig.NoImageTransformation+". "+
 	"Leave it off (in config.toml: [storage.image_transformation] enabled = false).")
 
 // refuseImageTransformation answers 400 when patch switches image transformation from off to on. A save that

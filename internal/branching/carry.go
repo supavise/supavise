@@ -88,6 +88,27 @@ func (s *Service) carryAtCreate(ctx context.Context, parentRef, branchRef string
 	return nil
 }
 
+// recordParentFunctions records the parent's Edge Functions as the base of a branch that a repository
+// builds, in place of the copy carryAtCreate makes. It is the same base: the functions the parent had
+// when the branch began, so that a function the pull request changed is the branch's change, and a
+// function the parent changed since is the parent's. Without a base a push would overwrite the pull
+// request's function with the parent's, and a merge would call every function both sides hold a
+// conflict. It is recorded before the repository is built, so a create that is cut short has it too.
+func (s *Service) recordParentFunctions(ctx context.Context, parentRef, branchRef string) error {
+	c := s.carrier()
+	if c == nil {
+		return nil
+	}
+	parent, err := c.Digests(ctx, parentRef)
+	if err != nil {
+		return fmt.Errorf("read the parent's Edge Functions: %w", err)
+	}
+	if err := s.putFunctionBase(ctx, branchRef, parent); err != nil {
+		return fmt.Errorf("record the Edge Functions the branch started with: %w", err)
+	}
+	return nil
+}
+
 // serveKeptFunctions is the deploy step of a reset: the branch keeps its Edge Functions and secrets
 // (they live in the API's store, not in the cluster that was rebuilt), and the runtime is told to
 // serve them again now and not at its next reconcile, which dropped them while the cluster was gone.

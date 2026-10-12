@@ -504,7 +504,7 @@ func (s *Service) replay(ctx context.Context, j *createJob) (migrations int, see
 		return 0, false, nil
 	}
 	seed := j.in.Seed
-	if strings.TrimSpace(seed) == "" {
+	if strings.TrimSpace(seed) == "" && !j.repoBuilt {
 		if seed, err = s.GetSeed(ctx, j.parent.Ref); err != nil {
 			return 0, false, err
 		}
