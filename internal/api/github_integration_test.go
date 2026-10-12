@@ -917,6 +917,80 @@ func TestAnotherOrganizationsOwnerCannotCreateReplaceOrRemoveTheServersApp(t *te
 	}
 }
 
+// The Git branch production follows is a field of the project's GitHub connection (Owner and
+// Administrator write it), and a push to it applies the repository to production. A Developer, who
+// may push to branches and update preview branches, can neither point production at another Git
+// branch (PATCH or create of the default branch) nor deploy it again (Resync); an unchanged value
+// still goes through, as Studio's form sends it with every save.
+func TestProductionBranchAndResyncNeedTheRightToUpdateTheConnection(t *testing.T) {
+	rf := newRolesFixture(t)
+	ctx := context.Background()
+	withGitHub(t, rf.fixture, true)
+	conn := registry.GitHubConnection{OrgID: rf.org.ID, ProjectRef: testRef, InstallationID: tInstID, RepositoryID: tRepoID, RepositoryName: tRepoName,
+		BranchLimit: 50, NewBranchPerPR: true, CreatedBy: "owner"}
+	if err := rf.reg.CreateGitHubConnection(ctx, &conn); err != nil {
+		t.Fatal(err)
+	}
+	gitBranch := func() string {
+		g, err := rf.reg.GetDefaultBranchGit(ctx, testRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	patch := func(role, git string) *httptest.ResponseRecorder {
+		return rf.as(role, "PATCH", "/v1/branches/"+testRef, map[string]any{"git_branch": git})
+	}
+	if rec := patch("owner", "main"); rec.Code != 200 || gitBranch() != "main" {
+		t.Fatalf("owner sets the production branch: %d %s (now %q)", rec.Code, rec.Body, gitBranch())
+	}
+	for _, role := range []string{"dev", "ro", "scoped", "stranger"} {
+		if rec := patch(role, "unreviewed"); rec.Code != 403 || gitBranch() != "main" {
+			t.Errorf("%s: PATCH of the production branch: %d %s (now %q)", role, rec.Code, rec.Body, gitBranch())
+		}
+		rec := rf.as(role, "POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "main", "is_default": true, "git_branch": "unreviewed"})
+		if rec.Code != 403 || gitBranch() != "main" {
+			t.Errorf("%s: create of the default branch with a Git branch: %d %s (now %q)", role, rec.Code, rec.Body, gitBranch())
+		}
+	}
+	// The refusal says who may.
+	if msg := errMessage(t, patch("dev", "unreviewed")); !strings.Contains(msg, "Owner or Administrator") {
+		t.Errorf("message = %q", msg)
+	}
+	// The same value again, and a change that clears nothing, are not a change of the production branch.
+	if rec := patch("dev", "main"); rec.Code != 200 {
+		t.Errorf("dev: an unchanged production branch: %d %s", rec.Code, rec.Body)
+	}
+	// The Git branch of a preview branch stays a Developer's to set.
+	feature := decodeBody(t, rf.status(201, "dev", "POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "feature", "git_branch": "feature"})).(map[string]any)["id"].(string)
+	rf.waitBranch(t, "feature", "FUNCTIONS_DEPLOYED")
+	if rec := rf.as("dev", "PATCH", "/v1/branches/"+feature, map[string]any{"git_branch": "feature-2"}); rec.Code != 200 {
+		t.Errorf("dev: git_branch of a preview branch: %d %s", rec.Code, rec.Body)
+	}
+	if rec := patch("admin", "release"); rec.Code != 200 || gitBranch() != "release" {
+		t.Errorf("admin: %d %s (now %q)", rec.Code, rec.Body, gitBranch())
+	}
+	rec := rf.as("admin", "POST", "/v1/projects/"+testRef+"/branches", map[string]any{"branch_name": "main", "is_default": true, "git_branch": "main"})
+	if rec.Code == 403 || gitBranch() != "main" {
+		t.Errorf("admin: create of the default branch: %d %s (now %q)", rec.Code, rec.Body, gitBranch())
+	}
+	// Resync deploys the production branch of the repository to production.
+	for _, role := range []string{"dev", "ro", "scoped"} {
+		if rec := rf.as(role, "POST", "/v1/branches/"+testRef+"/push", map[string]any{}); rec.Code != 403 {
+			t.Errorf("%s: Resync: %d %s", role, rec.Code, rec.Body)
+		}
+	}
+	for _, role := range []string{"owner", "admin"} {
+		if rec := rf.as(role, "POST", "/v1/branches/"+testRef+"/push", map[string]any{}); rec.Code == 403 {
+			t.Errorf("%s: Resync refused: %s", role, rec.Body)
+		}
+	}
+	// A push of a preview branch is still the service's, for the roles that may update branches.
+	if rec := rf.as("dev", "POST", "/v1/branches/"+feature+"/push", map[string]any{}); rec.Code == 403 {
+		t.Errorf("dev: push of a preview branch refused: %s", rec.Body)
+	}
+}
+
 func signHook(secret, body string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(body))

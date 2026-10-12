@@ -365,6 +365,12 @@ func (s *Server) createBranchFrom(r *http.Request, ref string, q branchCreate) (
 		// The Management API has no field for this; the query parameter is ours (like force on merge).
 		AllowEgress: r.URL.Query().Get("allow_egress") == "true",
 	}
+	if q.IsDefault && q.GitBranch != "" {
+		// Creating the default branch with a Git branch sets the one production follows.
+		if err := s.requireGitBranchChange(r, ref, &q.GitBranch); err != nil {
+			return nil, err
+		}
+	}
 	b, err := s.branches.Create(r.Context(), ref, ci)
 	if err != nil {
 		return nil, s.branchProjectErr(err)
@@ -513,12 +519,36 @@ func (s *Server) updateBranch(w http.ResponseWriter, r *http.Request) error {
 		st := registry.BranchState(*in.Status)
 		ui.State = &st
 	}
+	if err := s.requireGitBranchChange(r, r.PathValue("branch_id_or_ref"), in.GitBranch); err != nil {
+		return err
+	}
 	// reset_on_push is deprecated and "ignored" by the spec itself.
 	b, err := s.branches.Update(r.Context(), r.PathValue("branch_id_or_ref"), ui)
 	if err != nil {
 		return mapBranchErr(err)
 	}
 	return s.writeBranchPR(w, r, http.StatusOK, b)
+}
+
+// requireGitBranchChange applies requireProductionBranch to a request that sets the Git branch of the
+// default branch to a value it does not have yet. The Git branch of any other branch is a Developer's
+// to set, and an unchanged value (Studio's form sends it again with every save) needs nothing.
+func (s *Server) requireGitBranchChange(r *http.Request, idOrRef string, gitBranch *string) error {
+	if gitBranch == nil || s.branches == nil {
+		return nil
+	}
+	b, err := s.branches.Resolve(r.Context(), idOrRef)
+	if err != nil {
+		return mapBranchErr(err)
+	}
+	if !b.IsDefault || strings.TrimSpace(*gitBranch) == b.GitBranch {
+		return nil
+	}
+	p, err := s.loadProject(r.Context(), b.Ref)
+	if err != nil {
+		return errf(http.StatusNotFound, "Branch not found")
+	}
+	return s.requireProductionBranch(r, p)
 }
 
 func (s *Server) deleteBranch(w http.ResponseWriter, r *http.Request) error {
@@ -590,7 +620,7 @@ func (s *Server) branchAction(op string) handlerFunc {
 		case "reset":
 			run, err = s.branches.Reset(r.Context(), id, ai)
 		default:
-			run, err = s.pushBranch(r.Context(), id, ai)
+			run, err = s.pushBranch(r, id, ai)
 		}
 		if err != nil {
 			return mapBranchErr(err)
