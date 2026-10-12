@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -89,6 +90,10 @@ type PlanInput struct {
 	// (dropInheritedSecrets).
 	Branch bool
 	Env    EnvLookup
+	// Held reports whether the project Ref has a value saved for a setting (a secret counts when one is
+	// sealed). A branch plan asks it before it leaves a switch out for want of a secret
+	// (holdBackSwitchesWithoutSecrets); nil means the branch holds none.
+	Held func(svc projectconfig.Service, key string) (bool, error)
 	// Template returns the content of a file named in the config (relative to supabase/).
 	Template func(rel string) (string, bool)
 }
@@ -460,6 +465,9 @@ func PlanConfig(in PlanInput) (*ConfigPlan, error) {
 	p.sweep()
 	if in.Branch {
 		p.dropInheritedSecrets()
+		if err := p.holdBackSwitchesWithoutSecrets(); err != nil {
+			return nil, err
+		}
 	}
 	sort.Strings(plan.Applied)
 	if in.Persistent && remote == "" {
@@ -505,6 +513,57 @@ func (p *planner) dropInheritedSecrets() {
 		auth[secret] = nil
 		p.warn("%s sets where %s goes, so the secret the branch holds for it is cleared; give the branch its own with a secret set by env(NAME)", path, secret)
 	}
+}
+
+// holdBackSwitchesWithoutSecrets leaves the switch of an OAuth provider, of the captcha or of an
+// HTTP hook out of a branch's patch when the credential it needs is neither in the patch nor already
+// saved on the branch. A branch starts without its parent's credentials (projectconfig.BranchWithheld)
+// and a preview branch holds no Edge Function secret before its first run, so env(NAME) cannot be
+// read then. The node refuses a switch without its secret ("external_github_secret is required when
+// the provider is enabled"), and that refusal would fail the configure step, and with it the run,
+// before the migrations. The rest of the file applies; the switch follows on the first push after the
+// branch has the secret, and a secret somebody saved on the branch itself counts. A secret that
+// dropInheritedSecrets cleared is not held.
+func (p *planner) holdBackSwitchesWithoutSecrets() error {
+	auth := p.plan.Patches[projectconfig.Auth]
+	if len(auth) == 0 {
+		return nil
+	}
+	var failed error
+	have := func(secret string) bool {
+		if v, given := auth[secret]; given {
+			s, _ := v.(string)
+			return strings.TrimSpace(s) != ""
+		}
+		if p.in.Held == nil {
+			return false
+		}
+		ok, err := p.in.Held(projectconfig.Auth, secret)
+		if err != nil && failed == nil {
+			failed = fmt.Errorf("read whether the branch has %s: %w", secret, err)
+		}
+		return ok
+	}
+	hold := func(switchKey, path, secret string) {
+		if on, _ := auth[switchKey].(bool); !on || have(secret) {
+			return
+		}
+		delete(auth, switchKey)
+		p.plan.Applied = slices.DeleteFunc(p.plan.Applied, func(a string) bool { return a == path })
+		p.warn("%s is not applied: the branch has no %s yet, and the node refuses the switch without it (give the branch its own, for example secret = env(NAME) in config.toml with NAME set by supabase secrets set --project-ref <branch>, and push again)", path, secret)
+	}
+	for _, e := range extProviders {
+		if e != "apple" { // Sign in with Apple builds its client secret itself
+			hold("external_"+e+"_enabled", "auth.external."+e+".enabled", "external_"+e+"_secret")
+		}
+	}
+	hold("security_captcha_enabled", "auth.captcha.enabled", "security_captcha_secret")
+	for _, h := range hookNames {
+		if uri, _ := auth["hook_"+h+"_uri"].(string); strings.HasPrefix(strings.ToLower(uri), "http") {
+			hold("hook_"+h+"_enabled", "auth.hook."+h+".enabled", "hook_"+h+"_secrets")
+		}
+	}
+	return failed
 }
 
 func (p *planner) api() {

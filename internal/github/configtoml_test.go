@@ -431,3 +431,158 @@ func TestConfigTomlAppliesImageTransformationOffAndSkipsOn(t *testing.T) {
 		t.Errorf("warnings = %v", on.Warnings)
 	}
 }
+
+// A new preview branch has no parent credentials (projectconfig.BranchWithheld) and no Edge Function
+// secret, so env(NAME) cannot be read on its first run. The node refuses a provider, a captcha or an
+// HTTP hook that is switched on without its secret, and that refusal would fail the configure step and
+// the run with it. The switch is left out with a warning and the rest of the file applies.
+const switchesNeedingSecrets = `
+[auth]
+enable_signup = false
+[auth.external.github]
+enabled = true
+client_id = "gh-id"
+secret = "env(GITHUB_SECRET)"
+[auth.external.google]
+enabled = true
+client_id = "g-id"
+secret = "env(GOOGLE_SECRET)"
+[auth.external.apple]
+enabled = true
+client_id = "apple-id"
+[auth.external.discord]
+enabled = false
+client_id = "d-id"
+[auth.captcha]
+enabled = true
+provider = "hcaptcha"
+secret = "env(CAPTCHA_SECRET)"
+[auth.hook.send_email]
+enabled = true
+uri = "https://hooks.example.com/mail"
+secrets = "env(HOOK_SECRETS)"
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/public/add_claims"
+`
+
+func planOfBranch(t *testing.T, cfg string, env map[string]string, held map[string]bool) (*ConfigPlan, error) {
+	t.Helper()
+	doc, err := ParseConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return PlanConfig(PlanInput{Doc: doc, Ref: "bbbbbbbbbbbbbbbbbbbb", Branch: true,
+		Env: func(name string) (string, bool, error) { v, ok := env[name]; return v, ok, nil },
+		Held: func(svc projectconfig.Service, key string) (bool, error) {
+			if key == "boom" {
+				return false, fmt.Errorf("boom")
+			}
+			return svc == projectconfig.Auth && held[key], nil
+		}})
+}
+
+func TestAFreshBranchHoldsBackTheSwitchesThatNeedASecretItDoesNotHave(t *testing.T) {
+	p, err := planOfBranch(t, switchesNeedingSecrets, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := p.Patches[projectconfig.Auth]
+	for _, k := range []string{"external_github_enabled", "external_google_enabled", "security_captcha_enabled", "hook_send_email_enabled",
+		"external_github_secret", "external_google_secret", "security_captcha_secret", "hook_send_email_secrets"} {
+		if _, in := a[k]; in {
+			t.Errorf("%s = %v is in the patch of a branch with no secret", k, a[k])
+		}
+	}
+	// What needs no secret, and everything else in the file, still applies.
+	for k, want := range map[string]any{
+		"external_github_client_id": "gh-id", "external_google_client_id": "g-id", "security_captcha_provider": "hcaptcha",
+		"hook_send_email_uri": "https://hooks.example.com/mail", "disable_signup": true,
+		"external_apple_enabled": true, "external_discord_enabled": false,
+		"hook_custom_access_token_enabled": true, "hook_custom_access_token_uri": "pg-functions://postgres/public/add_claims",
+	} {
+		if a[k] != want {
+			t.Errorf("%s = %v, want %v", k, a[k], want)
+		}
+	}
+	for _, path := range []string{"auth.external.github.enabled", "auth.external.google.enabled", "auth.captcha.enabled", "auth.hook.send_email.enabled"} {
+		if slices.Contains(p.Applied, path) {
+			t.Errorf("%s is reported as applied", path)
+		}
+		if !hasWarning(p, "["+strings.TrimSuffix(path, ".enabled")+"]") && !hasWarning(p, path+" is not applied") {
+			t.Errorf("no warning names %s: %v", path, p.Warnings)
+		}
+	}
+	for _, path := range []string{"auth.external.apple.enabled", "auth.external.discord.enabled", "auth.hook.custom_access_token.enabled", "auth.external.github.client_id"} {
+		if !slices.Contains(p.Applied, path) {
+			t.Errorf("%s is not reported as applied: %v", path, p.Applied)
+		}
+	}
+	if !hasWarning(p, "external_github_secret yet") || !hasWarning(p, "GITHUB_SECRET") {
+		t.Errorf("the warnings do not say what to do: %v", p.Warnings)
+	}
+}
+
+// The switch goes on as soon as the branch has the secret: from config.toml's env(NAME), or one saved on
+// the branch itself.
+func TestABranchSwitchesOnWhatHasItsSecret(t *testing.T) {
+	p, err := planOfBranch(t, switchesNeedingSecrets,
+		map[string]string{"GITHUB_SECRET": "gh-s", "CAPTCHA_SECRET": "cap-s", "HOOK_SECRETS": "v1,whsec_x"},
+		map[string]bool{"external_google_secret": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := p.Patches[projectconfig.Auth]
+	for k, want := range map[string]any{
+		"external_github_enabled": true, "external_github_secret": "gh-s", "security_captcha_enabled": true, "security_captcha_secret": "cap-s",
+		"hook_send_email_enabled": true, "hook_send_email_secrets": "v1,whsec_x",
+		"external_google_enabled": true, // the secret is saved on the branch; config.toml's env(GOOGLE_SECRET) could not be read
+	} {
+		if a[k] != want {
+			t.Errorf("%s = %v, want %v", k, a[k], want)
+		}
+	}
+	if _, in := a["external_google_secret"]; in {
+		t.Errorf("the saved secret was overwritten: %v", a["external_google_secret"])
+	}
+	for _, w := range p.Warnings {
+		if strings.Contains(w, "is not applied: the branch has no") {
+			t.Errorf("a switch with its secret was held back: %s", w)
+		}
+	}
+}
+
+// A secret that config.toml's url cleared (dropInheritedSecrets) is not one the branch has.
+func TestABranchDoesNotSwitchOnAProviderWhoseSecretWasCleared(t *testing.T) {
+	p, err := planOfBranch(t, "[auth.external.gitlab]\nenabled = true\nclient_id = \"id\"\nurl = \"https://gitlab.attacker.example\"\n", nil,
+		map[string]bool{"external_gitlab_secret": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := p.Patches[projectconfig.Auth]
+	if v, in := a["external_gitlab_secret"]; !in || v != nil {
+		t.Errorf("the secret is not cleared: %v", a)
+	}
+	if _, in := a["external_gitlab_enabled"]; in {
+		t.Errorf("a provider with a cleared secret was switched on: %v", a)
+	}
+}
+
+// The project itself is configured as the repository says: only a branch is held back, and a failure to
+// ask the node is an error, not a guess.
+func TestOnlyABranchHoldsBackSwitchesAndAnErrorFailsThePlan(t *testing.T) {
+	doc, _ := ParseConfig([]byte(switchesNeedingSecrets))
+	prod, err := PlanConfig(PlanInput{Doc: doc, Ref: "pppppppppppppppppppp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := prod.Patches[projectconfig.Auth]
+	if a["external_github_enabled"] != true || a["security_captcha_enabled"] != true || a["hook_send_email_enabled"] != true {
+		t.Errorf("the project's switches were held back: %v", a)
+	}
+	_, err = PlanConfig(PlanInput{Doc: doc, Ref: "bbbbbbbbbbbbbbbbbbbb", Branch: true,
+		Held: func(projectconfig.Service, string) (bool, error) { return false, fmt.Errorf("registry down") }})
+	if err == nil || !strings.Contains(err.Error(), "registry down") {
+		t.Errorf("err = %v", err)
+	}
+}

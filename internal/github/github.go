@@ -97,6 +97,9 @@ type Host interface {
 	// SaveSettings validates, saves and applies settings of a service of project ref, as a PATCH of
 	// its config does, and returns the names of the settings that changed.
 	SaveSettings(ctx context.Context, ref string, svc projectconfig.Service, patch map[string]any) (changed []string, err error)
+	// SettingSaved reports whether project ref has a value saved for one setting of a service. A
+	// secret counts when one is sealed; the value itself is never returned.
+	SettingSaved(ctx context.Context, ref string, svc projectconfig.Service, key string) (bool, error)
 }
 
 // Options are the collaborators of Service.

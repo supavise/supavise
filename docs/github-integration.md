@@ -119,13 +119,15 @@ The top-level values apply to every preview branch. A persistent branch is confi
 
 `env(NAME)` reads the Edge Function secret `NAME` of the branch (`supabase secrets set --project-ref <branch>`). A value that cannot be read is not applied, and the log names it; set the secret and push again. `encrypted:` values cannot be read and are not applied.
 
+A new branch has no secrets yet, and it doesn't take the parent's. So that the first run doesn't fail, a branch (a preview branch or a persistent one) leaves out `enabled = true` of an OAuth provider (not Apple), of `[auth.captcha]` and of an HTTP `[auth.hook.<name>]` while the branch has no secret for it, and the log says so. The rest of the file applies. Set the secret on the branch (`secret = "env(NAME)"` in `config.toml` and `supabase secrets set NAME=... --project-ref <branch>`) and push again: that run switches the provider on. A secret that you saved on the branch yourself counts.
+
 | Section | Applied as |
 |---|---|
 | `[api]` | `schemas`, `extra_search_path` and `max_rows` become the PostgREST settings. They are saved after the run's migrations, so a schema that a migration of the same commit creates can be listed in `schemas`. A schema that still doesn't exist then fails the run with its name. |
 | `[auth]` | Site URL, redirect URLs, JWT expiry, refresh token rotation, sign-ups, anonymous sign-ins, manual linking, password length and requirements. |
 | `[auth.rate_limit]`, `[auth.email]` and `[auth.email.smtp]`, `[auth.email.template.*]`, `[auth.email.notification.*]`, `[auth.sms]` and its providers, `[auth.mfa]`, `[auth.captcha]`, `[auth.sessions]`, `[auth.passkey]`, `[auth.webauthn]`, `[auth.web3]` | The Auth settings of the same names. Email template bodies come from the files named in `content_path`. |
-| `[auth.external.<provider>]` | `enabled`, `client_id`, `secret`, `url`, `skip_nonce_check`. The redirect URI of a provider is the project's own and cannot be set. |
-| `[auth.hook.<name>]` | `enabled`, `uri`, `secrets`. |
+| `[auth.external.<provider>]` | `enabled`, `client_id`, `secret`, `url`, `skip_nonce_check`. The redirect URI of a provider is the project's own and cannot be set. On a branch without the provider's secret, `enabled = true` waits until it has one. |
+| `[auth.hook.<name>]` | `enabled`, `uri`, `secrets`. On a branch without the secrets of an HTTP hook, `enabled = true` waits until it has them. |
 | `[storage]` | `file_size_limit`, `[storage.image_transformation]` (`enabled = false` applies, and `enabled = true` is skipped with a warning, because the node runs no imgproxy), `[storage.s3_protocol]` and the buckets in `[storage.buckets.<name>]` (`public`, `file_size_limit`, `allowed_mime_types`). Files in `objects_path` are not uploaded. |
 | `[db.settings]` | The Postgres settings Supavise saves. A setting that needs a restart waits for the next one. |
 | `[db.seed]`, `[functions.<name>]` | Read by the seed and deploy steps. |
@@ -223,7 +225,7 @@ Differences from the App: no check run named `Supabase Preview` and no comment (
 - **Nothing happens on a pull request.** In the App's settings on GitHub, open **Advanced** and look at the recent deliveries: a `401` is a webhook secret that does not match, a connection error is `api.<domain>` unreachable. A `202` with "no project is connected" means the repository is not connected, or the delivery came from another installation. A pull request from a fork is ignored, and so is one that changes nothing under `supabase/` when **Supabase changes only** is on.
 - **"Supavise could not create the preview branch".** The node refused: the project must be running, and `[branching] max_per_project`, `max_total` or the disk can stop a branch. The comment and the check carry the reason.
 - **A migration fails.** The run's `migrate` step is `DEAD`, the log has the migration and the error, and the branch is `MIGRATIONS_FAILED`. Push a fix: the same branch is brought up to date with only the migrations it still lacks. If the first run never reached the seed, the run that applies the fix seeds the branch.
-- **`env(NAME)` is not applied.** Set the secret on the branch with `supabase secrets set NAME=... --project-ref <branch ref>`, then push again.
+- **`env(NAME)` is not applied.** Set the secret on the branch with `supabase secrets set NAME=... --project-ref <branch ref>`, then push again. A provider, the captcha or an HTTP hook that needs the secret stays off until then, and the log says "is not applied: the branch has no ... yet".
 - **The pull request stopped getting reports after the repository was renamed.** The connection follows the new name with the next event GitHub sends; push a commit or reopen the pull request. After `app create --replace` or `app remove` the connections are gone: connect the project again.
 - **"Supavise could not wake the paused preview branch".** The branch is paused and could not be resumed (the node is full, or the project is being deleted). Resume it from the Branches page.
 - **The Storage buckets step says the schema is not ready.** A new branch's Storage service has not finished; the step retries for 30 seconds.

@@ -179,6 +179,7 @@ func (r *repoSource) configure(ctx context.Context, run *branching.Run, ref stri
 	in := PlanInput{Doc: doc, Ref: ref, Persistent: r.persistent, Branch: ref != r.conn.ProjectRef}
 	if h := r.s.host; h != nil {
 		in.Env = func(name string) (string, bool, error) { return h.FunctionSecret(ctx, ref, name) }
+		in.Held = func(svc projectconfig.Service, key string) (bool, error) { return h.SettingSaved(ctx, ref, svc, key) }
 	}
 	in.Template = func(rel string) (string, bool) {
 		if !r.sn.Has(rel) {
