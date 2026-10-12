@@ -347,6 +347,17 @@ func (m *Memory) PutGitHubBranchLink(_ context.Context, l *GitHubBranchLink) err
 	return nil
 }
 
+func (m *Memory) ClearGitHubBranchLinkSeed(_ context.Context, branchRef string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.gh().links[branchRef]
+	if !ok {
+		return ErrNotFound
+	}
+	l.SeededAt, l.UpdatedAt = nil, m.clock()
+	return nil
+}
+
 func (m *Memory) DeleteGitHubBranchLink(_ context.Context, branchRef string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

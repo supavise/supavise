@@ -273,6 +273,9 @@ type createJob struct {
 	// the branch's own, read before its cluster was removed. Without it the parent's is replayed.
 	history    []Migration
 	useHistory bool
+	// repoBuilt marks a reset of a branch that a repository builds (the Git integration's preview
+	// branch): its seed is the repository's, applied by a commit, and never the parent's stored seed.
+	repoBuilt bool
 }
 
 // doCreate is the body of a branch creation. It returns the detail recorded on success.
@@ -353,6 +356,12 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 	detail := "schema only"
 	switch {
 	case method == MethodSchema && j.in.SchemaSource != nil && !j.recreate:
+		// The base of the branch's Edge Functions is what the parent has now, as for a copy of them: the
+		// repository's functions replace the parent's, and a push or a merge later tells which side changed a
+		// function by comparing both with this.
+		if err := s.recordParentFunctions(ctx, j.parent.Ref, j.ref); err != nil {
+			return "", err
+		}
 		d, err := j.in.SchemaSource.Schema(ctx, runFrom(ctx), j.ref)
 		if err != nil {
 			return "", err

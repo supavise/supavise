@@ -143,6 +143,10 @@ type GitHubStore interface {
 	// PutGitHubBranchLink inserts or replaces the link of a branch.
 	PutGitHubBranchLink(ctx context.Context, l *GitHubBranchLink) error
 	DeleteGitHubBranchLink(ctx context.Context, branchRef string) error
+	// ClearGitHubBranchLinkSeed forgets that the repository's seed was applied to the branch, so that the
+	// next run applies it again (PutGitHubBranchLink never does: a stale link must not un-seed a branch).
+	// ErrNotFound when the branch has no link.
+	ClearGitHubBranchLinkSeed(ctx context.Context, branchRef string) error
 	// GitHubPRNumbers returns the pull request number of each of the branches that follows one.
 	GitHubPRNumbers(ctx context.Context, branchRefs []string) (map[string]int, error)
 
@@ -468,6 +472,17 @@ func (r *Postgres) PutGitHubBranchLink(ctx context.Context, l *GitHubBranchLink)
 func (r *Postgres) DeleteGitHubBranchLink(ctx context.Context, branchRef string) error {
 	_, err := r.pool.Exec(ctx, `delete from supavise.github_branch_links where branch_ref = $1`, branchRef)
 	return mapErr(err)
+}
+
+func (r *Postgres) ClearGitHubBranchLinkSeed(ctx context.Context, branchRef string) error {
+	tag, err := r.pool.Exec(ctx, `update supavise.github_branch_links set seeded_at = null, updated_at = now() where branch_ref = $1`, branchRef)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (r *Postgres) GitHubPRNumbers(ctx context.Context, branchRefs []string) (map[string]int, error) {
