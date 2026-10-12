@@ -8,7 +8,7 @@ This needs a GitHub App that belongs to you. Studio's buttons open Supabase's ow
 
 - **GitHub must reach your server.** The App sends its events to `https://api.<domain>/hooks/github`. A server behind NAT, or one whose `api.<domain>` is not reachable from the internet, cannot receive them; use the [Actions workflow](#a-server-github-cannot-reach) instead.
 - **The dashboard must be reachable by the people who connect repositories.** GitHub sends their browsers back to `https://studio.<domain>/integrations/github/authorize`.
-- **Run the commands on the leader.** The App's credentials live in the registry, which only the leader writes.
+- **Run the commands on the leader.** The App's credentials live in the registry, which only the leader writes. A cluster needs no more: a follower forwards the webhook and the dashboard's calls to the leader, and the App moves with the registry at a failover. An App named in `[github]` needs the same section and the same files on every node that may become the leader.
 - **The daemon must run.** `supavise github app create` prepares the flow; the daemon serves the page and the address GitHub sends the browser back to.
 
 ## Create the App
