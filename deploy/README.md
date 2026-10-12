@@ -130,6 +130,37 @@ sudo -u supavise supavise oauth grants revoke <id>                              
 - **Studio.** The MCP route runs inside Studio (`supavise-studio.service`), which calls the Management API on the node's loopback address, so `/mcp` needs Studio to run. A node without a Studio build answers `/mcp` requests that pass the gate with a gateway error. The route's `search_docs` tool calls `supabase.com` from the node, so a node that blocks outbound traffic loses that one tool.
 - **Registry.** The tokens, codes and client secrets are stored as SHA-256 hashes in five `oauth_*` tables (migration 1350), apart from `access_tokens`.
 
+### The AI provider of Studio
+
+Studio's AI Assistant and the AI features of the SQL editor call a model provider that the operator brings: OpenAI, or any API that speaks its protocol (OpenRouter, LiteLLM, Vercel AI Gateway, an Azure OpenAI v1 endpoint, a local Ollama). A node has none until you set one, and Studio then says that no provider is set. A person uses the Assistant as the [guide](../docs/guide.md#use-the-ai-assistant) says; this section is for the person who runs the server.
+
+```bash
+printf '%s\n' "$KEY" | sudo -u supavise supavise studio ai set --base-url https://openrouter.ai/api/v1 \
+    --api-key-stdin --model openai/gpt-4o-mini        # the key arrives on standard input or in --api-key-file F
+sudo -u supavise supavise studio ai show [--json]     # the settings without the key, and whether Studio runs with them
+sudo -u supavise supavise studio ai check             # GET <base_url>/models with the key, from this server
+sudo -u supavise supavise studio ai clear
+```
+
+`set` and `clear` write `config.d/40-studio-ai.toml` and restart Studio when its environment changed; the daemon needs no restart. The settings are the `[studio.ai]` section of `config.toml`, so they can be written there by hand or set with `SUPAVISE_STUDIO_AI_*` variables:
+
+| Key | Meaning |
+|---|---|
+| `provider` | `openai`, the default and the only value: an API that speaks OpenAI's protocol |
+| `base_url` | the root of the API, `https://` or `http://`, with no user name, query or fragment; empty means OpenAI's own endpoint |
+| `api_key_file` | an absolute path to a regular file with the key on one line, mode 0600 or 0400; empty sends the placeholder `unused`, for a gateway that takes no key. `set` keeps its own copy at `/etc/supavise/studio-ai.key` (0600) |
+| `model` | the model of the Assistant's chat. Without one Studio asks for its own, which are OpenAI's names |
+| `completion_model` | the model of the small calls: snippet titles, filters, cron and policy suggestions, inline completion. Default `model` |
+| `api` | `chat` (chat completions, which every gateway offers; the default with a `base_url`) or `responses` (OpenAI's newer API; the default without one) |
+| `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`, sent with every request; empty sends none |
+
+- **The key.** It is never in `config.toml`, in the output of a command, in a log line or in an answer of the Management API. The daemon reads the file and writes the key into Studio's environment file (`/var/lib/supavise/projects/system/studio.env`, mode 0600), because Studio's unit cannot read `/etc/supavise`. A key file that group or others can read, or that holds more than one line, is refused: the daemon then starts Studio without the provider and logs why (never the key), and `studio ai show` reports it.
+- **What leaves the server.** Studio's server sends the provider the conversation, the SQL the person attached and, as far as the organization's AI opt-in allows (see the guide), schema names and query results. It sends it to `base_url` only. The Assistant's tools that Studio fetches from the node's own MCP endpoint (documentation search, listing tables, extensions, Edge Functions and branches, advisors and logs) are not available, because the endpoint takes OAuth and personal access tokens and not a dashboard session; the tools that Studio runs itself (running SQL, reading policies and reports, deploying a function, renaming the chat) are, and the Assistant reads tables with SQL.
+- **Studio's server calls the node's public address.** The Assistant's routes check the session with the dashboard GoTrue and read the organization and project from the Management API at `https://api.<domain>`, as the dashboard does. A server that cannot reach its own public address (a firewall that drops the loop through the public IP) gets "Unauthorized" from the Assistant's routes, and the Assistant stays unavailable.
+- **Cluster.** `[studio.ai]` belongs to the server. Studio runs on the leader, so set the same provider on every server that can lead, or a failover leaves the dashboard without it. The organization's opt-in tags are in the registry and follow the cluster.
+- **When it does not answer.** Studio shows a generic error when the provider refuses a request. Run `supavise studio ai check`, then read the provider's answer in `journalctl -u supavise-studio` (`Assistant stream error`). The usual causes are a base URL without `/v1`, a model name the provider does not serve, and a model that rejects `reasoning_effort`.
+- **Registry.** The organization's opt-in tags are in `organizations.opt_in_tags` (migration 1550), saved by the Owner with `PATCH /platform/organizations/{slug}`.
+
 ## Update
 
 You own the node, so Supavise tells you that a release exists and changes nothing until you ask, or until you opt in to automatic upgrades inside a maintenance window. A release is a tested bundle: the binary and the Supabase service versions it installs (`internal/versions/versions.yaml`). The [guide](../docs/guide.md#updates-and-maintenance) has the routine.

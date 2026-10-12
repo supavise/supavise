@@ -40,7 +40,7 @@ The unpacked artifacts default to `~/.cache/sbctl/unpacked`, a path the test cod
 | `ci` | `test`, `cfn-lint`, `aws-deploy`, `actionlint`, `functions-main` |
 | `linux` | `systemd-smoke`, `backup-integration`, `pebble`, `fleet-smoke`, `settings-smoke`, `compute-smoke`, `backups-smoke`, `upgrade-smoke`, `upgrade-e2e`, `roles-smoke`, `sso-smoke`, `install-e2e`, `os-updates`, `functions-smoke`, `branching-xfs` (which also runs `branching-egress`), `converge-e2e`, `firstboot-e2e`, `cluster-identity`, `replica-blocks`, `fleet-follower`, `storage-migrate`, `oauth-smoke`, `migrate-smoke` |
 | `conformance` | `suites`, `specdiff`, `bump-check` |
-| `studio` | `build` (runs `studio/build.sh`, then `studio/spike.sh`), `mcp-e2e` (the OAuth walk and MCP over HTTP on the amd64 build; `tests/linux/oauth-smoke.sh --studio-artifact`) |
+| `studio` | `build` (runs `studio/build.sh`, then `studio/spike.sh`), `mcp-e2e` (the OAuth walk and MCP over HTTP on the amd64 build; `tests/linux/oauth-smoke.sh --studio-artifact`), `ai-e2e` (the AI Assistant against a fake OpenAI-compatible provider on the amd64 build; `tests/linux/ai-smoke.sh --studio-artifact`) |
 | `footprint` | manual; see [reference/footprint.md](reference/footprint.md) |
 | `bump-proposals` | nightly; opens one pull request per upstream release newer than its pin |
 | `release` | on a `v*` tag |
@@ -48,7 +48,7 @@ The unpacked artifacts default to `~/.cache/sbctl/unpacked`, a path the test cod
 | `replication` | `two-servers`: the two-server release test (`tests/linux/multi/replication.sh`) on both architectures: install, join, a read replica, planned and unplanned failover, rejoin, and the upgrade of both servers. It runs on pushes to `integrate/**` and by hand, on both runners |
 | `screenshots` | README screenshots |
 
-The `studio` workflow starts on changes under `studio/`, in `internal/versions/versions.yaml` and in its own file. A change that touches only `tests/linux/oauth/`, the `/mcp` gate or the proxy does not start `mcp-e2e`, so start the workflow by hand after one and before a release. `release-gate.sh` requires `linux.yml` and not `studio.yml`, so the release gate does not wait for `mcp-e2e`.
+The `studio` workflow starts on changes under `studio/`, in `internal/versions/versions.yaml` and in its own file. A change that touches only `tests/linux/oauth/`, the `/mcp` gate or the proxy does not start `mcp-e2e`, and one that touches only `tests/linux/ai-smoke.sh`, `supavise studio ai` (`cmd/supavise/cmd_studio_ai.go`, `internal/fleet/studio_ai.go`) or the organization PATCH does not start `ai-e2e`: start the workflow by hand after one and before a release. A path filter that covered them would build Studio for both platforms after every such change. `release-gate.sh` requires `linux.yml` and not `studio.yml`, so the release gate does not wait for `mcp-e2e` or `ai-e2e`.
 
 ## Conventions
 
@@ -74,7 +74,7 @@ Rules the code follows. A change that breaks one needs a reason in [design.md](d
 | Provenance | no code copied from `kmhari/supastack` (AGPL); reading it for reference is fine |
 | Name | the product name must not contain "Supabase"; Supavise is not affiliated with Supabase Inc. |
 
-**Decided.** Do not reintroduce these without a written reason in [design.md](design.md) section 10: one Postgres cluster per project; native artifacts and no Docker; the proxy inside the binary and no Envoy; Supavisor as the only Postgres entry point; WAL archiving through the binary and no wal-g; wildcard DNS required; the platform-mode Studio build with exactly four patches (three upstreamable, and patch 0004 that serves the MCP route; the reason is in section 10); API types generated from the specs.
+**Decided.** Do not reintroduce these without a written reason in [design.md](design.md) section 10: one Postgres cluster per project; native artifacts and no Docker; the proxy inside the binary and no Envoy; Supavisor as the only Postgres entry point; WAL archiving through the binary and no wal-g; wildcard DNS required; the platform-mode Studio build with a few small patches (three upstreamable, and the ones only Supavise needs: 0004 serves the MCP route and 0006 points the AI features at the operator's model provider; the reasons are in section 10); API types generated from the specs.
 
 ## Releases
 

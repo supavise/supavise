@@ -8,6 +8,7 @@ This guide picks up after the install in the [README](../README.md#get-started).
 - [Use the Supabase CLI](#use-the-supabase-cli)
 - [Give an agent or a preview its own branch](#give-an-agent-or-a-preview-its-own-branch)
 - [Connect an AI tool to a project](#connect-an-ai-tool-to-a-project)
+- [Use the AI Assistant](#use-the-ai-assistant)
 - [Check a project with the advisors](#check-a-project-with-the-advisors)
 - [Back up and restore](#back-up-and-restore)
 - [Move a project from hosted Supabase](#move-a-project-from-hosted-supabase)
@@ -178,6 +179,47 @@ Then start `claude`, run `/mcp` and choose **Authenticate**. The client opens St
 Two things to know about the server. Its documentation search, `search_docs`, calls `supabase.com` from your node, as on hosted Supabase. And the `skip_elicitations` option is accepted and ignored, because the endpoint cannot ask the client to confirm a cost.
 
 To turn OAuth sign-in off, set `disable_oauth = true` in the `[api]` section of `/etc/supavise/config.toml` and restart `supavise.service`: the MCP URL, the sign-in endpoints and the OAuth Apps page then stop working, and Studio is no longer given the URL. Personal access tokens and the dashboard keep working. [Design, section 13](design.md#13-oauth-sign-in-and-the-remote-mcp-endpoint) describes how it works.
+
+## Use the AI Assistant
+
+Studio's AI Assistant and the AI features of the SQL editor (a title for a saved snippet, inline completion, policy and cron suggestions) need a model provider, and a new server has none. Until someone sets one, the Assistant says "AI provider not set" and its box stays closed. You bring the provider: OpenAI, or any service that speaks OpenAI's API, with your own key. Nothing goes to a provider you did not name.
+
+Set it on the server, as the `supavise` user. The key goes in on standard input, so it is not in your shell history or in a process list:
+
+```bash
+# OpenAI itself: the key is enough
+printf '%s\n' "$OPENAI_API_KEY" | sudo -u supavise supavise studio ai set --api-key-stdin
+
+# a gateway: its URL, the key and the names of its models
+printf '%s\n' "$OPENROUTER_API_KEY" | sudo -u supavise supavise studio ai set \
+  --base-url https://openrouter.ai/api/v1 --api-key-stdin \
+  --model anthropic/claude-sonnet-4.5 --completion-model openai/gpt-4o-mini
+
+# a model on this server with Ollama, which takes no key
+sudo -u supavise supavise studio ai set --base-url http://127.0.0.1:11434/v1 --no-api-key --model llama3.1:8b
+```
+
+Then check it, from the same server:
+
+```bash
+sudo -u supavise supavise studio ai show     # the settings and whether Studio runs with them; the key is not shown
+sudo -u supavise supavise studio ai check    # asks the provider for its model list with your key
+```
+
+The command restarts Studio if it has to, and the Assistant works as soon as the dashboard reloads. `supavise studio ai set --model X` later changes the model alone; `supavise studio ai clear` removes the provider and the stored key.
+
+- **Which providers.** Any that offers OpenAI's chat completions API at a URL ending in `/v1`: OpenAI, OpenRouter, LiteLLM, Vercel AI Gateway, Azure OpenAI's v1 endpoint, vLLM, Ollama and others. With a `--base-url` Supavise asks for `/chat/completions`, which they all have; for OpenAI itself it keeps Studio's own choice, the newer `/responses` API (`--api responses` makes it explicit).
+- **Which models.** Studio asks OpenAI for models by its own names, so with a `--base-url` other than OpenAI's, name yours (`studio ai set` and `studio ai check` warn when you do not, because most gateways do not serve OpenAI's names and every message would fail; skip `--model` only for a gateway that maps those names): `--model` for the Assistant's chat and `--completion-model` for the small calls, which can be a cheaper model (it defaults to `--model`). Studio's model picker then shows your model instead of OpenAI's three. A model that reasons can take `--reasoning-effort low|medium|high`; the default sends none.
+- **What the provider is told.** The conversation, and the SQL a person attaches or the Assistant writes, always. How much of the database follows the organization's AI setting, which only an Owner changes (the organization's **General** settings, or the prompt Studio shows the first time someone uses the Assistant):
+  - *Disabled*: no database information. The answers are generic.
+  - *Schema only*: names of schemas, tables, columns and policies, data types and relationships, but no rows.
+  - *Schema and logs*, *Schema, logs and database data*: the Assistant may also pass on logs, and with the last level the rows of the read-only queries it runs. The logs of a server are in the journal (`supavise logs`) and not in Studio, so the logs level adds nothing here.
+
+  A new organization starts at *Disabled*, as on hosted Supabase. Choose the level you accept for the provider you set: it is your provider that receives it.
+- **What does not work.** The Assistant cannot search Supabase's documentation, list a project's extensions, Edge Functions or branches through its own tools, or read advisors and logs, because those tools come from the server's MCP endpoint, which takes OAuth and personal access tokens and not a dashboard session. It runs SQL (with the person's approval), reads policies and reports, can deploy a function and answers from its model otherwise. The legacy documentation chat (`/api/ai/docs`) is not set up.
+- **Where the key is.** In a file only the `supavise` user can read, next to `config.toml`, and in Studio's own environment file. It is not in `config.toml`, in any log, in the output of `studio ai show` or in an answer of the Management API, whoever asks: a Developer or Read-only member cannot read it. The requests to the model go from the server, not from a browser, to your provider; none go to OpenAI unless OpenAI is your provider.
+- **When it fails.** Studio shows a general error and keeps the provider's message in its log. Run `supavise studio ai check`, then `journalctl -u supavise-studio` and look for "Assistant stream error". A wrong key, a base URL without `/v1`, a model name the provider does not know and a model that rejects `--reasoning-effort` are the usual causes.
+- **Turn it off.** `supavise studio ai clear` removes the provider for everyone. To stop the Assistant from seeing a database while keeping it available, an Owner sets the organization to *Disabled*. On a cluster of two servers, set (or clear) the provider on both: it belongs to the server, and the one that leads after a failover needs it. [Deploy, "The AI provider of Studio"](../deploy/README.md#the-ai-provider-of-studio) has the settings.
 
 ## Check a project with the advisors
 
@@ -472,6 +514,7 @@ A server can run out of memory while every project is under its own limit, becau
 
 Studio is the real hosted dashboard. Where a page depends on something a server does not have, it says so instead of showing an empty list or a success that did nothing.
 
+- **The AI Assistant.** It needs a model provider that you set on the server; until then it says so. See [Use the AI Assistant](#use-the-ai-assistant).
 - **Logs and Reports.** The Logs Explorer and the log pages of each service show an error that points to `supavise logs <ref>`. The charts of the Auth, Edge Functions and some other reports have no way to show an error and stay empty.
 - **Requests on the project home.** The chart counts the requests that the server's proxy served to the project's REST, Auth, Storage and Realtime APIs, by minute, hour or day. The counts live in memory: they start at zero when `supavise` restarts, and on a two-server cluster they leave out the requests that the second server served.
 - **Database Webhooks.** Select **Enable webhooks** to create the `supabase_functions` schema and turn on `pg_net`. If you created a schema with that name yourself, the button fails with a message: drop or rename your schema first. Webhooks you create after that send an HTTP request when a row is inserted, updated or deleted, as you chose; the response is in `net._http_response`. A branch created with data cannot send those requests to the network unless it was created with `--allow-egress`.

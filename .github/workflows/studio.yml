@@ -89,3 +89,43 @@ jobs:
           name: mcp-e2e
           path: /tmp/supavise-mcp-logs
           if-no-files-found: ignore
+
+  # The AI Assistant with a provider the operator brings, on the Studio build the `build` job just made
+  # (amd64): tests/linux/ai-smoke.sh points Supavise at a fake OpenAI-compatible provider on loopback with a
+  # dummy key (`supavise studio ai set`) and calls Studio's routes through the edge with a dashboard session.
+  # It proves that the base URL, the key and the model are the ones used, that what the provider is told
+  # follows the organization's AI opt-in, that nothing goes to api.openai.com, and that the key is in
+  # Studio's environment file and nowhere else. It reuses the build's artifact, so it costs no second Studio
+  # build; `!cancelled()` runs it when only the spike (or the arm64 build) failed. The path filter above is
+  # Studio's: a push that changes only the script, the fake provider or `supavise studio ai` does not start
+  # this workflow, so run it by hand (workflow_dispatch) after such a change.
+  ai-e2e:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: studio-linux-amd64
+          path: /tmp/studio-dist
+      - name: build supavise
+        run: CGO_ENABLED=0 go build -trimpath -o /tmp/supavise ./cmd/supavise
+      - name: ai end to end
+        run: |
+          ls -l /tmp/studio-dist
+          sudo env "PATH=$PATH" LOG_DIR=/tmp/supavise-ai-logs SUPAVISE_BIN=/tmp/supavise \
+            tests/linux/ai-smoke.sh --studio-artifact "$(ls /tmp/studio-dist/supavise-studio-*-linux-amd64.tar.zst)"
+      - if: always()
+        name: collect logs
+        run: sudo chmod -R a+rX /tmp/supavise-ai-logs || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-e2e
+          path: /tmp/supavise-ai-logs
+          if-no-files-found: ignore
