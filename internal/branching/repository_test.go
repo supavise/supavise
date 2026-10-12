@@ -137,7 +137,7 @@ func TestResetOfARepositoryBranchAppliesNoParentSeedAndForgetsTheRepositorysSeed
 	if err != nil || l.SeededAt != nil {
 		t.Fatalf("link after the reset: %+v, %v", l, err)
 	}
-	if log := c.runLog(pr.Ref); !strings.Contains(log, "the next commit to the pull request applies it again") {
+	if log := c.runLog(pr.Ref); !strings.Contains(log, "the next commit to the pull request applies the repository's seed again") {
 		t.Fatalf("run log:\n%s", log)
 	}
 
@@ -148,6 +148,33 @@ func TestResetOfARepositoryBranchAppliesNoParentSeedAndForgetsTheRepositorysSeed
 	c.mustState(c.wait(plain.Ref), registry.BranchFunctionsDeployed)
 	if len(c.db.scripts[plain.Ref]) != 1 {
 		t.Fatalf("a reset of a plain branch did not apply the parent's seed: %v", c.db.scripts[plain.Ref])
+	}
+}
+
+// The link does not say who made the branch. One made by hand before the pull request (it got the
+// parent's seed when it was created) is reset like a preview branch once a pull request follows it:
+// no seed of the parent, and the next commit applies the repository's. The docs say so.
+func TestAResetOfABranchMadeByHandThatAPullRequestFollowsIsResetLikeAPreviewBranch(t *testing.T) {
+	c := newContentHarness(t, nil)
+	if err := c.svc.SetSeed(context.Background(), parentRef, "insert into t values (1)"); err != nil {
+		t.Fatal(err)
+	}
+	c.eng.onDelete = func(ref string, _ lifecycle.DeleteOptions) { c.harness.db.forget(ref) }
+	hand := c.create("hand", nil)
+	if len(c.db.scripts[hand.Ref]) != 1 {
+		t.Fatalf("the branch was not seeded with the parent's seed when it was made: %v", c.db.scripts[hand.Ref])
+	}
+	linkOf(t, c, hand.Ref, true) // adopted by a pull request: marked seeded, because it has its own data
+
+	if _, err := c.svc.Reset(context.Background(), hand.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	c.mustState(c.wait(hand.Ref), registry.BranchFunctionsDeployed)
+	if len(c.db.scripts[hand.Ref]) != 0 {
+		t.Fatalf("the parent's seed ran on a branch a pull request follows: %v", c.db.scripts[hand.Ref])
+	}
+	if l, err := registry.GitHubOf(c.reg).GetGitHubBranchLink(context.Background(), hand.Ref); err != nil || l.SeededAt != nil {
+		t.Fatalf("link after the reset: %+v, %v", l, err)
 	}
 }
 
