@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The GitHub integration's state (migration 1540). The package internal/github owns what the rows
@@ -82,6 +83,10 @@ type GitHubBranchLink struct {
 	// Functions maps a function slug to the hash of the source last deployed from the repository,
 	// so that a later commit deploys only the functions that changed.
 	Functions map[string]string
+	// SeededAt is when the repository's seed was applied to the branch (or found not to apply). It
+	// stays empty until a run gets past the seed step, so that a first run that failed in a
+	// migration, or that a newer commit cancelled, does not leave the branch without its seed.
+	SeededAt  *time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -91,11 +96,12 @@ type GitHubBranchLink struct {
 type GitHubStore interface {
 	// GetGitHubApp returns the server's App, or ErrNotFound.
 	GetGitHubApp(ctx context.Context) (*GitHubApp, error)
-	// PutGitHubApp replaces the server's App. The users' authorizations and the manifest states
-	// belong to the App they were made for, so they are removed with it.
+	// PutGitHubApp replaces the server's App. The users' authorizations, the manifest states, the
+	// connections and the branch links belong to the App they were made for (they name its
+	// installations), so they are removed with it; the branches themselves stay.
 	PutGitHubApp(ctx context.Context, a *GitHubApp) error
-	// DeleteGitHubApp forgets the App, the authorizations and the manifest states. It reports
-	// whether there was an App.
+	// DeleteGitHubApp forgets the App, the authorizations, the manifest states, the connections and
+	// the branch links. It reports whether there was an App.
 	DeleteGitHubApp(ctx context.Context) (bool, error)
 
 	// PutGitHubState records a manifest flow in progress: stateHash is the SHA-256 of the state and
@@ -163,6 +169,14 @@ var (
 
 // ---- Postgres ---------------------------------------------------------------------------------
 
+// missingTable reports whether err says a table is not there (SQLSTATE 42P01). A server on this
+// release can read a registry whose leader has not applied migration 1540 yet, in a cluster that is
+// being upgraded one server at a time; for the GitHub state that means "none".
+func missingTable(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "42P01"
+}
+
 func (r *Postgres) GetGitHubApp(ctx context.Context) (*GitHubApp, error) {
 	var a GitHubApp
 	err := r.pool.QueryRow(ctx, `
@@ -170,6 +184,9 @@ func (r *Postgres) GetGitHubApp(ctx context.Context) (*GitHubApp, error) {
 		       sealed_private_key, created_by, created_at, updated_at
 		  from supavise.github_app`).Scan(&a.AppID, &a.Slug, &a.Name, &a.ClientID, &a.OwnerLogin, &a.HTMLURL,
 		&a.SealedClientSecret, &a.SealedWebhookSecret, &a.SealedPrivateKey, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
+	if missingTable(err) {
+		return nil, ErrNotFound // the registry has not got migration 1540 yet: no App
+	}
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -184,6 +201,9 @@ func (r *Postgres) PutGitHubApp(ctx context.Context, a *GitHubApp) error {
 		}
 		if _, err := tx.Exec(ctx, `delete from supavise.github_manifest_states`); err != nil {
 			return mapErr(err)
+		}
+		if err := dropGitHubInstallations(ctx, tx); err != nil {
+			return err
 		}
 		err := tx.QueryRow(ctx, `
 			insert into supavise.github_app (singleton, app_id, slug, name, client_id, owner_login, html_url,
@@ -212,10 +232,22 @@ func (r *Postgres) DeleteGitHubApp(ctx context.Context) (bool, error) {
 		if _, err := tx.Exec(ctx, `delete from supavise.github_authorizations`); err != nil {
 			return mapErr(err)
 		}
-		_, err = tx.Exec(ctx, `delete from supavise.github_manifest_states`)
-		return mapErr(err)
+		if _, err = tx.Exec(ctx, `delete from supavise.github_manifest_states`); err != nil {
+			return mapErr(err)
+		}
+		return dropGitHubInstallations(ctx, tx)
 	})
 	return had, err
+}
+
+// dropGitHubInstallations removes what names an installation of the App that is going: a
+// connection keeps the installation id of its repository, a branch link the one of its pull request.
+func dropGitHubInstallations(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `delete from supavise.github_branch_links`); err != nil {
+		return mapErr(err)
+	}
+	_, err := tx.Exec(ctx, `delete from supavise.github_connections`)
+	return mapErr(err)
 }
 
 func (r *Postgres) PutGitHubState(ctx context.Context, stateHash []byte, params, createdBy string, expires time.Time) error {
@@ -372,13 +404,13 @@ func (r *Postgres) SetGitHubProdFunctions(ctx context.Context, id int64, hashes 
 }
 
 const githubLinkCols = `branch_ref, project_ref, repository_id, repository_name, installation_id, pr_number, head_ref, head_sha,
-	check_run_id, comment_id, functions, created_at, updated_at`
+	check_run_id, comment_id, functions, seeded_at, created_at, updated_at`
 
 func scanGitHubLink(row pgx.Row) (*GitHubBranchLink, error) {
 	var l GitHubBranchLink
 	var fns []byte
 	err := row.Scan(&l.BranchRef, &l.ProjectRef, &l.RepositoryID, &l.RepositoryName, &l.InstallationID, &l.PRNumber, &l.HeadRef,
-		&l.HeadSHA, &l.CheckRunID, &l.CommentID, &fns, &l.CreatedAt, &l.UpdatedAt)
+		&l.HeadSHA, &l.CheckRunID, &l.CommentID, &fns, &l.SeededAt, &l.CreatedAt, &l.UpdatedAt)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -427,14 +459,15 @@ func (r *Postgres) PutGitHubBranchLink(ctx context.Context, l *GitHubBranchLink)
 	}
 	return mapErr(r.pool.QueryRow(ctx, `
 		insert into supavise.github_branch_links (branch_ref, project_ref, repository_id, repository_name, installation_id, pr_number,
-		                                          head_ref, head_sha, check_run_id, comment_id, functions)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::jsonb)
+		                                          head_ref, head_sha, check_run_id, comment_id, functions, seeded_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::jsonb, $12)
 		on conflict (branch_ref) do update set repository_name = excluded.repository_name, installation_id = excluded.installation_id,
 		  pr_number = excluded.pr_number, head_ref = excluded.head_ref, head_sha = excluded.head_sha,
-		  check_run_id = excluded.check_run_id, comment_id = excluded.comment_id, functions = excluded.functions, updated_at = now()
-		returning created_at, updated_at`,
+		  check_run_id = excluded.check_run_id, comment_id = excluded.comment_id, functions = excluded.functions,
+		  seeded_at = coalesce(supavise.github_branch_links.seeded_at, excluded.seeded_at), updated_at = now()
+		returning seeded_at, created_at, updated_at`,
 		l.BranchRef, l.ProjectRef, l.RepositoryID, l.RepositoryName, l.InstallationID, l.PRNumber, l.HeadRef, l.HeadSHA,
-		l.CheckRunID, l.CommentID, string(fns)).Scan(&l.CreatedAt, &l.UpdatedAt))
+		l.CheckRunID, l.CommentID, string(fns), l.SeededAt).Scan(&l.SeededAt, &l.CreatedAt, &l.UpdatedAt))
 }
 
 func (r *Postgres) DeleteGitHubBranchLink(ctx context.Context, branchRef string) error {
@@ -448,6 +481,9 @@ func (r *Postgres) GitHubPRNumbers(ctx context.Context, branchRefs []string) (ma
 		return out, nil
 	}
 	rows, err := r.pool.Query(ctx, `select branch_ref, pr_number from supavise.github_branch_links where branch_ref = any($1) and pr_number > 0`, branchRefs)
+	if missingTable(err) {
+		return out, nil // the registry has not got migration 1540 yet: no pull requests
+	}
 	if err != nil {
 		return nil, mapErr(err)
 	}
