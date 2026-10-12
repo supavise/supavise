@@ -84,10 +84,27 @@ func (s *Service) runPR(ctx context.Context, conn registry.GitHubConnection, ev 
 	if ev.Action == "closed" {
 		err = s.closePR(ctx, conn, ev)
 	} else {
+		release, ok := s.acquireBuild(ctx)
+		if !ok {
+			return // a newer commit replaced this one while it waited for its turn
+		}
+		defer release()
 		err = s.syncPR(ctx, conn, ev)
 	}
 	if err != nil && ctx.Err() == nil {
 		log.Warn("a pull request could not be handled", "err", err)
+	}
+}
+
+// acquireBuild waits for one of the node's build slots ([github] max_concurrent_builds). It
+// reports false when the job ended first. Each build reads a repository and makes or migrates a
+// Postgres cluster, so a rebase that updates forty pull requests must not start forty at once.
+func (s *Service) acquireBuild(ctx context.Context) (release func(), ok bool) {
+	select {
+	case s.builds <- struct{}{}:
+		return func() { <-s.builds }, true
+	case <-ctx.Done():
+		return nil, false
 	}
 }
 
@@ -137,12 +154,20 @@ func (s *Service) linkFor(conn registry.GitHubConnection, ev prEvent, b *branchi
 		HeadSHA: ev.HeadSHA, CheckRunID: checkID, Functions: map[string]string{}}
 }
 
+// markSeeded records that a branch somebody else made is not ours to seed: it has its own data.
+func (s *Service) markSeeded(link *registry.GitHubBranchLink) {
+	if link.SeededAt == nil {
+		t := s.now().UTC()
+		link.SeededAt = &t
+	}
+}
+
 // syncPR creates the preview branch of a pull request, or brings it up to the head commit.
 func (s *Service) syncPR(ctx context.Context, conn registry.GitHubConnection, ev prEvent) error {
 	if s.br == nil {
 		return errors.New("this node has no branching service")
 	}
-	rep, err := s.reporterFor(ctx, conn.InstallationID, conn.RepositoryName)
+	rep, err := s.reporterFor(ctx, conn.InstallationID, conn.RepositoryName, conn.ProjectRef)
 	if err != nil {
 		return err
 	}
@@ -221,10 +246,12 @@ func (s *Service) buildPR(ctx context.Context, conn registry.GitHubConnection, e
 		return s.createFromPR(ctx, conn, ev, sn, checkID)
 	}
 	if link == nil {
+		// A branch that somebody made before the pull request has its own data: it is not seeded.
 		link = s.linkFor(conn, ev, b, checkID)
+		s.markSeeded(link)
 	}
 	link.PRNumber, link.HeadRef, link.HeadSHA, link.CheckRunID = ev.Number, ev.HeadRef, ev.HeadSHA, checkID
-	src = &repoSource{s: s, conn: conn, sn: sn, job: ctx, persistent: b.Persistent, have: link.Functions}
+	src = &repoSource{s: s, conn: conn, sn: sn, job: ctx, persistent: b.Persistent, have: link.Functions, seedDue: link.SeededAt == nil}
 	return s.driveBranch(ctx, conn, b, link, src, checkID)
 }
 
@@ -237,7 +264,7 @@ func (s *Service) createFromPR(ctx context.Context, conn registry.GitHubConnecti
 		oc.Detail = "Close a pull request or raise the limit in Settings > Integrations > GitHub."
 		return oc
 	}
-	src := &repoSource{s: s, conn: conn, sn: sn, job: ctx, fresh: true, have: map[string]string{}}
+	src := &repoSource{s: s, conn: conn, sn: sn, job: ctx, fresh: true, seedDue: true, have: map[string]string{}}
 	name := branchName(ev.HeadRef, ev.Number)
 	in := branching.CreateInput{Name: name, GitBranch: ev.HeadRef, TTL: -1, SchemaSource: src}
 	b, err := s.br.Create(ctx, conn.ProjectRef, in)
@@ -249,6 +276,7 @@ func (s *Service) createFromPR(ctx context.Context, conn registry.GitHubConnecti
 				oc.Headline, oc.Detail = "Supavise could not record the preview branch.", perr.Error()
 				return oc
 			}
+			// The create was cut short: whatever it did not reach, this run does, the seed included.
 			src.fresh = false
 			src.have = map[string]string{}
 			return s.driveBranch(ctx, conn, exist, link, src, checkID)
@@ -307,6 +335,13 @@ func (s *Service) driveBranch(ctx context.Context, conn registry.GitHubConnectio
 		oc.Headline, oc.Detail = "Supavise could not wait for the branch.", err.Error()
 		return oc
 	}
+	// A preview branch that paused while the pull request sat idle (or that somebody paused) runs again
+	// for this commit.
+	if _, err := s.br.Wake(ctx, b.Ref); err != nil {
+		oc.Headline = "Supavise could not wake the paused preview branch."
+		oc.Detail = branchErrText(err)
+		return oc
+	}
 	if err := s.st.PutGitHubBranchLink(ctx, link); err != nil {
 		oc.Headline, oc.Detail = "Supavise could not record the preview branch.", err.Error()
 		return oc
@@ -336,6 +371,9 @@ func (s *Service) setRunCheck(ctx context.Context, runID string, checkID int64) 
 // the run deployed are kept on the link for the next commit.
 func (s *Service) await(ctx context.Context, conn registry.GitHubConnection, ref, runID string, link *registry.GitHubBranchLink, src *repoSource) outcome {
 	oc := outcome{Parent: conn.ProjectRef, BranchRef: ref}
+	// Recording what the run did survives a newer commit cancelling this one.
+	rctx := context.WithoutCancel(ctx)
+	defer s.recordRun(rctx, link, src)
 	b, err := s.br.WaitIdle(ctx, ref)
 	if err != nil {
 		oc.Headline = "Supavise stopped waiting for the branch."
@@ -343,25 +381,10 @@ func (s *Service) await(ctx context.Context, conn registry.GitHubConnection, ref
 		return oc
 	}
 	oc.Branch = b.Name
-	// Recording the end survives a newer commit cancelling this one.
-	rctx := context.WithoutCancel(ctx)
 	if runID != "" {
 		if run, rerr := s.br.GetRun(rctx, ref, runID); rerr == nil {
 			oc.Run = run
 		}
-	}
-	if src != nil && link != nil {
-		src.mu.Lock()
-		if len(src.hashes) > 0 {
-			if link.Functions == nil {
-				link.Functions = map[string]string{}
-			}
-			for k, v := range src.hashes {
-				link.Functions[k] = v
-			}
-		}
-		src.mu.Unlock()
-		_ = s.st.PutGitHubBranchLink(rctx, link)
 	}
 	oc.Links = s.dashboardLinks(conn.ProjectRef, ref)
 	if b.State == registry.BranchFunctionsDeployed {
@@ -373,6 +396,30 @@ func (s *Service) await(ctx context.Context, conn registry.GitHubConnection, ref
 	oc.Headline = fmt.Sprintf("The preview branch `%s` could not be deployed (%s).", b.Name, b.State)
 	oc.Detail = b.Detail
 	return oc
+}
+
+// recordRun keeps on the link what the run did: the hashes of the functions it deployed, and that
+// it got past the seed step, so that a branch whose first run failed in a migration, or was
+// cancelled by a newer commit, is seeded by the next one.
+func (s *Service) recordRun(ctx context.Context, link *registry.GitHubBranchLink, src *repoSource) {
+	if src == nil || link == nil {
+		return
+	}
+	src.mu.Lock()
+	if len(src.hashes) > 0 {
+		if link.Functions == nil {
+			link.Functions = map[string]string{}
+		}
+		for k, v := range src.hashes {
+			link.Functions[k] = v
+		}
+	}
+	seeded := src.stats.seedDone
+	src.mu.Unlock()
+	if seeded {
+		s.markSeeded(link)
+	}
+	_ = s.st.PutGitHubBranchLink(ctx, link)
 }
 
 // finishPR writes the end of the check run and the pull request's comment.

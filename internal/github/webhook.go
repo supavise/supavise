@@ -29,9 +29,10 @@ type Delivery struct {
 	Body      []byte
 }
 
-// MaxWebhookBody bounds a delivery. GitHub caps payloads at 25 MB; a pull request or push event
-// of a real repository is a few kilobytes to a few hundred.
-const MaxWebhookBody = 8 << 20
+// MaxWebhookBody bounds a delivery. GitHub caps payloads at 25 MB; a pull request event is a few
+// kilobytes and a push event of the most commits GitHub lists (2048) a few megabytes. A bigger push
+// is refused (413) and its commit is deployed with Resync on the production row of the Branches page.
+const MaxWebhookBody = 4 << 20
 
 // WebhookResult is the answer to a delivery.
 type WebhookResult struct {
@@ -77,6 +78,17 @@ func (l *rateLimiter) allow() bool {
 	}
 	l.tokens--
 	return true
+}
+
+// SignatureShapeOK reports whether the header looks like GitHub's signature, "sha256=" and 64
+// hexadecimal digits. The route refuses anything else before it reads the body.
+func SignatureShapeOK(header string) bool {
+	hexSig, ok := strings.CutPrefix(header, "sha256=")
+	if !ok || len(hexSig) != 2*sha256.Size {
+		return false
+	}
+	_, err := hex.DecodeString(hexSig)
+	return err == nil
 }
 
 // SignatureOK checks X-Hub-Signature-256 ("sha256=<hex>") of the body under the webhook secret, in
@@ -226,6 +238,19 @@ func (s *Service) connectionsFor(ctx context.Context, repo repoRef, inst *instal
 		if inst != nil && inst.ID != 0 && c.InstallationID != inst.ID {
 			continue
 		}
+		// A repository that was renamed or transferred keeps its id and sends its new name; API calls
+		// by the old name are answered with a redirect that is never followed.
+		if repo.FullName != "" && c.RepositoryName != repo.FullName {
+			old := c.RepositoryName
+			c.RepositoryName = repo.FullName
+			if err := s.st.UpdateGitHubConnection(ctx, &c); err != nil {
+				if errors.Is(err, registry.ErrNotFound) {
+					continue // disconnected meanwhile
+				}
+				return nil, err
+			}
+			s.log.Info("a connected repository was renamed", "project", c.ProjectRef, "from", old, "to", repo.FullName)
+		}
 		out = append(out, c)
 	}
 	return out, nil
@@ -344,6 +369,11 @@ func (s *Service) onPush(ctx context.Context, p *pushPayload) (string, error) {
 		}
 		queued++
 		s.enqueue(fmt.Sprintf("git:%d:%s", c.ID, branch), func(ctx context.Context) {
+			release, ok := s.acquireBuild(ctx)
+			if !ok {
+				return
+			}
+			defer release()
 			if err := s.syncGitBranch(ctx, c, branch, p.After); err != nil && ctx.Err() == nil {
 				s.log.Warn("a Git branch could not be deployed", "repo", c.RepositoryName, "branch", branch, "err", err)
 			}

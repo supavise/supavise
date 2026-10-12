@@ -100,7 +100,7 @@ func retryable(status int) bool {
 }
 
 // send runs a request, retrying a GET twice on a gateway error, and returns the response with its
-// body open. A status of 400 or more comes back as an *APIError and the body is closed.
+// body open. A status of 300 or more comes back as an *APIError and the body is closed.
 func (c *Client) send(ctx context.Context, auth, method, path string, payload []byte, accept string) (*http.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -130,7 +130,10 @@ func (c *Client) send(ctx context.Context, auth, method, path string, payload []
 			}
 			return nil, err
 		}
-		if resp.StatusCode < 400 {
+		// The HTTP client does not follow redirects (a token must not leave the API's origin), so a
+		// 301 or 307, which GitHub answers for a repository that was renamed or transferred, is an
+		// error here and not a body to decode.
+		if resp.StatusCode < 300 {
 			return resp, nil
 		}
 		ae := readAPIError(resp, method, path)

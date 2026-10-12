@@ -592,6 +592,18 @@ func (s *Server) annotatePRs(ctx context.Context, outs ...*branchOut) {
 	}
 }
 
+// writeBranchPR is writeBranch with the number of the pull request the branch follows. The routes
+// that answer one branch use it; writeBranch itself keeps its signature.
+func (s *Server) writeBranchPR(w http.ResponseWriter, r *http.Request, status int, b *branching.Branch) error {
+	out, err := branchJSON(b)
+	if err != nil {
+		return err
+	}
+	s.annotatePRs(r.Context(), out)
+	writeJSON(w, status, out)
+	return nil
+}
+
 // pushBranch is the push of POST /v1/branches/{id}/push. On the production row of a project with
 // "Deploy to production" on, it deploys the production branch of the repository again (Resync);
 // elsewhere it is the service's push.

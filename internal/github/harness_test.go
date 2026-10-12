@@ -30,6 +30,7 @@ type fakeDB struct {
 	history   map[string][]branching.Migration
 	scripts   map[string][]string
 	applyLog  []string // ref/version, in order
+	unlocked  []string // ref/version of migrations applied without the project's apply lock
 	failAt    string   // a version whose migration fails
 	failSeed  bool
 	bucketLag int // RunScripts that fail with "Storage schema is not ready" first
@@ -50,8 +51,13 @@ func (d *fakeDB) Migrations(_ context.Context, ref string) ([]branching.Migratio
 	return slices.Clone(d.history[ref]), nil
 }
 
-func (d *fakeDB) Apply(ctx context.Context, ref string, ms []branching.Migration, _ branching.ApplyOptions) (branching.ApplyResult, error) {
+func (d *fakeDB) Apply(ctx context.Context, ref string, ms []branching.Migration, o branching.ApplyOptions) (branching.ApplyResult, error) {
 	d.mu.Lock()
+	if !o.Lock && !o.Atomic {
+		for _, m := range ms {
+			d.unlocked = append(d.unlocked, ref+"/"+m.Version)
+		}
+	}
 	if len(ms) == 1 && d.gate != nil && ms[0].Version == d.gateAt {
 		gate, entered := d.gate, d.entered
 		d.mu.Unlock()
@@ -111,6 +117,8 @@ type fakeBranches struct {
 	n        int
 	// failFunctions makes the deploy of a create fail.
 	maxPerProject int
+	paused        map[string]bool // refs of branches that are paused
+	woken         []string
 }
 
 func newFakeBranches(db *fakeDB) *fakeBranches {
@@ -233,6 +241,10 @@ func (f *fakeBranches) Drive(ctx context.Context, idOrRef, op string, fn branchi
 		f.mu.Unlock()
 		return "", fmt.Errorf("%w: %s", branching.ErrNotFound, idOrRef)
 	}
+	if f.paused[idOrRef] {
+		f.mu.Unlock()
+		return "", fmt.Errorf("%w: branch %s is INACTIVE; it must be running", branching.ErrConflict, b.Name)
+	}
 	f.drives = append(f.drives, idOrRef)
 	run := f.run(idOrRef)
 	f.mu.Unlock()
@@ -246,6 +258,16 @@ func (f *fakeBranches) Drive(ctx context.Context, idOrRef, op string, fn branchi
 		b.State, b.Detail = registry.BranchFunctionsDeployed, detail
 	}
 	return run.ID, nil
+}
+
+func (f *fakeBranches) Wake(ctx context.Context, idOrRef string) (*branching.Branch, error) {
+	f.mu.Lock()
+	if f.paused[idOrRef] {
+		delete(f.paused, idOrRef)
+		f.woken = append(f.woken, idOrRef)
+	}
+	f.mu.Unlock()
+	return f.Resolve(ctx, idOrRef)
 }
 
 func (f *fakeBranches) StartRun(_ context.Context, op, branchRef, ownerRef, parentRef string) (*branching.Run, error) {

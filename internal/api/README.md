@@ -61,7 +61,7 @@ Upgrades and backups are described below.
 - **Ids.** GitHub's repository and installation ids do not fit the `float32` the generated types use for every number, so these bodies are small structs with `int64` fields; `TestGitHubBodiesKeepTheSpecsFields` pins their field names to the generated types.
 - **Errors.** `ErrNotAuthorized` is `403` (not `401`, which the dashboard reads as a sign-out), GitHub's own refusals keep their status, and an SSO-protected organization says what to do.
 - **Branches.** `pr_number` of a branch is the pull request it follows (`annotatePRs`), and `POST /v1/branches/{id}/push` on the production row of a project with "Deploy to production" deploys the production branch again (`pushBranch`).
-- **Operator routes.** `POST /supavise/v1/github/app` (Owner) starts GitHub's manifest flow and answers `{url}`; the page at that URL, opened by a browser, shows a form that posts the manifest to GitHub (its CSP allows only GitHub as the form target), and GitHub's redirect to `/supavise/v1/github/app/callback` completes it and restarts Studio. The webhook route reads at most 8 MiB.
+- **Operator routes.** `POST /supavise/v1/github/app` (Owner) starts GitHub's manifest flow and answers `{url}`; the page at that URL, opened by a browser, shows a form that posts the manifest to GitHub (its CSP allows only GitHub as the form target), and GitHub's redirect to `/supavise/v1/github/app/callback` completes it and restarts Studio. The webhook route refuses a bad signature header or a declared length over 4 MiB before it reads, and reads at most 4 MiB, 16 bodies at a time.
 
 ## Logs and request charts
 

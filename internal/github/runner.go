@@ -23,7 +23,7 @@ import (
 //	health     the branch's database answers
 //	configure  config.toml, with its [remotes] block, saved as the branch's settings
 //	migrate    the migrations the branch does not have yet, each in its own transaction
-//	seed       the seed files, once, when the branch is new
+//	seed       the seed files, once per branch: in the first run that gets this far
 //	deploy     Edge Functions that changed, and the Storage buckets of config.toml
 
 var errSkip = errors.New("skipped")
@@ -36,9 +36,11 @@ type repoSource struct {
 	sn   *Snapshot
 	// job ends when newer work replaces this (queue.go).
 	job context.Context
-	// persistent says how config.toml applies; fresh whether the seed runs.
-	persistent, fresh bool
-	have              map[string]string // function hashes deployed before
+	// persistent says how config.toml applies; fresh whether the branch was made from this commit
+	// (the words of the run's detail); seedDue whether the branch has not been seeded yet, which
+	// is not the same: a first run that failed before its seed step leaves the seed due.
+	persistent, fresh, seedDue bool
+	have                       map[string]string // function hashes deployed before
 
 	mu     sync.Mutex
 	plan   *ConfigPlan
@@ -49,6 +51,9 @@ type repoSource struct {
 type runStats struct {
 	migrations, functions int
 	seeded, configured    bool
+	// seedDone is true once the seed step ended without an error, whether it applied a seed or
+	// found nothing to apply: the branch's link then records that the seed is not due any more.
+	seedDone bool
 }
 
 // linked returns ctx that also ends when the job does.
@@ -99,6 +104,9 @@ func (r *repoSource) apply(ctx context.Context, run *branching.Run, ref string) 
 	if err := step(run, branching.StepSeed, func() error { return r.seed(ctx, run, ref) }); err != nil {
 		return "", err
 	}
+	r.mu.Lock()
+	r.stats.seedDone = true
+	r.mu.Unlock()
 	return r.detail(), nil
 }
 
@@ -167,7 +175,7 @@ func (r *repoSource) configure(ctx context.Context, run *branching.Run, ref stri
 	if err != nil {
 		return fmt.Errorf("config.toml is not valid TOML: %w", err)
 	}
-	in := PlanInput{Doc: doc, Ref: ref, Persistent: r.persistent}
+	in := PlanInput{Doc: doc, Ref: ref, Persistent: r.persistent, Branch: ref != r.conn.ProjectRef}
 	if h := r.s.host; h != nil {
 		in.Env = func(name string) (string, bool, error) { return h.FunctionSecret(ctx, ref, name) }
 	}
@@ -273,7 +281,7 @@ func (r *repoSource) migrate(ctx context.Context, run *branching.Run, ref string
 			return err
 		}
 		// One migration, one transaction: a failure leaves the migrations before it applied.
-		if _, err := db.Apply(ctx, ref, []branching.Migration{m}, branching.ApplyOptions{}); err != nil {
+		if _, err := db.Apply(ctx, ref, []branching.Migration{m}, branching.ApplyOptions{Lock: true}); err != nil {
 			return fmt.Errorf("migration %s_%s: %w", m.Version, m.Name, err)
 		}
 		run.Logf("applied %s_%s", m.Version, m.Name)
@@ -287,7 +295,7 @@ func (r *repoSource) migrate(ctx context.Context, run *branching.Run, ref string
 // ---- seed ---------------------------------------------------------------------------------
 
 func (r *repoSource) seed(ctx context.Context, run *branching.Run, ref string) error {
-	if !r.fresh {
+	if !r.seedDue {
 		return errSkip
 	}
 	seed := r.currentPlan().Seed

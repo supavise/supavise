@@ -16,24 +16,36 @@ import (
 const (
 	CheckName           = "Supabase Preview"
 	CheckNameProduction = "Supabase Production"
-	commentMarker       = "<!-- supavise-preview -->"
+	// commentMarkerPrefix opens the first line of the pull request's comment. The line names the
+	// project, so that two projects connected to one repository (a monorepo with two working
+	// directories, or two servers) each keep their own comment.
+	commentMarkerPrefix = "<!-- supavise-preview:"
 	maxCheckText        = 60000
 )
 
 // reporter writes the check run and the comment of a repository.
 type reporter struct {
-	s     *Service
-	repo  string
-	token string
+	s       *Service
+	repo    string
+	project string // the project whose branches the reports are about
+	token   string
+	appID   int64 // the App whose comments these are; 0 when unknown
 }
 
-func (s *Service) reporterFor(ctx context.Context, installationID int64, repo string) (*reporter, error) {
+func (s *Service) reporterFor(ctx context.Context, installationID int64, repo, project string) (*reporter, error) {
 	tok, err := s.installationToken(ctx, installationID)
 	if err != nil {
 		return nil, err
 	}
-	return &reporter{s: s, repo: repo, token: tok}, nil
+	r := &reporter{s: s, repo: repo, project: project, token: tok}
+	if app, aerr := s.App(ctx); aerr == nil && app != nil {
+		r.appID = app.ID
+	}
+	return r, nil
 }
+
+// marker is the first line of this project's comment.
+func (r *reporter) marker() string { return commentMarkerPrefix + r.project + " -->" }
 
 type checkOutput struct {
 	Title   string `json:"title"`
@@ -77,7 +89,7 @@ func (r *reporter) finish(ctx context.Context, id int64, conclusion, detailsURL 
 // comment writes the pull request's comment: it updates the one it made before, and makes a new
 // one when there is none or somebody deleted it. It returns the comment's id.
 func (r *reporter) comment(ctx context.Context, pr int, id int64, body string) (int64, error) {
-	body = commentMarker + "\n" + body
+	body = r.marker() + "\n" + body
 	if id == 0 {
 		// A pull request whose branch was never made (or whose link was lost) may carry the comment of an
 		// earlier report: take it over instead of adding another with every commit.
@@ -88,7 +100,9 @@ func (r *reporter) comment(ctx context.Context, pr int, id int64, body string) (
 		if err == nil {
 			return id, nil
 		}
-		if !IsStatus(err, http.StatusNotFound) {
+		// A comment that is gone (404) or that this App may not edit (403: somebody else's, or the
+		// App lost the permission to the comment) is replaced by a new one.
+		if !IsStatus(err, http.StatusNotFound) && !IsStatus(err, http.StatusForbidden) {
 			return id, err
 		}
 	}
@@ -101,7 +115,8 @@ func (r *reporter) comment(ctx context.Context, pr int, id int64, body string) (
 	return res.ID, nil
 }
 
-// findComment returns the id of the comment this server wrote on the pull request, 0 when there is none.
+// findComment returns the id of the comment this server wrote for the project on the pull request,
+// 0 when there is none.
 func (r *reporter) findComment(ctx context.Context, pr int) int64 {
 	var found int64
 	stop := errors.New("found")
@@ -109,12 +124,19 @@ func (r *reporter) findComment(ctx context.Context, pr int) int64 {
 		var page []struct {
 			ID   int64  `json:"id"`
 			Body string `json:"body"`
+			App  *struct {
+				ID int64 `json:"id"`
+			} `json:"performed_via_github_app"`
 		}
 		if err := json.Unmarshal(raw, &page); err != nil {
 			return err
 		}
 		for _, c := range page {
-			if strings.HasPrefix(c.Body, commentMarker) {
+			// A comment that an App other than ours wrote is not ours to edit, whatever its first line says.
+			if c.App != nil && r.appID != 0 && c.App.ID != r.appID {
+				continue
+			}
+			if strings.HasPrefix(c.Body, r.marker()+"\n") || c.Body == r.marker() {
 				found = c.ID
 				return stop
 			}

@@ -6,25 +6,38 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/supavise/supavise/internal/github"
 )
 
+// ghHookSlots bounds the deliveries whose body is being read: a body is held in memory until the
+// signature can be checked, and the route has no credentials.
+var ghHookSlots = make(chan struct{}, 16)
+
+var (
+	ghHookSlotWait = 2 * time.Second  // how long a delivery waits for a slot
+	ghHookReadTime = 15 * time.Second // how long a body may take to arrive
+)
+
 // ghWebhook is POST /hooks/github, the URL of the GitHub App's webhook. It is outside /platform,
 // /v1 and /v2 and takes no credentials: the signature of the body is the credential, and the
-// service checks it before it believes anything (internal/github, webhook.go). The size and the
-// rate are limited before and in the service.
+// service checks it before it believes anything (internal/github, webhook.go). Before the body is
+// read, the route refuses a declared length over the limit and a request whose signature header
+// cannot be GitHub's; it reads at most 16 bodies at a time, each within 15 seconds and the limit.
 func (s *Server) ghWebhook(w http.ResponseWriter, r *http.Request) error {
 	if s.gh == nil {
 		return errf(http.StatusNotFound, "Not Found")
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, github.MaxWebhookBody))
+	if r.ContentLength > github.MaxWebhookBody {
+		return errf(http.StatusRequestEntityTooLarge, "The delivery is larger than %d bytes", github.MaxWebhookBody)
+	}
+	if !github.SignatureShapeOK(r.Header.Get("X-Hub-Signature-256")) {
+		return errf(http.StatusUnauthorized, "the signature does not match")
+	}
+	body, err := s.readHookBody(w, r)
 	if err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			return errf(http.StatusRequestEntityTooLarge, "The delivery is larger than %d bytes", github.MaxWebhookBody)
-		}
-		return errf(http.StatusBadRequest, "Could not read the delivery")
+		return err
 	}
 	res := s.gh.HandleWebhook(r.Context(), github.Delivery{
 		Event: r.Header.Get("X-GitHub-Event"), ID: r.Header.Get("X-GitHub-Delivery"),
@@ -32,6 +45,31 @@ func (s *Server) ghWebhook(w http.ResponseWriter, r *http.Request) error {
 	})
 	writeJSON(w, res.Status, map[string]string{"message": res.Message})
 	return nil
+}
+
+// readHookBody reads the body of a delivery under one of the route's slots.
+func (s *Server) readHookBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	wait := time.NewTimer(ghHookSlotWait)
+	defer wait.Stop()
+	select {
+	case ghHookSlots <- struct{}{}:
+		defer func() { <-ghHookSlots }()
+	case <-wait.C:
+		w.Header().Set("Retry-After", "5")
+		return nil, errf(http.StatusServiceUnavailable, "Too many deliveries are arriving at once")
+	case <-r.Context().Done():
+		return nil, errf(http.StatusServiceUnavailable, "The request ended")
+	}
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(ghHookReadTime))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, github.MaxWebhookBody))
+	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return nil, errf(http.StatusRequestEntityTooLarge, "The delivery is larger than %d bytes", github.MaxWebhookBody)
+		}
+		return nil, errf(http.StatusBadRequest, "Could not read the delivery")
+	}
+	return body, nil
 }
 
 // ---- the operator's side: creating the server's GitHub App ---------------------------------------

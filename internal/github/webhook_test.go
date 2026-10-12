@@ -377,8 +377,49 @@ func TestAFailedMigrationFailsTheRunAndIsReported(t *testing.T) {
 	h.db.failAt = ""
 	h.gh.setCommit("sha-2", repoFiles(nil))
 	h.deliver("pull_request", "d2", h.prEvent("synchronize", 4, "broken", "sha-2"))
-	if got := h.br.byName("broken"); got.State != registry.BranchFunctionsDeployed {
+	got := h.br.byName("broken")
+	if got.State != registry.BranchFunctionsDeployed {
 		t.Fatalf("the fixed commit did not deploy: %+v", got)
+	}
+	// The first run never reached the seed step, so the fixed commit seeds the branch, once.
+	if n := len(h.db.scripts[got.Ref]); n != 1 {
+		t.Fatalf("seed scripts after the fixed commit = %d, want 1", n)
+	}
+	link, err := h.reg.GetGitHubBranchLink(context.Background(), got.Ref)
+	if err != nil || link.SeededAt == nil {
+		t.Fatalf("link after the seed = %+v, %v", link, err)
+	}
+	h.gh.setCommit("sha-3", repoFiles(nil))
+	h.deliver("pull_request", "d3", h.prEvent("synchronize", 4, "broken", "sha-3"))
+	if n := len(h.db.scripts[got.Ref]); n != 1 {
+		t.Fatalf("seed scripts after a third commit = %d, want the seed not to repeat", n)
+	}
+}
+
+func TestAFailedSeedIsTriedAgainByTheNextCommitAndAnAbsentOneIsNot(t *testing.T) {
+	h := newHarness(t)
+	h.db.failSeed = true
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	h.deliver("pull_request", "d1", h.prEvent("opened", 5, "seedless", "sha-1"))
+	b := h.br.byName("seedless")
+	if b == nil || b.State == registry.BranchFunctionsDeployed {
+		t.Fatalf("a failing seed did not fail the run: %+v", b)
+	}
+	h.db.failSeed = false
+	h.gh.setCommit("sha-2", repoFiles(nil))
+	h.deliver("pull_request", "d2", h.prEvent("synchronize", 5, "seedless", "sha-2"))
+	if n := len(h.db.scripts[b.Ref]); n != 1 {
+		t.Fatalf("seed scripts after the retry = %d, want 1", n)
+	}
+
+	// A first run that found no seed file used its chance: a seed added later is not applied to a branch with data.
+	h.gh.setCommit("sha-3", repoFiles(map[string]string{"supabase/seed.sql": ""}))
+	h.deliver("pull_request", "d3", h.prEvent("opened", 6, "noseed", "sha-3"))
+	nb := h.br.byName("noseed")
+	h.gh.setCommit("sha-4", repoFiles(nil))
+	h.deliver("pull_request", "d4", h.prEvent("synchronize", 6, "noseed", "sha-4"))
+	if n := len(h.db.scripts[nb.Ref]); n != 0 {
+		t.Fatalf("a seed added after the first run was applied: %d script(s)", n)
 	}
 }
 
@@ -413,7 +454,7 @@ func TestCheckRunAndCommentAreMadeOnceAndUpdated(t *testing.T) {
 		t.Fatalf("comment updates = %d", got)
 	}
 	for _, c := range h.gh.comments {
-		if c.PR != 6 || !strings.HasPrefix(c.Body, commentMarker) || c.Updates != 1 || !strings.Contains(c.Body, "feature") {
+		if c.PR != 6 || !strings.HasPrefix(c.Body, commentMarkerPrefix+prodRef+" -->") || c.Updates != 1 || !strings.Contains(c.Body, "feature") {
 			t.Fatalf("comment = %+v", c)
 		}
 	}

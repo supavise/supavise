@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	plat "github.com/supavise/supavise/internal/api/gen/platform"
 	v2 "github.com/supavise/supavise/internal/api/gen/v2"
@@ -693,6 +695,44 @@ func TestGitHubWebhookRoute(t *testing.T) {
 	if rec.Code != 413 {
 		t.Fatalf("a delivery over the limit: %d", rec.Code)
 	}
+	// A request whose signature cannot be GitHub's is refused without its body being read.
+	unread := &failingReader{t: t}
+	forged := httptest.NewRequest("POST", "/hooks/github", unread)
+	forged.ContentLength = 1 << 20
+	forged.Header.Set("X-Hub-Signature-256", "sha256=00")
+	rec = httptest.NewRecorder()
+	f.srv.ServeHTTP(rec, forged)
+	if rec.Code != 401 || unread.reads != 0 {
+		t.Fatalf("a forged signature header: %d, %d read(s)", rec.Code, unread.reads)
+	}
+	// Only a few bodies are read at a time: with every slot taken a delivery waits and is refused.
+	wait := ghHookSlotWait
+	ghHookSlotWait = 50 * time.Millisecond
+	defer func() { ghHookSlotWait = wait }()
+	for i := 0; i < cap(ghHookSlots); i++ {
+		ghHookSlots <- struct{}{}
+	}
+	rec = post(good)
+	for i := 0; i < cap(ghHookSlots); i++ {
+		<-ghHookSlots
+	}
+	if rec.Code != 503 || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("with every slot taken: %d", rec.Code)
+	}
+	if rec := post(good); rec.Code != 200 {
+		t.Fatalf("after the slots were free: %d", rec.Code)
+	}
+}
+
+// failingReader fails the test when its body is read.
+type failingReader struct {
+	t     *testing.T
+	reads int
+}
+
+func (r *failingReader) Read([]byte) (int, error) {
+	r.reads++
+	return 0, io.EOF
 }
 
 func TestGitHubBranchesCarryTheirPullRequestNumber(t *testing.T) {

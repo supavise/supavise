@@ -83,7 +83,11 @@ type PlanInput struct {
 	// Ref is the branch's project ref, matched against [remotes.*] project_id.
 	Ref        string
 	Persistent bool
-	Env        EnvLookup
+	// Branch is true when Ref is a branch and not the project the repository is connected to. A
+	// branch starts on its parent's saved settings, secrets included, so the repository must not be
+	// able to send those secrets somewhere else (dropInheritedSecrets).
+	Branch bool
+	Env    EnvLookup
 	// Template returns the content of a file named in the config (relative to supabase/).
 	Template func(rel string) (string, bool)
 }
@@ -453,6 +457,9 @@ func PlanConfig(in PlanInput) (*ConfigPlan, error) {
 	p.storage()
 	p.functions()
 	p.sweep()
+	if in.Branch {
+		p.dropInheritedSecrets()
+	}
 	sort.Strings(plan.Applied)
 	if in.Persistent && remote == "" {
 		// Hosted configures a persistent branch from its [remotes] block alone: without one the step is skipped.
@@ -460,6 +467,42 @@ func PlanConfig(in PlanInput) (*ConfigPlan, error) {
 		plan.Skipped = "no [remotes.*] block in config.toml has project_id = " + in.Ref + ", so the settings of a persistent branch are not applied (find the ref with `supabase branches list`)"
 	}
 	return plan, nil
+}
+
+// dropInheritedSecrets clears the secret a branch inherited from its parent when config.toml sends
+// the secret's destination somewhere else and gives the branch no secret of its own: the SMTP
+// password when the SMTP host is set, the client secret of an OAuth provider when its url is set.
+// Whoever can open a pull request chooses config.toml, and may have no access to the project's
+// secrets; a branch's mail or token requests go to the host the repository names, so the parent's
+// credential must not go with them. A secret that config.toml gives (env(NAME) of a secret of the
+// branch) is applied as before.
+func (p *planner) dropInheritedSecrets() {
+	auth := p.plan.Patches[projectconfig.Auth]
+	keys := make([]string, 0, len(auth))
+	for k := range auth {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		var secret, path string
+		switch {
+		case key == "smtp_host":
+			secret, path = "smtp_pass", "[auth.email.smtp]"
+		case strings.HasPrefix(key, "external_") && strings.HasSuffix(key, "_url"):
+			name := strings.TrimSuffix(strings.TrimPrefix(key, "external_"), "_url")
+			secret, path = "external_"+name+"_secret", "[auth.external."+name+"]"
+		default:
+			continue
+		}
+		if v, ok := auth[key].(string); !ok || v == "" {
+			continue
+		}
+		if _, given := auth[secret]; given {
+			continue
+		}
+		auth[secret] = nil
+		p.warn("%s sets where %s goes, so the secret the branch inherited from its project is cleared; give the branch its own with a secret set by env(NAME)", path, secret)
+	}
 }
 
 func (p *planner) api() {

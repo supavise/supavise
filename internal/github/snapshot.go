@@ -35,6 +35,9 @@ type Snapshot struct {
 
 	mu    sync.Mutex
 	cache map[string][]byte
+	// read counts the bytes fetched so far and budget is what the run may fetch in all
+	// (maxSnapshotBytes): the cache keeps every blob until the run ends.
+	read, budget int64
 }
 
 type treeEntry struct {
@@ -55,7 +58,7 @@ const (
 	maxFileBytes      = 10 << 20  // one file
 	maxMigrationBytes = 8 << 20   // one migration or seed
 	maxFunctionBytes  = 40 << 20  // the files of one function
-	maxSnapshotBytes  = 100 << 20 // everything one run reads
+	maxSnapshotBytes  = 100 << 20 // everything one run fetches from the repository, all files together
 )
 
 // ErrNoSupabaseDir means the commit has no supabase directory at the working directory.
@@ -67,7 +70,7 @@ func (s *Service) loadSnapshot(ctx context.Context, repo string, installationID 
 	if err != nil {
 		return nil, err
 	}
-	sn := &Snapshot{Repo: repo, SHA: sha, Dir: path.Join(workdir, "supabase"), svc: s, token: tok, cache: map[string][]byte{}, entries: map[string]treeEntry{}}
+	sn := &Snapshot{Repo: repo, SHA: sha, Dir: path.Join(workdir, "supabase"), svc: s, token: tok, cache: map[string][]byte{}, entries: map[string]treeEntry{}, budget: maxSnapshotBytes}
 	// GitHub's documentation lets the trees API take a tree sha or a ref name; the commit names its tree.
 	var cm struct {
 		Tree struct {
@@ -197,6 +200,14 @@ func (sn *Snapshot) Read(ctx context.Context, rel string, limit int64) ([]byte, 
 	}
 	sn.mu.Lock()
 	b, ok := sn.cache[e.SHA]
+	if !ok {
+		// The whole run is held in memory, so the limit is on everything it reads and not on each file.
+		if sn.read+e.Size > sn.budget {
+			sn.mu.Unlock()
+			return nil, fmt.Errorf("%s would take the run past the %d bytes it may read from the repository", rel, sn.budget)
+		}
+		sn.read += e.Size
+	}
 	sn.mu.Unlock()
 	if ok {
 		return b, nil
@@ -211,14 +222,14 @@ func (sn *Snapshot) Read(ctx context.Context, rel string, limit int64) ([]byte, 
 	return b, nil
 }
 
-// readAll reads the files in parallel, keeping the order. total is what the whole run may read.
+// readAll reads the files in parallel, keeping the order.
 func (sn *Snapshot) readAll(ctx context.Context, rels []string, limit int64) ([][]byte, error) {
 	var sum int64
 	for _, r := range rels {
 		sum += sn.entries[r].Size
 	}
-	if sum > maxSnapshotBytes {
-		return nil, fmt.Errorf("%d files of %d bytes are more than a run reads (%d)", len(rels), sum, int64(maxSnapshotBytes))
+	if sum > sn.budget {
+		return nil, fmt.Errorf("%d files of %d bytes are more than a run reads (%d)", len(rels), sum, sn.budget)
 	}
 	out := make([][]byte, len(rels))
 	g, gctx := errgroup.WithContext(ctx)

@@ -30,6 +30,19 @@ type apiRepo struct {
 	FullName      string `json:"full_name"`
 	DefaultBranch string `json:"default_branch"`
 	Archived      bool   `json:"archived"`
+	// Permissions is what the user may do in the repository; GitHub sends it with the user's token.
+	Permissions *struct {
+		Admin    bool `json:"admin"`
+		Maintain bool `json:"maintain"`
+		Push     bool `json:"push"`
+	} `json:"permissions"`
+}
+
+// canPush is false only for a repository the user can read and not write: a read-only collaborator
+// must not make the App post check runs and comments, with links to their project, on somebody
+// else's repository. A repository whose answer lacks the permissions is taken as writable.
+func (r apiRepo) canPush() bool {
+	return r.Permissions == nil || r.Permissions.Admin || r.Permissions.Maintain || r.Permissions.Push
 }
 
 const (
@@ -98,7 +111,7 @@ func (s *Service) Repositories(ctx context.Context, userID string) (repos []Repo
 		}
 		for _, id := range ids {
 			err := s.installationRepos(ctx, token, id, func(r apiRepo) bool {
-				if !r.Archived {
+				if !r.Archived && r.canPush() {
 					repos = append(repos, Repository{ID: r.ID, Name: r.FullName, InstallationID: id, DefaultBranch: r.DefaultBranch})
 				}
 				return false
@@ -114,11 +127,53 @@ func (s *Service) Repositories(ctx context.Context, userID string) (repos []Repo
 		}
 		return nil
 	})
+	if err == nil {
+		s.rememberRepos(userID, repos)
+	}
 	return repos, partialSSO, err
 }
 
-// repoFor finds a repository by id among the ones the user may connect.
+// repoListTTL is how long the list of a user's repositories answers the checks of the branch
+// pickers, which Studio makes for every value typed.
+const repoListTTL = 30 * time.Second
+
+type repoList struct {
+	repos []Repository
+	at    time.Time
+}
+
+func (s *Service) rememberRepos(userID string, repos []Repository) {
+	s.repoMu.Lock()
+	defer s.repoMu.Unlock()
+	if s.repoLists == nil || len(s.repoLists) > 256 {
+		s.repoLists = map[string]repoList{}
+	}
+	s.repoLists[userID] = repoList{repos: append([]Repository(nil), repos...), at: s.now()}
+}
+
+func (s *Service) knownRepo(userID string, repoID int64) *Repository {
+	s.repoMu.Lock()
+	defer s.repoMu.Unlock()
+	l, ok := s.repoLists[userID]
+	if !ok || s.now().Sub(l.at) > repoListTTL {
+		return nil
+	}
+	for i := range l.repos {
+		if l.repos[i].ID == repoID {
+			r := l.repos[i]
+			return &r
+		}
+	}
+	return nil
+}
+
+// repoFor finds a repository by id among the ones the user may connect. It answers from the list
+// the user's last listing made when that is recent and has the repository, and lists again (a
+// repository the App just got) when it does not.
 func (s *Service) repoFor(ctx context.Context, userID string, repoID int64) (*Repository, error) {
+	if r := s.knownRepo(userID, repoID); r != nil {
+		return r, nil
+	}
 	repos, _, err := s.Repositories(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -128,7 +183,7 @@ func (s *Service) repoFor(ctx context.Context, userID string, repoID int64) (*Re
 			return &repos[i], nil
 		}
 	}
-	return nil, fmt.Errorf("%w: repository %d is not one the GitHub App can reach for you", ErrNotFound, repoID)
+	return nil, fmt.Errorf("%w: repository %d is not one the GitHub App can reach for you, or you may not push to it", ErrNotFound, repoID)
 }
 
 // Branches lists the branch names of a repository the user may connect.
