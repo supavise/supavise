@@ -129,7 +129,11 @@ func (s *Server) checkExposedSchemas(ctx context.Context, p *registry.Project, p
 	}
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	missing, err := lifecycle.MissingSchemas(cctx, dsn, want)
+	probe := lifecycle.MissingSchemas
+	if s.missingSchemas != nil {
+		probe = s.missingSchemas
+	}
+	missing, err := probe(cctx, dsn, want)
 	if err != nil {
 		return nil
 	}

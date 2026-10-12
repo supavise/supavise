@@ -154,6 +154,9 @@ type Server struct {
 	// settings are the saved per-project settings; cfgLocks serialize save and apply.
 	settings *projectconfig.Manager
 	cfgLocks sync.Map
+	// missingSchemas asks a project's database which of the names are not schemas
+	// (lifecycle.MissingSchemas when nil); a test stands in for a Postgres it does not have.
+	missingSchemas func(ctx context.Context, dsn string, names []string) ([]string, error)
 	// accounts redeems claim and invite tokens (claim.go).
 	accounts *Accounts
 	// members is the roles model: who belongs to which organization, with which permissions.
