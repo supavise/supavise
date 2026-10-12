@@ -245,7 +245,7 @@ The GitHub card of Settings > Integrations (project and organization), the Conne
 | P2 | GET | `/platform/integrations/github/connections/{id}/config?ref=` | The parsed `supabase/config.toml` for the configuration drift page: `{path, ref, sha, config}`; `404` without the file, `422` for a file that is not TOML. |
 | P2 | GET | `/v2/organizations/{slug}/integrations/github/connections` | The same list in the JSON:API shape. |
 
-Branches carry `pr_number` while they follow a pull request, which turns "Create pull request" off for them; the action needs a connection (patch 0007). With Deploy to production on, `mainBranch.git_branch` is set and a connection exists, so Studio disables the merge page's Merge button; `POST /v1/branches/{id}/push` on the production row (Resync) deploys the production branch.
+Branches carry `pr_number` while they follow a pull request, which turns "Create pull request" off for them; the action needs a connection (patch 0005). With Deploy to production on, `mainBranch.git_branch` is set and a connection exists, so Studio disables the merge page's Merge button; `POST /v1/branches/{id}/push` on the production row (Resync) deploys the production branch.
 
 ## Advisors
 
