@@ -345,7 +345,7 @@ func (e *env) engine() *Engine {
 	return New(Deps{
 		Cfg: e.cfg, Out: e.out, Files: e.files, Tenants: e.tenants, Storage: e.svc, Settings: e.set, Reader: e.rd,
 		Open:    func(context.Context, Destination, Credentials) (Bucket, error) { e.opens++; return e.bucket, nil },
-		Workers: 2, VerifyWait: time.Millisecond, HoldFor: 200 * time.Millisecond,
+		Workers: 2, VerifyWait: time.Millisecond, HoldFor: time.Minute, // long: the tests that read the hold while a run lives must not race its expiry on a loaded machine
 		Sleep: func(context.Context, time.Duration) error { return nil },
 	})
 }

@@ -596,20 +596,51 @@ func TestCleanupRefusesADirectoryTheStateShouldNotName(t *testing.T) {
 	}
 }
 
+// stepClock is a clock that moves when a test says so.
+type stepClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *stepClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *stepClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
 func TestWriteHold(t *testing.T) {
 	e := newEnv(t)
 	now := time.Now()
 	if hold.Held(e.paths, now) {
 		t.Fatal("held before anything")
 	}
-	release := e.engine().holdWrites(ctx)
-	if !hold.Held(e.paths, time.Now()) {
+	// The run's clock is the test's, so that whether the hold has expired does not depend on how long a
+	// loaded machine leaves the renewing goroutine waiting; the renewals themselves still come from the
+	// real ticker, which the test waits for.
+	clk := &stepClock{t: now}
+	eng := e.engine()
+	eng.d.Now, eng.d.HoldFor = clk.Now, 100*time.Millisecond
+	release := eng.holdWrites(ctx)
+	if !hold.Held(e.paths, clk.Now()) {
 		t.Error("not held")
 	}
-	// The run keeps the hold alive for longer than HoldFor.
-	time.Sleep(450 * time.Millisecond)
-	if !hold.Held(e.paths, time.Now()) {
-		t.Error("the hold expired while the run lives")
+	// The run keeps the hold alive for longer than HoldFor: each time the clock passes the end of the
+	// marker, the run writes a new one that ends later.
+	for i := 0; i < 4; i++ {
+		clk.advance(eng.d.HoldFor + time.Millisecond)
+		deadline := time.Now().Add(30 * time.Second)
+		for !hold.Held(e.paths, clk.Now()) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the hold expired while the run lives (round %d, %s after it began)", i, clk.Now().Sub(now))
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 	release()
 	if hold.Held(e.paths, time.Now()) || fileExists(hold.Path(e.paths)) {
