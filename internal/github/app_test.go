@@ -3,6 +3,8 @@ package github
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -138,6 +140,60 @@ func TestManifestFlowStoresTheAppSealed(t *testing.T) {
 	if svc.Configured(ctx) || told != 2 {
 		t.Fatalf("configured=%v told=%d", svc.Configured(ctx), told)
 	}
+}
+
+// The code GitHub sends back with the browser is in the path of the conversion and works as a
+// credential until it is used: no error of the conversion repeats it, whether GitHub answered or the
+// connection failed, because the callback logs the error.
+func TestAFailedConversionDoesNotPutTheCodeInItsError(t *testing.T) {
+	const code = "c0de-0f-the-manifest-flow-1234567890"
+	for name, setup := range map[string]func(*Service, *fakeGitHub){
+		"a bad gateway": func(_ *Service, gh *fakeGitHub) { gh.convertStatus = http.StatusBadGateway },
+		"a 422":         func(_ *Service, gh *fakeGitHub) { gh.convertStatus = http.StatusUnprocessableEntity },
+		"no connection": func(svc *Service, _ *fakeGitHub) { svc.cl.API = "http://127.0.0.1:1" },
+		"a timeout": func(svc *Service, gh *fakeGitHub) {
+			slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+			t.Cleanup(slow.Close)
+			svc.cl.API = slow.URL
+			svc.cl.HTTP = &http.Client{Timeout: 100 * time.Millisecond}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, gh, _ := manifestHarness(t)
+			ctx := context.Background()
+			state := stateOf(t, mustLink(t, svc))
+			setup(svc, gh)
+			_, err := svc.CompleteManifest(ctx, code, state)
+			if err == nil {
+				t.Fatal("the conversion did not fail")
+			}
+			if strings.Contains(err.Error(), code) || strings.Contains(err.Error(), url.PathEscape(code)) {
+				t.Fatalf("the error repeats the code: %v", err)
+			}
+			if !strings.Contains(err.Error(), "/app-manifests/{code}/conversions") {
+				t.Fatalf("the error does not say which call failed: %v", err)
+			}
+			// What a caller can still tell: GitHub's status.
+			if gh.convertStatus != 0 && !IsStatus(err, gh.convertStatus) {
+				t.Fatalf("the status was lost: %v", err)
+			}
+			// Printing the wrapped errors one by one repeats nothing either.
+			for e := error(err); e != nil; e = errors.Unwrap(e) {
+				if strings.Contains(e.Error(), code) {
+					t.Fatalf("a wrapped error repeats the code: %v", e)
+				}
+			}
+		})
+	}
+}
+
+func mustLink(t *testing.T, svc *Service) string {
+	t.Helper()
+	link, err := svc.BeginManifest(context.Background(), ManifestRequest{Owner: "acme", CreatedBy: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return link
 }
 
 func TestManifestRequestsAreChecked(t *testing.T) {

@@ -179,11 +179,12 @@ var routeRules = []routeRule{
 	rule("R", "/platform/integrations/github/repositories/**", nAny),
 	rule("", "/platform/integrations/github/connections/**", nSelf),
 	rule("R", "/v2/organizations/{slug}/integrations/github/connections", nSelf),
-	// The server's own App is the operator's: creating or removing it needs the Owner role, reading
-	// how it is set up the Owner or Administrator role. The manifest page, GitHub's redirect and the
-	// webhook take no credentials (their one-time state or signature is the proof).
+	// The server's own App is the operator's, and a node can have several organizations whose Owners do
+	// not trust each other: creating, replacing or removing it wipes every organization's connections,
+	// so those are `supavise github app` at the node and have no route here. Reading how it is set up
+	// needs the Owner or Administrator role. The manifest page, GitHub's redirect and the webhook take
+	// no credentials (their one-time state or signature is the proof).
 	rule("R", "/supavise/v1/github/app", nOperator),
-	rule("W", "/supavise/v1/github/app", nOwner),
 	rule("", "/supavise/v1/github/app/**", nAny),
 	rule("POST", "/hooks/github", nAny),
 	// The node's health in detail: node-wide, so no organization or project to check against.
@@ -670,6 +671,23 @@ func (s *Server) canReadSecrets(r *http.Request, p *registry.Project) (bool, err
 		return false, err
 	}
 	return s.projectCan(r, p, members.ActRead, members.ResJWTSecret)
+}
+
+// requireProductionBranch refuses a caller who may not change the project's GitHub connection. The
+// Git branch production follows (the default branch's git_branch) is a field of that connection on
+// hosted, and a push to it applies the repository's migrations, Edge Functions and config.toml
+// [remotes] settings to production, which a Developer could otherwise do around branch protection
+// with a branch of their own. Setting it, and deploying it again (Resync), need the right to update
+// integrations.github_connections: the Owner or Administrator role.
+func (s *Server) requireProductionBranch(r *http.Request, p *registry.Project) error {
+	ok, err := s.projectCan(r, p, members.ActUpdate, resGitHubConnections)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errf(http.StatusForbidden, "Your role does not allow this action (changing the production branch or deploying it again needs the Owner or Administrator role)")
+	}
+	return nil
 }
 
 // requireBranchData is the second requirement of POST /v1/projects/{ref}/branches and of

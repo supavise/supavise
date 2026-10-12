@@ -162,11 +162,13 @@ func (s *Service) createDefault(ctx context.Context, ref string, in CreateInput)
 }
 
 // defaultBranch is the default branch of a project as the Management API shows it: the Git branch
-// it tracks and a status that follows the merges into it. A failed merge reads MIGRATIONS_FAILED
-// (FUNCTIONS_FAILED when only its deploy step failed) and the reason is its detail, for as long as
-// the branch that was merged is still there and still failed; deleting that branch, or merging it
-// again, clears it. A merge in progress reads RUNNING_MIGRATIONS; the status is otherwise
-// FUNCTIONS_DEPLOYED after a merge and MIGRATIONS_PASSED before the first.
+// it tracks and a status that follows the runs it owns, the merges into it and the deployments of
+// its Git branch to production (op "deploy", which internal/github starts under the project itself).
+// A failed merge reads MIGRATIONS_FAILED (FUNCTIONS_FAILED when only its deploy step failed) and the
+// reason is its detail, for as long as the branch that was merged is still there and still failed;
+// deleting that branch, or merging it again, clears it. A failed deployment reads the same until a
+// newer run of either kind supersedes it. A run in progress reads RUNNING_MIGRATIONS; the status is
+// otherwise FUNCTIONS_DEPLOYED after a successful run and MIGRATIONS_PASSED before the first.
 func (s *Service) defaultBranch(ctx context.Context, p *registry.Project) *Branch {
 	b := defaultBranchOf(p)
 	st := s.runStore()
@@ -176,18 +178,31 @@ func (s *Service) defaultBranch(ctx context.Context, p *registry.Project) *Branc
 	if g, err := st.GetDefaultBranchGit(ctx, p.Ref); err == nil {
 		b.GitBranch = g
 	}
-	// Merges are the only runs the default branch owns. The newest one decides, except a failure
-	// that nobody can act on any more: a few runs are read to get past those.
+	// The newest run decides, except a failure that nobody can act on any more (a merge of a branch
+	// that is gone or works again, a deployment that never started): a few runs are read to get past those.
 	runs, _, err := st.ListBranchRuns(ctx, p.Ref, 0, 10)
 	if err != nil {
 		return b
 	}
 	for _, last := range runs {
+		deploy := last.Op == "deploy"
 		switch last.Status {
 		case registry.RunRunning:
-			b.State, b.Detail = registry.BranchRunningMigration, "merging "+last.BranchRef
+			b.State = registry.BranchRunningMigration
+			if deploy {
+				b.Detail = "deploying " + b.GitBranch
+				if b.GitBranch == "" {
+					b.Detail = "deploying the production branch"
+				}
+			} else {
+				b.Detail = "merging " + last.BranchRef
+			}
 		case registry.RunFailed:
-			if !s.stillFailed(ctx, last.BranchRef) {
+			if deploy {
+				if strings.HasSuffix(last.Failure, ErrRunSuperseded.Error()) {
+					continue // replaced by a newer deployment before it began: nothing failed
+				}
+			} else if !s.stillFailed(ctx, last.BranchRef) {
 				continue
 			}
 			b.State, b.Detail = registry.BranchMigrationsFailed, last.Failure

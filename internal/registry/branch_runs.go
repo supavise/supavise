@@ -46,7 +46,7 @@ type BranchRun struct {
 	OwnerRef  string
 	BranchRef string
 	ParentRef string
-	Op        string // create, merge, push or reset
+	Op        string // create, merge, push, reset or deploy (a deployment of the production branch, listed under the project itself)
 	Status    string // RunRunning, RunSuccess or RunFailed
 	// CheckRunID is the GitHub check run that reports the run, 0 when there is none.
 	CheckRunID int64

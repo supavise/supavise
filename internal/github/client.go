@@ -70,6 +70,11 @@ func (c *Client) newRequest(ctx context.Context, auth, method, path string, body
 	if !strings.HasPrefix(path, "/") {
 		return nil, fmt.Errorf("github: path %q is not absolute", path)
 	}
+	// GitHub resolves dot segments, so a name that reached a path with one could address any other
+	// endpoint the token is good for.
+	if hasDotSegment(path) {
+		return nil, fmt.Errorf("github: path %q has a dot segment", pathOnly(path))
+	}
 	req, err := http.NewRequestWithContext(ctx, method, c.API+path, body)
 	if err != nil {
 		return nil, err

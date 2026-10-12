@@ -79,7 +79,9 @@ const pr = (action, n, head, sha, headRepo = repo) => ({
     head: { ref: head, sha, repo: headRepo }, base: { ref: 'main', sha: 'base', repo } },
   repository: repo, installation: { id: INSTALLATION_ID },
 })
-const push = (ref, after, modified) => ({ ref, before: '0'.repeat(40), after, repository: repo, installation: { id: INSTALLATION_ID },
+// GitHub never sends two pushes with the same body (they differ in what the branch was before), and the server
+// ignores a body it has seen under another delivery id, so a test that pushes the same commit twice names another `before`.
+const push = (ref, after, modified, before = '0'.repeat(40)) => ({ ref, before, after, repository: repo, installation: { id: INSTALLATION_ID },
   ...(modified ? { commits: [{ modified }] } : {}) })
 
 const MIG1 = 'create table public.todos (id bigint primary key, title text);'
@@ -233,6 +235,9 @@ async function main() {
   const before = (await branchesOf()).length
   d = await deliver('pull_request', pr('opened', 13, 'other', 'sha-1'), { id: 'd-open' })
   check(d.code === 200 && /before/.test(d.data?.message || ''), 'a replayed delivery id does nothing')
+  // The signature covers the body and not the delivery id: the body of the first pull request, sent again under a new id, is the same event.
+  d = await deliver('pull_request', pr('opened', 12, 'feature-x', 'sha-1'), { id: 'd-open-again' })
+  check(d.code === 200 && /body/.test(d.data?.message || ''), 'a body that was handled before is not handled again under a new delivery id')
   d = await deliver('pull_request', pr('opened', 14, 'evil', 'sha-1', { id: 555, full_name: 'mallory/app' }), { id: 'd-fork' })
   check(d.code === 202 && /fork/.test(d.data?.message || ''), 'a pull request from a fork is ignored')
   await sleep(1500)
@@ -246,12 +251,13 @@ async function main() {
 
   // ---- production ------------------------------------------------------------------------------
   await fake('PUT', '/__fake/commits/sha-main', { files: repoFiles({ 'supabase/migrations/20260102000000_done.sql': MIG2 }) })
+  await fake('PUT', '/__fake/heads/main', { sha: 'sha-main' }) // the server deploys a push only while it is the head of its branch
   d = await deliver('push', push('refs/heads/main', 'sha-main'), { id: 'd-push-off' })
   await sleep(1500)
   check((await runsOf(PARENT)).length === 0, 'a push to main does nothing while Deploy to production is off')
   r = await call('PATCH', `/v1/branches/${PARENT}`, { body: { git_branch: 'main' } })
   check(r.code === 200, `the production branch is set (${r.code})`)
-  d = await deliver('push', push('refs/heads/main', 'sha-main'), { id: 'd-push' })
+  d = await deliver('push', push('refs/heads/main', 'sha-main', undefined, 'a'.repeat(40)), { id: 'd-push' })
   check(d.code === 202, 'a push to the production branch is accepted')
   const prod = await until('the production run finishes', async () => {
     const rs = await runsOf(PARENT)
@@ -267,6 +273,13 @@ async function main() {
     const n = await sqlRows(PARENT, 'select count(*)::int as n from public.todos')
     check(n && n[0].n === 0, 'production was not seeded')
   }
+  // A push of an older commit, delivered late or again, must not put older code on production.
+  const runsBefore = (await runsOf(PARENT)).length
+  await fake('PUT', '/__fake/commits/sha-older', { files: repoFiles() })
+  d = await deliver('push', push('refs/heads/main', 'sha-older'), { id: 'd-push-older' })
+  check(d.code === 202, 'a push of an older commit is accepted')
+  await sleep(5000) // the server asks for the head twice, a moment apart, before it calls a push stale
+  check((await runsOf(PARENT)).length === runsBefore, 'a push that is no longer the head of the production branch deploys nothing')
   r = await call('POST', `/v1/branches/${PARENT}/push`, { body: {} })
   check(r.code === 201 && r.data.workflow_run_id, `Resync on the production row starts a run (${r.code})`)
   await until('the resync run finishes', async () => {

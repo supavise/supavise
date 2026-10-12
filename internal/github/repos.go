@@ -215,8 +215,8 @@ func (s *Service) Branches(ctx context.Context, userID string, repoID int64) ([]
 // Branch reports whether a repository has the branch, for the production-branch field and the
 // branch pickers. ErrNotFound when it has not.
 func (s *Service) Branch(ctx context.Context, userID string, repoID int64, name string) (string, error) {
-	if strings.TrimSpace(name) == "" {
-		return "", invalid("the branch name is required")
+	if err := checkBranchName(name); err != nil {
+		return "", err
 	}
 	r, err := s.repoFor(ctx, userID, repoID)
 	if err != nil {
