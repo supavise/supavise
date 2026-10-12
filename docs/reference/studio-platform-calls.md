@@ -229,6 +229,24 @@ Two related answers for a **branch ref**: `GET /v1/projects/{ref}` and `GET /v1/
 
 The Settings > General > Custom domains section renders for a project and for a branch (`project_settings:custom_domains` is not in the profile's `disabled_features`) unless `tls.mode` is `dns01`; its calls are `/v1/projects/{ref}/custom-hostname` and `.../initialize`, `.../reverify`, `.../activate`, and Studio's own `/api/check-cname`, answered by the proxy. Vanity subdomains have no Studio page.
 
+## GitHub integration
+
+The GitHub card of Settings > Integrations (project and organization), the Connections row of Account > Preferences, the GitHub status of the Branches side menu and the "Sync with a GitHub branch" block of the branch dialogs are shown only while the profile does not list `integrations:github` in `disabled_features`. The profile lists it while the server has no GitHub App (patch 0007, `docs/github-integration.md`). The install and authorize windows are built from `NEXT_PUBLIC_GITHUB_INTEGRATION_APP_NAME` and `..._CLIENT_ID`, which the unit sets from the server's App.
+
+| Prio | Method | Path | What Studio needs |
+|---|---|---|---|
+| P1 | GET | `/platform/integrations/github/authorization` | `{id, sender_id, user_id}` when the signed-in user authorized the server's App, an error (Studio reads it as "not connected") when not. A stub answered with zeros for everybody, which showed "Connected" and "You are authorized with the Supabase GitHub app". `404` here. |
+| P1 | POST | `/platform/integrations/github/authorization` | `201`. Body `{code}`: the authorize page (`/integrations/github/authorize`) compares the `state` with the one in the browser and posts only the code. |
+| P2 | DELETE | `/platform/integrations/github/authorization` | `200`; `404` when the user has none. Account > Preferences > Remove connection. |
+| P1 | GET | `/platform/integrations/github/connections?organization_id=` | `{connections: [...]}` of the organization, each with `project`, `repository` and `user`. The Branches page shows only an alert when this call fails, so a server without an App answers an empty list. Repository and installation ids are exact integers (they do not fit a `float32`). |
+| P1 | POST, PATCH, DELETE | `/platform/integrations/github/connections[/{id}]` | The connection form. `POST` body `{project_ref, installation_id, repository_id, workdir, supabase_changes_only, branch_limit, new_branch_per_pr}`, answer `201`; `PATCH` and `DELETE` answer `204`. The production branch of the same form is a create or patch of the default branch (`is_default`, `git_branch`), not a call of this family. |
+| P1 | GET | `/platform/integrations/github/repositories` | `{partial_response_due_to_sso, repositories: [{id, name, installation_id, default_branch}]}`: the repositories the user's own GitHub token reaches through the server's App and may push to (a read-only repository is left out). |
+| P2 | GET | `/platform/integrations/github/repositories/{id}/branches[/{name}]` | The branch check of the production branch field and the branch dialogs: `{name}`, `404` when the branch does not exist. The repository is checked against the user's last listing, kept for 30 seconds. |
+| P2 | GET | `/platform/integrations/github/connections/{id}/config?ref=` | The parsed `supabase/config.toml` for the configuration drift page: `{path, ref, sha, config}`; `404` without the file, `422` for a file that is not TOML. |
+| P2 | GET | `/v2/organizations/{slug}/integrations/github/connections` | The same list in the JSON:API shape. |
+
+Branches carry `pr_number` while they follow a pull request, which turns "Create pull request" off for them; the action needs a connection (patch 0007). With Deploy to production on, `mainBranch.git_branch` is set and a connection exists, so Studio disables the merge page's Merge button; `POST /v1/branches/{id}/push` on the production row (Resync) deploys the production branch.
+
 ## Advisors
 
 The Security Advisor, the Performance Advisor, the advisor panel and the project home widget, the table editor's RLS badge and Studio's "project needs securing" banner all read `GET /platform/projects/{ref}/run-lints` (`data/lint/lint-query.ts`). Studio filters the array itself: a page keeps the lints whose `categories` include `SECURITY` or `PERFORMANCE`, groups them by `level`, and picks the selected one by `cache_key`, so the answer carries every lint of both categories. Studio runs the same lints in its own self-hosted mode (`lib/api/self-hosted/lints.ts`, `getLintsSQL` of `packages/pg-meta`, as `supabase_admin`, with `PGRST_DB_SCHEMAS` as `pgrst.db_schemas`), which is where Supavise's SQL comes from (`internal/advisors/README.md`).

@@ -1,6 +1,7 @@
 package branching
 
 import (
+	"context"
 	"crypto/sha1"
 	"errors"
 	"fmt"
@@ -15,6 +16,25 @@ import (
 // itself. The parent project is reported as a default branch so that clients that look
 // for one (Studio, the CLI) find it; it cannot be created, renamed or deleted.
 const DefaultBranchName = "main"
+
+// SchemaSource builds a schema-only branch from something other than its parent: the repository a
+// pull request belongs to (internal/github). Hosted builds the branch of a pull request from the
+// repository's migrations, seed and functions alone, never from the parent's schema, and this is
+// that mode. Create calls the source in place of the replay of the parent's migrations and seed
+// and of the copy of the parent's Edge Functions; the branch's project, its keys and its settings
+// are made as for any branch.
+type SchemaSource interface {
+	// Schema runs once the branch's database is healthy. It reports to run (the steps clone,
+	// configure, migrate and seed; the run is nil-safe) and returns the detail recorded on the branch.
+	Schema(ctx context.Context, run *Run, ref string) (detail string, err error)
+	// Functions runs in the deploy step and deploys the branch's Edge Functions.
+	Functions(ctx context.Context, run *Run, ref string) error
+}
+
+// Driver is the work of an operation that something other than the service does: the runner of
+// a Git integration applying a commit to its branch. It reports to run and returns the detail
+// recorded on the branch.
+type Driver func(ctx context.Context, run *Run) (detail string, err error)
 
 // Branch is the service-level view of a branch: registry fields plus the project's status.
 type Branch struct {

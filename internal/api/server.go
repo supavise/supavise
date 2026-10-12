@@ -18,6 +18,7 @@ import (
 	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/diskquota"
 	"github.com/supavise/supavise/internal/domains"
+	"github.com/supavise/supavise/internal/github"
 	"github.com/supavise/supavise/internal/lifecycle"
 	"github.com/supavise/supavise/internal/members"
 	"github.com/supavise/supavise/internal/oauth"
@@ -129,6 +130,11 @@ type Deps struct {
 	// (internal/reqstats); the dashboard's request charts (usage.api-counts, usage.api-requests-count)
 	// are answered from it. Nil: those endpoints say that nothing counts requests here.
 	Requests *reqstats.Counter
+	// GitHub is the GitHub integration (internal/github): the App of this server, the users'
+	// authorizations, the connected repositories and the webhooks that build preview branches. Nil:
+	// the node has none, and every GitHub surface of the dashboard is hidden. NewServer gives it
+	// the parts of this API it deploys functions and saves settings with.
+	GitHub *github.Service
 }
 
 // Server is the Management API. It implements http.Handler.
@@ -218,6 +224,9 @@ type Server struct {
 
 	// clones are the restores to a new project this process is running (clone.go).
 	clones cloneTracker
+
+	// gh is Deps.GitHub (github_integration.go).
+	gh *github.Service
 
 	handler http.Handler
 }
@@ -314,6 +323,7 @@ func NewServer(d Deps) (*Server, error) {
 			s.audit = NewMemoryAuditStore()
 		}
 	}
+	s.gh = d.GitHub
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
@@ -402,6 +412,12 @@ func NewServer(d Deps) (*Server, error) {
 	s.auth.sso = s.sso.Admit
 	s.auth.ssoUser = s.sso.AdmitUser
 	s.oauth = s.oauthService(d.OAuth)
+	if s.gh != nil {
+		// The integration saves settings and deploys functions through this API, and restarts the
+		// dashboard when the App appears or goes (Studio reads the App's name at start).
+		s.gh.SetHost(ghHost{s})
+		s.gh.SetOnAppChange(func(ctx context.Context) error { s.studioChanged(ctx); return nil })
+	}
 	// s.sso holds the same *Accounts, so a removed or denied SSO user's OAuth grants are revoked too.
 	s.accounts.OAuth = s.oauth
 	s.auth.oauth = newOAuthAuthn(s)
@@ -569,6 +585,8 @@ func (s *Server) implemented() map[string]route {
 	// or not [api] disable_oauth is set; their handlers answer 404 when it is (oauthRoutes).
 	s.routesOAuth(add)
 	s.routesOAuthApps(add)
+	// The GitHub integration: the dashboard's calls, the operator's App and the webhook.
+	s.routesGitHub(add)
 	// The device-login poll carries no credentials: the CLI has none yet.
 	r := m["GET /platform/cli/login/{session_id}"]
 	r.auth = authNone
@@ -579,6 +597,12 @@ func (s *Server) implemented() map[string]route {
 			rt.auth = authNone
 			m[key] = rt
 		}
+	}
+	// So do the pages GitHub sends a browser to and the webhook, which carries its own signature.
+	for _, key := range githubPublicRoutes {
+		rt := m[key]
+		rt.auth = authNone
+		m[key] = rt
 	}
 	// So do the OAuth endpoints a client calls before it has a token (oauthPublicRoutes).
 	for _, key := range oauthPublicRoutes {

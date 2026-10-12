@@ -184,6 +184,7 @@ func (s *Server) listBranches(w http.ResponseWriter, r *http.Request) error {
 		}
 		out = append(out, j)
 	}
+	s.annotatePRs(r.Context(), out...)
 	writeJSON(w, http.StatusOK, out)
 	return nil
 }
@@ -253,7 +254,7 @@ func (s *Server) createBranch(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return s.writeBranch(w, http.StatusCreated, b)
+	return s.writeBranchPR(w, r, http.StatusCreated, b)
 }
 
 // createBranchV2 is POST /v2/projects/{ref}/branches: the same creation with a JSON:API body and
@@ -441,7 +442,7 @@ func (s *Server) getBranchByName(w http.ResponseWriter, r *http.Request) error {
 		}
 		return mapBranchErr(err)
 	}
-	return s.writeBranch(w, http.StatusOK, b)
+	return s.writeBranchPR(w, r, http.StatusOK, b)
 }
 
 // getBranch returns the connection details of a branch (BranchDetailResponse).
@@ -517,7 +518,7 @@ func (s *Server) updateBranch(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return mapBranchErr(err)
 	}
-	return s.writeBranch(w, http.StatusOK, b)
+	return s.writeBranchPR(w, r, http.StatusOK, b)
 }
 
 func (s *Server) deleteBranch(w http.ResponseWriter, r *http.Request) error {
@@ -589,7 +590,7 @@ func (s *Server) branchAction(op string) handlerFunc {
 		case "reset":
 			run, err = s.branches.Reset(r.Context(), id, ai)
 		default:
-			run, err = s.branches.Push(r.Context(), id, ai)
+			run, err = s.pushBranch(r.Context(), id, ai)
 		}
 		if err != nil {
 			return mapBranchErr(err)

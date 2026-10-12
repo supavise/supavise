@@ -55,6 +55,9 @@ type Memory struct {
 	// expiry warnings sent, by project ref.
 	pauses       map[string]Pause
 	expiryWarned map[string]ExpiryWarning
+
+	// github is the GitHub integration's state (github_store_mem.go).
+	github *githubMem
 }
 
 func NewMemory() *Memory {

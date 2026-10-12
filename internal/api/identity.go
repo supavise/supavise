@@ -117,6 +117,11 @@ func (s *Server) profileOf(ctx context.Context, u *User) *plat.ProfileResponseOu
 	if s.cloner() != nil {
 		disabled = slices.DeleteFunc(disabled, func(f string) bool { return f == featureRestoreToNewProject })
 	}
+	if !s.githubOffered(ctx) {
+		// No GitHub App on this server: the GitHub card, the Preferences row and "Sync with a GitHub
+		// branch" would lead to nothing, or to the App of another party.
+		disabled = append(disabled, featureGitHub)
+	}
 	return &plat.ProfileResponseOutput{
 		Auth0Id: u.UserID, DisabledFeatures: &disabled, FirstName: opt(u.FirstName), LastName: opt(u.LastName),
 		GotrueId: u.UserID, Id: float32(u.ID), PrimaryEmail: u.Email, Username: u.Username,

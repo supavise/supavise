@@ -1,0 +1,276 @@
+From 582079332fe240a461cb1d872f8089942c4e72e2 Mon Sep 17 00:00:00 2001
+From: supavise <supavise@users.noreply.invalid>
+Date: Sun, 11 Oct 2026 12:00:00 -0700
+Subject: [PATCH 7/7] feat(studio): hide the GitHub surfaces when the platform
+ has no GitHub App
+
+Studio opens the GitHub App of Supabase (lib/github.ts) for every
+GitHub button, and shows the GitHub card, the Connections row of the
+account preferences and the "Sync with a GitHub branch" block of the
+branch dialogs on every platform. A platform run by someone else has
+no App of Supabase's to offer: the buttons lead to an App the platform
+cannot receive webhooks from, and the pages read as if the user were
+connected.
+
+Add the feature key integrations:github (default true, like
+integrations:vercel). The platform lists it in disabled_features while
+it has no GitHub App, and Studio then hides the GitHub section of the
+project and organization integration settings, the Connections section
+of the account preferences, the GitHub status of the Branches side
+menu and the GitHub block of the create and edit branch dialogs. The
+Create pull request action of a branch is shown only when the project
+has a GitHub connection, because it builds its link from it.
+---
+ .../Account/Preferences/AccountConnections.tsx       |  5 +++++
+ .../BranchManagement/CreateBranchModal.tsx           |  9 ++++++---
+ .../interfaces/BranchManagement/EditBranchModal.tsx  |  9 ++++++---
+ .../interfaces/BranchManagement/Overview.tsx         |  7 ++++++-
+ .../IntegrationSettings/IntegrationSettings.tsx      |  3 ++-
+ .../Settings/Integrations/IntegrationsSettings.tsx   |  3 ++-
+ .../components/layouts/BranchLayout/BranchLayout.tsx | 12 ++++++++----
+ .../common/enabled-features/enabled-features.json    |  1 +
+ .../enabled-features/enabled-features.schema.json    |  5 +++++
+ 9 files changed, 41 insertions(+), 13 deletions(-)
+
+diff --git a/apps/studio/components/interfaces/Account/Preferences/AccountConnections.tsx b/apps/studio/components/interfaces/Account/Preferences/AccountConnections.tsx
+index 5e4ab175..964abb97 100644
+--- a/apps/studio/components/interfaces/Account/Preferences/AccountConnections.tsx
++++ b/apps/studio/components/interfaces/Account/Preferences/AccountConnections.tsx
+@@ -27,10 +27,12 @@ import { ShimmeringLoader } from 'ui-patterns/ShimmeringLoader'
+ 
+ import { useGitHubAuthorizationDeleteMutation } from '@/data/integrations/github-authorization-delete-mutation'
+ import { useGitHubAuthorizationQuery } from '@/data/integrations/github-authorization-query'
++import { useIsFeatureEnabled } from '@/hooks/misc/useIsFeatureEnabled'
+ import { BASE_PATH } from '@/lib/constants'
+ import { openInstallGitHubIntegrationWindow } from '@/lib/github'
+ 
+ export const AccountConnections = () => {
++  const showGitHubIntegration = useIsFeatureEnabled('integrations:github')
+   const {
+     data: gitHubAuthorization,
+     isPending: isLoading,
+@@ -63,6 +65,9 @@ export const AccountConnections = () => {
+     removeAuthorization()
+   }
+ 
++  // The only connection offered here is GitHub's: without a GitHub App on the platform there is none.
++  if (!showGitHubIntegration) return null
++
+   return (
+     <PageSection>
+       <PageSectionMeta>
+diff --git a/apps/studio/components/interfaces/BranchManagement/CreateBranchModal.tsx b/apps/studio/components/interfaces/BranchManagement/CreateBranchModal.tsx
+index 4d61aa41..f3a5a24d 100644
+--- a/apps/studio/components/interfaces/BranchManagement/CreateBranchModal.tsx
++++ b/apps/studio/components/interfaces/BranchManagement/CreateBranchModal.tsx
+@@ -58,6 +58,7 @@ import { DesiredInstanceSize, instanceSizeSpecs } from '@/data/projects/new-proj
+ import { useProjectAddonsQuery } from '@/data/subscriptions/project-addons-query'
+ import { useCheckEntitlements } from '@/hooks/misc/useCheckEntitlements'
+ import { useAsyncCheckPermissions } from '@/hooks/misc/useCheckPermissions'
++import { useIsFeatureEnabled } from '@/hooks/misc/useIsFeatureEnabled'
+ import { useSelectedOrganizationQuery } from '@/hooks/misc/useSelectedOrganization'
+ import { useSelectedProjectQuery } from '@/hooks/misc/useSelectedProject'
+ import { BASE_PATH, IS_PLATFORM } from '@/lib/constants'
+@@ -138,9 +139,11 @@ export const CreateBranchModal = () => {
+     { enabled: showCreateBranchModal }
+   )
+ 
+-  const isLoading = isLoadingAuthorization || isLoadingConnections
+-  const isSuccess = isSuccessAuthorization && isSuccessConnections
+-  const isError = isErrorAuthorization || isErrorConnections
++  // Without a GitHub App on the platform the block that syncs a branch with a Git branch is not shown.
++  const showGitHubIntegration = useIsFeatureEnabled('integrations:github')
++  const isLoading = showGitHubIntegration && (isLoadingAuthorization || isLoadingConnections)
++  const isSuccess = showGitHubIntegration && isSuccessAuthorization && isSuccessConnections
++  const isError = showGitHubIntegration && (isErrorAuthorization || isErrorConnections)
+   const error = authorizationError || connectionsError
+ 
+   const { data: branches } = useBranchesQuery({ projectRef })
+diff --git a/apps/studio/components/interfaces/BranchManagement/EditBranchModal.tsx b/apps/studio/components/interfaces/BranchManagement/EditBranchModal.tsx
+index 0f8cc13f..240bad2d 100644
+--- a/apps/studio/components/interfaces/BranchManagement/EditBranchModal.tsx
++++ b/apps/studio/components/interfaces/BranchManagement/EditBranchModal.tsx
+@@ -33,6 +33,7 @@ import { Branch, useBranchesQuery } from '@/data/branches/branches-query'
+ import { useGitHubAuthorizationQuery } from '@/data/integrations/github-authorization-query'
+ import { useCheckGithubBranchValidity } from '@/data/integrations/github-branch-check-query'
+ import { useGitHubConnectionsQuery } from '@/data/integrations/github-connections-query'
++import { useIsFeatureEnabled } from '@/hooks/misc/useIsFeatureEnabled'
+ import { useSelectedOrganizationQuery } from '@/hooks/misc/useSelectedOrganization'
+ import { useSelectedProjectQuery } from '@/hooks/misc/useSelectedProject'
+ import { BASE_PATH } from '@/lib/constants'
+@@ -72,9 +73,11 @@ export const EditBranchModal = ({ branch, visible, onClose }: EditBranchModalPro
+     organizationId: selectedOrg?.id,
+   })
+ 
+-  const isLoading = isLoadingAuthorization || isLoadingConnections
+-  const isSuccess = isSuccessAuthorization && isSuccessConnections
+-  const isError = isErrorAuthorization || isErrorConnections
++  // Without a GitHub App on the platform the block that syncs a branch with a Git branch is not shown.
++  const showGitHubIntegration = useIsFeatureEnabled('integrations:github')
++  const isLoading = showGitHubIntegration && (isLoadingAuthorization || isLoadingConnections)
++  const isSuccess = showGitHubIntegration && isSuccessAuthorization && isSuccessConnections
++  const isError = showGitHubIntegration && (isErrorAuthorization || isErrorConnections)
+   const error = authorizationError || connectionsError
+ 
+   const { data: branches } = useBranchesQuery({ projectRef })
+diff --git a/apps/studio/components/interfaces/BranchManagement/Overview.tsx b/apps/studio/components/interfaces/BranchManagement/Overview.tsx
+index 6b797f75..0844c45a 100644
+--- a/apps/studio/components/interfaces/BranchManagement/Overview.tsx
++++ b/apps/studio/components/interfaces/BranchManagement/Overview.tsx
+@@ -159,6 +159,7 @@ export const Overview = ({
+                   <PreviewBranchActions
+                     branch={branch}
+                     repo={repo}
++                    isGithubConnected={isGithubConnected}
+                     onSelectDeleteBranch={() => onSelectDeleteBranch(branch)}
+                     generateCreatePullRequestURL={generateCreatePullRequestURL}
+                   />
+@@ -186,6 +187,7 @@ export const Overview = ({
+                   <PreviewBranchActions
+                     branch={branch}
+                     repo={repo}
++                    isGithubConnected={isGithubConnected}
+                     onSelectDeleteBranch={() => onSelectDeleteBranch(branch)}
+                     generateCreatePullRequestURL={generateCreatePullRequestURL}
+                   />
+@@ -214,6 +216,7 @@ export const Overview = ({
+                   <PreviewBranchActions
+                     branch={branch}
+                     repo={repo}
++                    isGithubConnected={isGithubConnected}
+                     // If a scheduled for deletion branch is deleted, we force the deletion
+                     onSelectDeleteBranch={() => onSelectDeleteBranch(branch)}
+                     generateCreatePullRequestURL={generateCreatePullRequestURL}
+@@ -230,11 +233,13 @@ export const Overview = ({
+ // Row actions for preview branches (non-main)
+ const PreviewBranchActions = ({
+   branch,
++  isGithubConnected,
+   onSelectDeleteBranch,
+   generateCreatePullRequestURL,
+ }: {
+   branch: Branch
+   repo: string
++  isGithubConnected: boolean
+   onSelectDeleteBranch: () => void
+   generateCreatePullRequestURL: (branchName?: string) => string
+ }) => {
+@@ -447,7 +452,7 @@ const PreviewBranchActions = ({
+           )}
+ 
+           {/* Create PR if applicable */}
+-          {branch.git_branch && branch.pr_number === undefined && (
++          {isGithubConnected && branch.git_branch && branch.pr_number === undefined && (
+             <DropdownMenuItem asChild className="gap-x-2">
+               <a
+                 target="_blank"
+diff --git a/apps/studio/components/interfaces/Organization/IntegrationSettings/IntegrationSettings.tsx b/apps/studio/components/interfaces/Organization/IntegrationSettings/IntegrationSettings.tsx
+index 01f43f3d..57798938 100644
+--- a/apps/studio/components/interfaces/Organization/IntegrationSettings/IntegrationSettings.tsx
++++ b/apps/studio/components/interfaces/Organization/IntegrationSettings/IntegrationSettings.tsx
+@@ -4,11 +4,12 @@ import { VercelSection } from '@/components/interfaces/Settings/Integrations/Ver
+ import { useIsFeatureEnabled } from '@/hooks/misc/useIsFeatureEnabled'
+ 
+ export const IntegrationSettings = () => {
++  const showGitHubIntegration = useIsFeatureEnabled('integrations:github')
+   const showVercelIntegration = useIsFeatureEnabled('integrations:vercel')
+ 
+   return (
+     <>
+-      <GitHubSection isProjectScoped={false} />
++      {showGitHubIntegration && <GitHubSection isProjectScoped={false} />}
+       {showVercelIntegration && (
+         <>
+           <VercelSection isProjectScoped={false} />
+diff --git a/apps/studio/components/interfaces/Settings/Integrations/IntegrationsSettings.tsx b/apps/studio/components/interfaces/Settings/Integrations/IntegrationsSettings.tsx
+index a4c68e74..2ebe1419 100644
+--- a/apps/studio/components/interfaces/Settings/Integrations/IntegrationsSettings.tsx
++++ b/apps/studio/components/interfaces/Settings/Integrations/IntegrationsSettings.tsx
+@@ -65,6 +65,7 @@ export const IntegrationSettings = () => {
+   const { data: project } = useSelectedProjectQuery()
+   const isBranch = project?.parent_project_ref !== undefined
+ 
++  const showGitHubIntegration = useIsFeatureEnabled('integrations:github')
+   const showVercelIntegration = useIsFeatureEnabled('integrations:vercel')
+   const showAWSPrivateLinkFeature = useIsFeatureEnabled('integrations:aws_private_link')
+   // PrivateLink is not available in eu-central-2 (Zurich) until Feb 2026
+@@ -87,7 +88,7 @@ export const IntegrationSettings = () => {
+         </Admonition>
+       )}
+ 
+-      <GitHubSection isProjectScoped={true} />
++      {showGitHubIntegration && <GitHubSection isProjectScoped={true} />}
+ 
+       {showVercelIntegration && (
+         <>
+diff --git a/apps/studio/components/layouts/BranchLayout/BranchLayout.tsx b/apps/studio/components/layouts/BranchLayout/BranchLayout.tsx
+index 19246aae..d0cf7136 100644
+--- a/apps/studio/components/layouts/BranchLayout/BranchLayout.tsx
++++ b/apps/studio/components/layouts/BranchLayout/BranchLayout.tsx
+@@ -6,20 +6,24 @@ import { ProjectLayout } from '../ProjectLayout'
+ import { generateBranchMenu } from './BranchLayout.utils'
+ import { GitHubStatus } from '@/components/interfaces/Settings/Integrations/GithubIntegration/GitHubStatus'
+ import { ProductMenu } from '@/components/ui/ProductMenu'
++import { useIsFeatureEnabled } from '@/hooks/misc/useIsFeatureEnabled'
+ import { withAuth } from '@/hooks/misc/withAuth'
+ 
+ const BranchProductMenu = () => {
+   const router = useRouter()
+   const { ref: projectRef = 'default' } = useParams()
+   const page = router.pathname.split('/')[4] ?? 'branches'
++  const showGitHubIntegration = useIsFeatureEnabled('integrations:github')
+ 
+   return (
+     <>
+       <ProductMenu page={page} menu={generateBranchMenu(projectRef)} />
+-      <div className="px-6">
+-        <h3 className="text-sm font-mono text-foreground-lighter uppercase mb-3">Configure</h3>
+-        <GitHubStatus />
+-      </div>
++      {showGitHubIntegration && (
++        <div className="px-6">
++          <h3 className="text-sm font-mono text-foreground-lighter uppercase mb-3">Configure</h3>
++          <GitHubStatus />
++        </div>
++      )}
+     </>
+   )
+ }
+diff --git a/packages/common/enabled-features/enabled-features.json b/packages/common/enabled-features/enabled-features.json
+index 49032592..dad11e99 100644
+--- a/packages/common/enabled-features/enabled-features.json
++++ b/packages/common/enabled-features/enabled-features.json
+@@ -77,6 +77,7 @@
+   "integrations:partners": true,
+   "integrations:wrappers": true,
+   "integrations:vercel": true,
++  "integrations:github": true,
+   "integrations:aws_private_link": true,
+ 
+   "infrastructure:read_replicas": true,
+diff --git a/packages/common/enabled-features/enabled-features.schema.json b/packages/common/enabled-features/enabled-features.schema.json
+index 9943d645..8c9bdf43 100644
+--- a/packages/common/enabled-features/enabled-features.schema.json
++++ b/packages/common/enabled-features/enabled-features.schema.json
+@@ -272,6 +272,10 @@
+       "type": "boolean",
+       "description": "Enable the vercel integration section in the organization and project settings pages"
+     },
++    "integrations:github": {
++      "type": "boolean",
++      "description": "Show the GitHub integration: its sections in the organization and project settings pages, the connection in the account preferences, and the GitHub branch fields of the branch dialogs"
++    },
+     "integrations:aws_private_link": {
+       "type": "boolean",
+       "description": "Enable the AWS PrivateLink integration section in the project settings pages"
+@@ -511,6 +515,7 @@
+     "integrations:partners",
+     "integrations:wrappers",
+     "integrations:vercel",
++    "integrations:github",
+     "integrations:aws_private_link",
+     "infrastructure:read_replicas",
+     "profile:show_email",
+-- 
+2.50.1 (Apple Git-155)
+

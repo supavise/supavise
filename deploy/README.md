@@ -161,6 +161,18 @@ sudo -u supavise supavise studio ai clear
 - **When it does not answer.** Studio shows a generic error when the provider refuses a request. Run `supavise studio ai check`, then read the provider's answer in `journalctl -u supavise-studio` (`Assistant stream error`). The usual causes are a base URL without `/v1`, a model name the provider does not serve, and a model that rejects `reasoning_effort`.
 - **Registry.** The organization's opt-in tags are in `organizations.opt_in_tags` (migration 1550), saved by the Owner with `PATCH /platform/organizations/{slug}`.
 
+### GitHub integration
+
+A connected repository gets a preview branch for every pull request. It needs a GitHub App that belongs to you, and GitHub must reach `https://api.<domain>/hooks/github`; the dashboard shows no GitHub buttons until the server has the App.
+
+```bash
+sudo -u supavise supavise github app create --owner my-org   # prints a link: open it in a browser that is signed in to GitHub
+sudo -u supavise supavise github app status                  # the App, the install link, the webhook and callback URLs
+sudo -u supavise supavise github app remove                  # forgets the App and the users' authorizations (it stays on GitHub)
+```
+
+Run these on the leader; the daemon must run, because it serves the page the link opens and GitHub's redirect. Studio restarts when the App appears or goes. An App you made yourself goes in `[github]` of `config.toml`, with its secrets in files (`docs/github-integration.md`). `[github] allow_forks` lets pull requests from forks build branches; leave it off unless every fork is trusted. `[github] max_concurrent_builds` (3 when unset) bounds how many preview branches the node builds at once. Upgrade the leader before the followers: a follower reads the GitHub state from the leader's registry. Allow `api.<domain>` and `studio.<domain>` through to GitHub's servers and browsers as usual; nothing else is opened.
+
 ## Update
 
 You own the node, so Supavise tells you that a release exists and changes nothing until you ask, or until you opt in to automatic upgrades inside a maintenance window. A release is a tested bundle: the binary and the Supabase service versions it installs (`internal/versions/versions.yaml`). The [guide](../docs/guide.md#updates-and-maintenance) has the routine.

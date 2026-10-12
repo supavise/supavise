@@ -23,6 +23,8 @@ func TestRouteTableBuilds(t *testing.T) {
 			// supavise's own: whether a server failover would be accepted now (failover.go).
 		case strings.HasPrefix(key, "GET /configuration-files/"):
 			// The flag document of Studio's ConfigCat client (configcat.go).
+		case strings.Contains(key, "/supavise/v1/github/app"), key == "POST /hooks/github":
+			// supavise's own: the server's GitHub App and the webhook GitHub posts to (github_integration.go).
 		case strings.Contains(key, "/platform/organizations/{slug}/sso/"):
 			// supavise's own routes for several identity providers and the users waiting for approval.
 		default:

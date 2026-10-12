@@ -994,6 +994,11 @@ func TestOnlyExpectedRoutesAreAuthNone(t *testing.T) {
 		"POST /v1/oauth/revoke":                true,
 		// Studio's flag client reads this before and without a session (configcat.go).
 		"GET " + configCatPath: true,
+		// The GitHub integration: the page that posts the App's manifest and the redirect back from
+		// GitHub carry a one-time state, the webhook a signature.
+		"GET /supavise/v1/github/app/new":      true,
+		"GET /supavise/v1/github/app/callback": true,
+		"POST /hooks/github":                   true,
 	}
 	f := newFixture(t)
 	impl := f.srv.implemented()
