@@ -474,7 +474,7 @@ the project, and a reset now removes it as well.
 owner's, so a request does not wake it (a branch the node had paused for idleness becomes the owner's).
 `POST /v1/branches/{id}/restore`, and a resume from the paused page (`POST /platform/projects/{ref}/restore`),
 cancels the deletion and starts the branch again; Restore also starts a paused branch that has no deletion
-scheduled, and answers 409 for one that is neither. A pause that fails leaves the deletion scheduled and the
+scheduled, and succeeds without doing anything for one that is neither (Studio sends the restore twice per click, from both `onSelect` and `onClick` of its menu item; `restoreMu` runs restores one at a time so the second finds the first's result). A pause that fails leaves the deletion scheduled and the
 branch running (`branch.deletion_pause_failed`). `supavise branches list` shows `deleted in 59m0s (restore
 cancels)` in the EXPIRES column. `DELETE /v1/projects/{ref}/branches` deletes every branch of the project.
 

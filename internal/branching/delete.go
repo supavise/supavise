@@ -156,15 +156,19 @@ func (s *Service) removeBranch(ctx context.Context, b *Branch, o removeOptions) 
 }
 
 // Restore cancels a scheduled deletion and starts the branch again if it is paused, which is what
-// the dashboard's Restore button asks for. A branch that is neither scheduled nor paused has nothing
-// to restore (409).
+// the dashboard's Restore button asks for. A branch that is neither scheduled nor paused is already
+// restored, and the call succeeds without doing anything: Studio sends the restore twice for one
+// click (its menu item calls the mutation from both onSelect and onClick), and a refusal of the
+// second would show "Failed to restore branch" right after the success toast.
 func (s *Service) Restore(ctx context.Context, idOrRef string) (*Branch, error) {
+	s.restoreMu.Lock()
+	defer s.restoreMu.Unlock()
 	b, err := s.resolveBranch(ctx, idOrRef, "restore")
 	if err != nil {
 		return nil, err
 	}
 	if b.DeletionScheduledAt == nil && b.ProjectStatus != registry.StatusInactive {
-		return nil, conflict("branch %s is not scheduled for deletion or paused", b.Name)
+		return b, nil
 	}
 	if b.DeletionScheduledAt != nil {
 		p, err := s.project(ctx, b.Ref)
