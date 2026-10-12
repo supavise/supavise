@@ -24,6 +24,8 @@
 //   GET, POST /repos/{o}/{r}/issues/{n}/comments, PATCH .../issues/comments/{id}
 // Control (no authentication)
 //   PUT  /__fake/commits/{sha}      body {files: {path: content}}
+//   PUT  /__fake/heads/{branch}     body {sha}: the commit the branch points to (commits/{ref} answers it; the default
+//                                   is "head-<branch>"), which the server compares with the commit of every push
 //   PUT  /__fake/pulls/{n}/files    body ["path", ...]
 //   GET  /__fake/state              {checks, comments, requests, refreshed}
 //   POST /__fake/expire-user-token  makes the user's access token expire now (the next call must refresh)
@@ -51,6 +53,7 @@ const publicKey = opt.key ? createPublicKey(readFileSync(opt.key)) : null
 
 const files = new Map() // commit sha -> Map(path -> content)
 const prFiles = new Map() // pr number -> [paths]
+const heads = new Map() // branch -> the commit it points to (default: head-<branch>)
 const checks = new Map()
 const comments = new Map()
 const requests = []
@@ -244,7 +247,8 @@ route('GET', '/repos/{owner}/{repo}/branches/{b...}', repoCall(async (req, res, 
   json(res, 200, { name: b })
 }))
 route('GET', '/repos/{owner}/{repo}/commits/{b...}', repoCall(async (req, res, p) => {
-  const sha = 'head-' + decodeURIComponent(p.b)
+  const b = decodeURIComponent(p.b)
+  const sha = heads.get(b) ?? 'head-' + b
   if (!files.has(sha)) return fail(res, 422, 'No commit found for SHA: ' + p.b)
   json(res, 200, { sha })
 }))
@@ -283,6 +287,10 @@ route('PATCH', '/repos/{owner}/{repo}/issues/comments/{id}', repoCall(async (req
 route('PUT', '/__fake/commits/{sha}', async (req, res, p) => {
   const b = JSON.parse(await readBody(req))
   files.set(p.sha, new Map(Object.entries(b.files)))
+  json(res, 200, { ok: true })
+})
+route('PUT', '/__fake/heads/{b...}', async (req, res, p) => {
+  heads.set(decodeURIComponent(p.b), JSON.parse(await readBody(req)).sha)
   json(res, 200, { ok: true })
 })
 route('PUT', '/__fake/pulls/{n}/files', async (req, res, p) => {

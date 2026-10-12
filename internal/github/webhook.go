@@ -189,6 +189,7 @@ func (s *Service) HandleWebhook(ctx context.Context, d Delivery) WebhookResult {
 	if d.Event == "ping" {
 		return res(http.StatusOK, "pong")
 	}
+	s.pruneSometimes(ctx)
 	fresh, err := s.st.RecordGitHubDelivery(ctx, d.ID, d.Event, s.now())
 	if err != nil {
 		s.log.Error("could not record a GitHub delivery", "err", err)
@@ -197,11 +198,25 @@ func (s *Service) HandleWebhook(ctx context.Context, d Delivery) WebhookResult {
 	if !fresh {
 		return res(http.StatusOK, "the delivery was handled before")
 	}
-	s.pruneSometimes(ctx)
+	// The signature covers the body and not the X-GitHub-Delivery header, so a body that was captured
+	// once (a proxy's log, a shared delivery page) could be sent again under a new id: the body is
+	// remembered too, and a body that was handled before is not handled again whatever its id says.
+	bodyKey := bodyDeliveryKey(d.Body)
+	freshBody, err := s.st.RecordGitHubDelivery(ctx, bodyKey, d.Event, s.now())
+	if err != nil {
+		_ = s.st.ForgetGitHubDelivery(ctx, d.ID)
+		s.log.Error("could not record a GitHub delivery", "err", err)
+		return res(http.StatusInternalServerError, "could not record the delivery")
+	}
+	if !freshBody {
+		s.log.Warn("a GitHub delivery repeats the body of an earlier one under another id and is ignored", "event", d.Event, "delivery", d.ID)
+		return res(http.StatusOK, "the body of the delivery was handled before")
+	}
 	msg, err := s.dispatch(ctx, d)
 	if err != nil {
 		// A delivery that could not even be read may be sent again.
 		_ = s.st.ForgetGitHubDelivery(ctx, d.ID)
+		_ = s.st.ForgetGitHubDelivery(ctx, bodyKey)
 		if errors.Is(err, ErrInvalid) {
 			return res(http.StatusBadRequest, "%v", err)
 		}
@@ -209,6 +224,18 @@ func (s *Service) HandleWebhook(ctx context.Context, d Delivery) WebhookResult {
 		return res(http.StatusInternalServerError, "the delivery could not be handled")
 	}
 	return res(http.StatusAccepted, "%s", msg)
+}
+
+// deliveryRetention is how long the ids and bodies of deliveries are remembered. GitHub lets a
+// delivery be sent again for three days; a week covers that with room, and a body that is replayed
+// later than that meets the head check of a push (pushIsHead) and nothing else.
+const deliveryRetention = 7 * 24 * time.Hour
+
+// bodyDeliveryKey is the key a delivery's body is remembered under, next to the ids of deliveries
+// (the column holds text, and a hash cannot be an id).
+func bodyDeliveryKey(body []byte) string {
+	sum := sha256.Sum256(body)
+	return "body:" + hex.EncodeToString(sum[:])
 }
 
 func (s *Service) pruneSometimes(ctx context.Context) {
@@ -220,7 +247,7 @@ func (s *Service) pruneSometimes(ctx context.Context) {
 	}
 	s.pruneMu.Unlock()
 	if due {
-		if err := s.st.PruneGitHubDeliveries(ctx, now.Add(-72*time.Hour)); err != nil {
+		if err := s.st.PruneGitHubDeliveries(ctx, now.Add(-deliveryRetention)); err != nil {
 			s.log.Warn("could not prune the GitHub deliveries", "err", err)
 		}
 	}
@@ -360,7 +387,12 @@ func (s *Service) onPush(ctx context.Context, p *pushPayload) (string, error) {
 				continue
 			}
 			queued++
+			// One deployment at a time per connection, the newest event first (the queue), and the commit of
+			// the event is checked against the branch's head inside the job, right before it is applied.
 			s.enqueue("prod:"+c.ProjectRef, func(ctx context.Context) {
+				if !s.pushIsHead(ctx, c, branch, p.After) {
+					return
+				}
 				if err := s.deployProduction(ctx, c, branch, p.After, nil); err != nil && ctx.Err() == nil {
 					s.log.Warn("a production deployment failed", "repo", c.RepositoryName, "err", err)
 				}

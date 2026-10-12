@@ -272,6 +272,7 @@ func TestProductionFailureKeepsItsLogOutOfTheCheckRun(t *testing.T) {
 	_ = h.reg.SetDefaultBranchGit(ctx, prodRef, "main")
 	h.db.failAt = "20240101000000"
 	h.gh.setCommit("sha-main", repoFiles(nil))
+	h.gh.setHead("main", "sha-main")
 	h.deliver("push", "d1", h.pushEvent("refs/heads/main", "sha-main"))
 	var got *fakeCheck
 	for _, c := range h.gh.checks {
@@ -297,6 +298,7 @@ func TestProductionDeployWithoutASupabaseDirectoryIsNeutral(t *testing.T) {
 	_ = h.reg.CreateProject(ctx, &registry.Project{Ref: prodRef, Name: "prod", Status: registry.StatusActiveHealthy})
 	_ = h.reg.SetDefaultBranchGit(ctx, prodRef, "main")
 	h.gh.setCommit("sha-main", map[string]string{"README.md": "x"})
+	h.gh.setHead("main", "sha-main")
 	h.deliver("push", "d1", h.pushEvent("refs/heads/main", "sha-main"))
 	for _, c := range h.gh.checks {
 		if c.Conclusion != "neutral" {
@@ -313,6 +315,7 @@ func TestProductionIsNotDeployedToAPausedProject(t *testing.T) {
 	_ = h.reg.CreateProject(ctx, &registry.Project{Ref: prodRef, Name: "prod", Status: registry.StatusInactive})
 	_ = h.reg.SetDefaultBranchGit(ctx, prodRef, "main")
 	h.gh.setCommit("sha-main", repoFiles(nil))
+	h.gh.setHead("main", "sha-main")
 	h.deliver("push", "d1", h.pushEvent("refs/heads/main", "sha-main"))
 	if len(h.db.history[prodRef]) != 0 {
 		t.Fatal("a paused project was migrated")
