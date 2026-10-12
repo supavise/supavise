@@ -9,9 +9,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// missingTable reports whether err says the registry has not run migration 1520: a follower of a
-// leader that has not been upgraded reads a schema without these tables. Reads treat it as "nothing
-// recorded", so the follower's proxy goes on serving.
+// missingTable reports whether err says a table is not there (SQLSTATE 42P01): the registry has not run
+// migration 1520 (these tables) or 1540 (the GitHub state, github_store.go). A follower of a leader that
+// has not been upgraded reads a schema without them. Reads treat it as "nothing recorded", so the
+// follower's proxy goes on serving.
 func missingTable(err error) bool {
 	var pe *pgconn.PgError
 	return errors.As(err, &pe) && pe.Code == "42P01"
