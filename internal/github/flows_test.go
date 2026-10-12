@@ -169,6 +169,95 @@ func TestACreatedBranchOfOurOwnIsAdoptedWhenItsLinkWasLost(t *testing.T) {
 	}
 }
 
+// stalledCreate makes Create wait, with the branch registered, until release is closed or the context it
+// was given ends (as the real Create waits for the row to show, and gives up when its caller does).
+func (h *harness) stalledCreate() (entered <-chan struct{}, release func()) {
+	in := make(chan struct{}, 8)
+	gate := make(chan struct{})
+	h.br.createHook = func(ctx context.Context) error {
+		in <- struct{}{}
+		select {
+		case <-gate:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	var once sync.Once
+	return in, func() { once.Do(func() { close(gate) }) }
+}
+
+// post hands a signed event to the service and returns without waiting for the work it queued.
+func (h *harness) post(event, id string, payload any) WebhookResult {
+	h.t.Helper()
+	body, err := jsonBody(payload)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return h.svc.HandleWebhook(context.Background(), Delivery{Event: event, ID: id, Signature: h.sign(body), Body: body})
+}
+
+// A newer event for the pull request cancels the job that is making its branch. The branch exists by
+// then, and it must have its link: otherwise the next event takes it for a branch somebody made by hand
+// and never seeds it.
+func TestACreateThatANewerCommitCancelsLeavesTheLinkAndTheSeedIsApplied(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	h.gh.setCommit("sha-2", repoFiles(nil))
+	entered, release := h.stalledCreate()
+	defer release()
+	if res := h.post("pull_request", "d1", h.prEvent("opened", 7, "feature", "sha-1")); res.Status != http.StatusAccepted {
+		t.Fatalf("%+v", res)
+	}
+	<-entered // the branch is registered and its create is in flight
+	if res := h.post("pull_request", "d2", h.prEvent("synchronize", 7, "feature", "sha-2")); res.Status != http.StatusAccepted {
+		t.Fatalf("%+v", res)
+	}
+	release()
+	h.svc.wg.Wait()
+	b := h.br.byName("feature")
+	if b == nil || len(h.br.names()) != 1 {
+		t.Fatalf("branches = %v", h.br.names())
+	}
+	link, err := h.reg.GetGitHubBranchLink(context.Background(), b.Ref)
+	if err != nil || link.PRNumber != 7 {
+		t.Fatalf("link = %+v, %v", link, err)
+	}
+	if len(h.br.creates) != 1 {
+		t.Fatalf("creates = %d", len(h.br.creates))
+	}
+	// The newer commit finished the work, the seed included: the branch was not taken for a hand-made one.
+	if n := len(h.db.scripts[b.Ref]); n != 1 {
+		t.Fatalf("seed scripts on the branch = %d, want 1", n)
+	}
+	if link.SeededAt == nil || link.HeadSHA != "sha-2" {
+		t.Fatalf("link after the newer commit = %+v", link)
+	}
+	if got := h.db.applied(b.Ref); len(got) != 1 {
+		t.Fatalf("migrations = %v", got)
+	}
+}
+
+// The same for a pull request that is closed while its branch is being made: the close finds the link
+// and deletes the branch instead of leaving it to use up the project's limit.
+func TestAPullRequestClosedWhileItsBranchIsBeingMadeDeletesTheBranch(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	entered, release := h.stalledCreate()
+	defer release()
+	h.post("pull_request", "d1", h.prEvent("opened", 7, "feature", "sha-1"))
+	<-entered
+	h.post("pull_request", "d2", h.prEvent("closed", 7, "feature", "sha-1"))
+	release()
+	h.svc.wg.Wait()
+	if names := h.br.names(); len(names) != 0 {
+		t.Fatalf("the branch of a closed pull request is still there: %v", names)
+	}
+	if links, _ := h.reg.ListGitHubBranchLinks(context.Background(), prodRef); len(links) != 0 {
+		t.Fatalf("links left: %v", links)
+	}
+}
+
 func TestAPersistentBranchIsConfiguredOnlyByItsRemoteBlock(t *testing.T) {
 	h := newHarness(t)
 	h.gh.setCommit("sha-1", repoFiles(nil))
