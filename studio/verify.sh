@@ -195,9 +195,13 @@ check_patch_0005
 check_patch_0008_0011() {
   grep -rlF --include='*.js' 'cdnjs.cloudflare.com/ajax/libs/monaco-editor' "$ROOT/app/apps/studio/.next/static/chunks" > "$TMP/p8.files" 2>/dev/null || true
   [[ ! -s "$TMP/p8.files" ]] || fail "a client chunk still loads Monaco from cdnjs (patch 0008 is not in this build): $(head -n 1 "$TMP/p8.files")"
+  # The path is absolute: Monaco's editor worker starts from a blob: URL, which is no base for a relative one, so a
+  # relative /monaco-editor/vs made the HTML and TypeScript language workers fail with "Failed to parse URL".
+  grep -rlE --include='*.js' 'location\.origin[^;]{0,80}/monaco-editor/vs' "$ROOT/app/apps/studio/.next/static/chunks" > "$TMP/p8o.files" 2>/dev/null || true
+  [[ -s "$TMP/p8o.files" ]] || fail "no client chunk builds the Monaco path from location.origin (patch 0008 is not in this build, or loads Monaco from a relative path that the language workers cannot fetch)"
   grep -rlF --include='*.js' 'obuldanrptloktxcffvn' "$ROOT/app/apps/studio/.next/static/chunks" > "$TMP/p11.files" 2>/dev/null || true
   [[ ! -s "$TMP/p11.files" ]] || fail "a client chunk still probes Supabase's edge-functions health (patch 0011 is not in this build): $(head -n 1 "$TMP/p11.files")"
-  ok "patches 0008 and 0011: no client chunk names cdnjs for Monaco or Supabase's edge-functions health probe"
+  ok "patches 0008 and 0011: Monaco's path is absolute, and no client chunk names cdnjs for Monaco or Supabase's edge-functions health probe"
 }
 check_patch_0008_0011
 
