@@ -328,11 +328,24 @@ func TestAPIKeysMasking(t *testing.T) {
 	f := newFixture(t)
 	keys, _ := f.mgr.Keys(nil, testRef) //nolint:staticcheck
 	rec := f.do("GET", "/v1/projects/"+testRef+"/api-keys", nil)
-	if strings.Contains(rec.Body.String(), keys.ServiceRoleKey) || strings.Contains(rec.Body.String(), keys.SecretKey) {
-		t.Fatal("secret keys leaked without reveal=true")
+	// Hosted lists the legacy service_role key in full without reveal=true (the CLI asks without it, and
+	// its recorded responses show the key); only the opaque secret key is masked.
+	if strings.Contains(rec.Body.String(), keys.SecretKey) {
+		t.Fatal("the opaque secret key leaked without reveal=true")
+	}
+	if !strings.Contains(rec.Body.String(), keys.ServiceRoleKey) {
+		t.Fatalf("the legacy service_role key is missing without reveal=true: %s", rec.Body)
 	}
 	if !strings.Contains(rec.Body.String(), keys.AnonKey) || !strings.Contains(rec.Body.String(), keys.PublishableKey) {
 		t.Fatal("public keys missing")
+	}
+	if got := jsonField(t, rec, "3.api_key"); !strings.HasSuffix(got.(string), maskDots) {
+		t.Fatalf("the opaque secret key is not masked: %v", got)
+	}
+	// By id, the same.
+	rec = f.do("GET", "/v1/projects/"+testRef+"/api-keys/"+keyID(testRef, "service_role", "legacy"), nil)
+	if rec.Code != 200 || jsonField(t, rec, "api_key") != keys.ServiceRoleKey {
+		t.Fatalf("the legacy service_role key by id without reveal=true: %d %s", rec.Code, rec.Body)
 	}
 	rec = f.do("GET", "/v1/projects/"+testRef+"/api-keys?reveal=true", nil)
 	if !strings.Contains(rec.Body.String(), keys.ServiceRoleKey) || !strings.Contains(rec.Body.String(), keys.SecretKey) {

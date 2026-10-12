@@ -155,9 +155,12 @@ func (s *Server) cloneProject(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if bi.earliest.IsZero() {
+	// earliest is also zero in the second after the only backup ended (no whole second is restorable yet), and a
+	// clone of that backup does not depend on a second: only a time target does.
+	if len(bi.window.Backups) == 0 {
 		return errf(http.StatusBadRequest, "The project has no backup to restore from yet; the first base backup is taken by the nightly timer, or by `supavise backups create`")
 	}
+	errTooSoon := errf(http.StatusBadRequest, "The project's only backup ended less than a second ago; pick a time again in a moment, or clone the backup itself")
 	opts := backup.RestoreOptions{SkipFiles: true}
 	var target time.Time
 	var backupID string
@@ -174,6 +177,9 @@ func (s *Server) cloneProject(w http.ResponseWriter, r *http.Request) error {
 		opts.BackupID, opts.ToBackup = picked.ID, true
 		if in.RecoveryTimeTarget != nil {
 			// A time after that backup: replay its WAL up to the time.
+			if bi.earliest.IsZero() {
+				return errTooSoon
+			}
 			target = time.Unix(int64(*in.RecoveryTimeTarget), 0).UTC()
 			if target.Before(picked.StopTime) || target.After(bi.latest) {
 				return errf(http.StatusBadRequest, "The recovery time must be between the end of backup %d (%s) and %s", int64(*in.CloneBackupID), ts(picked.StopTime), ts(bi.latest))
@@ -181,6 +187,9 @@ func (s *Server) cloneProject(w http.ResponseWriter, r *http.Request) error {
 			opts.ToBackup = false
 		}
 	case in.RecoveryTimeTarget != nil:
+		if bi.earliest.IsZero() {
+			return errTooSoon
+		}
 		target = time.Unix(int64(*in.RecoveryTimeTarget), 0).UTC()
 		if target.Before(bi.earliest) || target.After(bi.latest) {
 			return errf(http.StatusBadRequest, "The recovery time must be between %s and %s", ts(bi.earliest), ts(bi.latest))

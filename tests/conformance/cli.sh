@@ -226,7 +226,10 @@ if step branches-create branches create "$BR" --project-ref "$REF" && branch_rea
       grep -qF -- "$want" <<<"$QUIET" || bad "branches get -o env has no $want"
     done
     grep -qF -- "$BREF" <<<"$QUIET" || bad "branches get -o env does not name the branch's project ref"
-    grep -qF -- "******" <<<"$QUIET" && bad "branches get -o env masks a value: the CLI got no password or JWT secret from the node"
+    # The CLI prints ****** for a value the node did not send, so a mask on any line means the node withheld a
+    # value that hosted sends: the password and JWT secret (GET /v1/branches/<ref>) or a key (GET /v1/projects/<ref>/api-keys
+    # without reveal=true, which lists the legacy anon and service_role keys in full).
+    grep -qF -- "******" <<<"$QUIET" && bad "branches get -o env masks a value: the CLI got no password, JWT secret or key from the node: $(grep -F -- '******' <<<"$QUIET" | sed -E 's/=.*/=<masked>/' | tr '\n' ' ')"
   fi
   QUIET=""
   if cli_quiet branches get "$BR" --project-ref "$REF"; then

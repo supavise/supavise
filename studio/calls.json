@@ -4,7 +4,7 @@
   "commit": "94b8b06eb294cf6b217c68d30357566cc8f146d9",
   "tag": "2026.10.05-sha-94b8b06"
  },
- "scanned_files": 4310,
+ "scanned_files": 4311,
  "calls": [
   {
    "method": "GET",

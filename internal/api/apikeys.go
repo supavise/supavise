@@ -93,9 +93,12 @@ func keyPrefix(key string) string {
 	return key
 }
 
-// keyView is the response shape of one key. Secret keys are shown in full only when reveal
-// is set (a masked prefix otherwise); the legacy keys have no prefix.
-func keyView(e keyEntry, reveal bool) v1.ApiKeyResponseOutput {
+// keyView is the response shape of one key. An opaque secret key is shown in full only when
+// reveal is set (a masked prefix otherwise). The legacy service_role key is not masked at all:
+// hosted lists it in full with or without reveal, and the CLI asks without it (`branches get
+// -o env`, `projects api-keys`). A caller who may not read the service keys (canRead false)
+// gets no value for it. The legacy keys have no prefix.
+func keyView(e keyEntry, reveal, canRead bool) v1.ApiKeyResponseOutput {
 	id, typ := e.id, v1.ApiKeyResponseOutputType(e.typ)
 	desc, ins, upd := e.desc, e.created, e.updated
 	out := v1.ApiKeyResponseOutput{Id: &id, Name: e.name, Type: &typ, Description: &desc, InsertedAt: &ins, UpdatedAt: &upd}
@@ -104,7 +107,7 @@ func keyView(e keyEntry, reveal bool) v1.ApiKeyResponseOutput {
 		out.Prefix = &prefix
 	}
 	switch {
-	case !e.secret() || reveal:
+	case !e.secret() || reveal || (e.legacy && canRead):
 		k := e.key
 		out.ApiKey = &k
 	case !e.legacy:
@@ -154,15 +157,28 @@ func (s *Server) projectKeys(r *http.Request) (*registry.Project, *secrets.Proje
 	return p, k, nil
 }
 
+// mayReadKeys reports whether the caller may read the service keys of p. A request with
+// reveal has passed projectKeys, which refused it unless the caller may.
+func (s *Server) mayReadKeys(r *http.Request, p *registry.Project, reveal bool) (bool, error) {
+	if reveal {
+		return true, nil
+	}
+	return s.canReadSecrets(r, p)
+}
+
 func (s *Server) listAPIKeys(w http.ResponseWriter, r *http.Request) error {
 	p, k, err := s.projectKeys(r)
 	if err != nil {
 		return err
 	}
 	reveal := truthy(r.URL.Query().Get("reveal"))
+	canRead, err := s.mayReadKeys(r, p, reveal)
+	if err != nil {
+		return err
+	}
 	out := []v1.ApiKeyResponseOutput{}
 	for _, e := range keyEntries(p, k) {
-		out = append(out, keyView(e, reveal))
+		out = append(out, keyView(e, reveal, canRead))
 	}
 	writeJSON(w, http.StatusOK, out)
 	return nil
@@ -174,9 +190,14 @@ func (s *Server) getAPIKey(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	id := r.PathValue("id")
+	reveal := truthy(r.URL.Query().Get("reveal"))
+	canRead, err := s.mayReadKeys(r, p, reveal)
+	if err != nil {
+		return err
+	}
 	for _, e := range keyEntries(p, k) {
 		if e.id == id {
-			writeJSON(w, http.StatusOK, keyView(e, truthy(r.URL.Query().Get("reveal"))))
+			writeJSON(w, http.StatusOK, keyView(e, reveal, canRead))
 			return nil
 		}
 	}
@@ -272,7 +293,7 @@ func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	e := keyEntry{id: rec.ID, name: rec.Name, typ: rec.Type, desc: rec.Description, key: rec.Key, template: rec.Template, created: now, updated: now}
-	writeJSON(w, http.StatusCreated, keyView(e, true)) // the only time a secret key is shown unasked
+	writeJSON(w, http.StatusCreated, keyView(e, true, true)) // the only time a secret key is shown unasked
 	return nil
 }
 
@@ -344,7 +365,7 @@ func (s *Server) updateAPIKey(w http.ResponseWriter, r *http.Request) error {
 	if rec.Template != nil {
 		e.template = rec.Template
 	}
-	writeJSON(w, http.StatusOK, keyView(e, truthy(r.URL.Query().Get("reveal"))))
+	writeJSON(w, http.StatusOK, keyView(e, truthy(r.URL.Query().Get("reveal")), false)) // an opaque key: the legacy keys are refused above
 	return nil
 }
 
@@ -382,7 +403,7 @@ func (s *Server) deleteAPIKey(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	s.log.Info("api key revoked", "ref", p.Ref, "name", target.name, "type", target.typ, "reason", truncate(r.URL.Query().Get("reason"), 200))
-	writeJSON(w, http.StatusOK, keyView(*target, truthy(r.URL.Query().Get("reveal"))))
+	writeJSON(w, http.StatusOK, keyView(*target, truthy(r.URL.Query().Get("reveal")), false)) // an opaque key: the legacy keys are refused above
 	return nil
 }
 

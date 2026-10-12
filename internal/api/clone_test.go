@@ -205,6 +205,32 @@ func TestCloneToAPointInTime(t *testing.T) {
 	}
 }
 
+// In the second after the only backup ended no whole second is restorable, but the backup itself is listed
+// and a clone of it does not depend on a second: it starts. A time target is refused with the reason.
+func TestCloneOfABackupInTheSecondAfterItEnded(t *testing.T) {
+	b, cs := newCloneFixture(t)
+	base := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	b.old.StopTime = base.Add(600 * time.Millisecond)
+	b.src.window = backup.RestoreWindow{Backups: []backup.Manifest{b.old}, Earliest: b.old.StopTime, Latest: base.Add(900 * time.Millisecond)}
+	rec := b.do("POST", cloneURL, map[string]any{"cloneBackupId": b.oldID, "newProjectName": "fresh", "newDbPass": "a-long-new-password"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("clone of the backup that just ended: %d %s", rec.Code, rec.Body)
+	}
+	b.waitCloneStatus(t, "COMPLETED")
+	if c := cs.last(); c.opts.BackupID != b.old.ID || !c.opts.ToBackup || !c.target.IsZero() {
+		t.Errorf("RestoreWith got %+v", c)
+	}
+	for name, body := range map[string]map[string]any{
+		"a time":                {"recoveryTimeTarget": base.Unix(), "newProjectName": "n", "newDbPass": "a-long-new-password"},
+		"the backup and a time": {"cloneBackupId": b.oldID, "recoveryTimeTarget": base.Unix(), "newProjectName": "n", "newDbPass": "a-long-new-password"},
+	} {
+		rec := b.do("POST", cloneURL, body)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "less than a second ago") {
+			t.Errorf("%s in that second: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+}
+
 func TestCloneIsRefusedWithTheReason(t *testing.T) {
 	b, cs := newCloneFixture(t)
 	good := map[string]any{"cloneBackupId": b.midID, "newProjectName": "n", "newDbPass": "a-long-new-password"}
