@@ -138,7 +138,7 @@ sudo -u supavise supavise github app status                  # the App, the inst
 sudo -u supavise supavise github app remove                  # forgets the App and the users' authorizations (it stays on GitHub)
 ```
 
-Run these on the leader; the daemon must run, because it serves the page the link opens and GitHub's redirect. Studio restarts when the App appears or goes. An App you made yourself goes in `[github]` of `config.toml`, with its secrets in files (`docs/github-integration.md`). `[github] allow_forks` lets pull requests from forks build branches; leave it off unless every fork is trusted. Allow `api.<domain>` and `studio.<domain>` through to GitHub's servers and browsers as usual; nothing else is opened.
+Run these on the leader; the daemon must run, because it serves the page the link opens and GitHub's redirect. Studio restarts when the App appears or goes. An App you made yourself goes in `[github]` of `config.toml`, with its secrets in files (`docs/github-integration.md`). `[github] allow_forks` lets pull requests from forks build branches; leave it off unless every fork is trusted. `[github] max_concurrent_builds` (3 when unset) bounds how many preview branches the node builds at once. Upgrade the leader before the followers: a follower reads the GitHub state from the leader's registry. Allow `api.<domain>` and `studio.<domain>` through to GitHub's servers and browsers as usual; nothing else is opened.
 
 ## Update
 
