@@ -78,9 +78,24 @@ func (s *server) registerReal() {
 		w.json(200, []any{})
 	}))
 	s.registerOAuth()
+	// The services named by `services` (repeated or comma separated, as the API server reads them), or all six when the
+	// request names none. `functions` is not one of the six: like the API server (internal/api/projects.go), the mock adds
+	// that entry only when it is asked for, which is how the project home fills its Edge Functions row (patch 0011). Without
+	// the entry that row reads Unhealthy and the Status of the home never reads Healthy.
 	s.handle("GET", "/v1/projects/{ref}/health", s.withProject(func(w *respWriter, r *http.Request, c *reqCtx, p *Project, n int) {
-		var out []map[string]any
-		for _, name := range []string{"auth", "db", "pooler", "realtime", "rest", "storage"} {
+		want := map[string]bool{}
+		for _, v := range r.URL.Query()["services"] {
+			for _, name := range strings.Split(v, ",") {
+				if name = strings.TrimSpace(name); name != "" {
+					want[name] = true
+				}
+			}
+		}
+		out := []map[string]any{}
+		for _, name := range []string{"auth", "db", "pooler", "realtime", "rest", "storage", "functions"} {
+			if !want[name] && (len(want) > 0 || name == "functions") {
+				continue
+			}
 			out = append(out, map[string]any{"name": name, "healthy": true, "status": "ACTIVE_HEALTHY"})
 		}
 		w.json(200, out)
