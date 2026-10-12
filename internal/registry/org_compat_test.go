@@ -126,9 +126,8 @@ func TestOrganizationsReadBeforeMigration1550(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer readOnly.Close()
-	for name, r := range map[string]*Postgres{"OpenExisting": existing, "OpenReadOnly": readOnly} {
-		t.Run(name, func(t *testing.T) { checkRead(r, []string{}) })
-	}
+	checkRead(existing, []string{}) // OpenExisting: the handle `supavise upgrade` reads with
+	checkRead(readOnly, []string{}) // OpenReadOnly: a follower's, on the hot standby of a leader that has not migrated
 
 	// The leader's writes before it migrated: a create and a rename work, and a rename that carries
 	// tags (which only a migrated registry can hold) is refused with the database's error.
