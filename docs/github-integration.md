@@ -75,7 +75,7 @@ Owners and Administrators connect, change and disconnect; every role that can se
 | Event | What the server does |
 |---|---|
 | Pull request opened or reopened | Creates the preview branch (named like the head branch, with `git_branch` and `pr_number` set) and runs the steps below. |
-| New commits | Runs the steps on the same branch: only the migrations it lacks, only the Edge Functions that changed, and the seed only if an earlier run never got past it (see below). A newer commit cancels the work on an older one. A branch that was paused, by hand or by the idle pause of preview branches, is resumed first. |
+| New commits | Runs the steps on the same branch: only the migrations it lacks, only the Edge Functions that changed, and the seed only if an earlier run never got past it (see below). A newer commit cancels the work on an older one. A branch that the idle pause of preview branches paused is resumed first. A branch you paused yourself stays paused, and so does one scheduled for deletion or stopped because it still carries the production credentials: the commit fails the check and says why, and you resume or restore the branch from the Branches page. |
 | Closed or merged | Deletes the branch. A persistent branch is kept. |
 | Pull request from a fork | Ignored (see [Forks](#forks)). |
 | Git branch deleted | Deletes the preview branch that followed it, when no pull request owns it. |
@@ -225,7 +225,7 @@ Differences from the App: no check run named `Supabase Preview` and no comment (
 - **A migration fails.** The run's `migrate` step is `DEAD`, the log has the migration and the error, and the branch is `MIGRATIONS_FAILED`. Push a fix: the same branch is brought up to date with only the migrations it still lacks. If the first run never reached the seed, the run that applies the fix seeds the branch.
 - **`env(NAME)` is not applied.** Set the secret on the branch with `supabase secrets set NAME=... --project-ref <branch ref>`, then push again.
 - **The pull request stopped getting reports after the repository was renamed.** The connection follows the new name with the next event GitHub sends; push a commit or reopen the pull request. After `app create --replace` or `app remove` the connections are gone: connect the project again.
-- **"Supavise could not wake the paused preview branch".** The branch is paused and could not be resumed (the node is full, or the project is being deleted). Resume it from the Branches page.
+- **"Supavise could not wake the paused preview branch".** The detail says which case it is. The node is full, so the branch could not start: free memory, then push again. You paused the branch yourself, or its deletion is scheduled: resume or restore it from the Branches page, then push again. The branch was stopped because it still carries the production credentials or integrations (it was created with data and the node could not isolate it): reset or delete it.
 - **The Storage buckets step says the schema is not ready.** A new branch's Storage service has not finished; the step retries for 30 seconds.
 
 ## Differences from hosted
