@@ -89,7 +89,7 @@ organization. An App you already made is named in [github] of config.toml instea
 	}
 	create.Flags().StringVar(&owner, "owner", "", "the GitHub organization that will own the App (default: the account that is signed in)")
 	create.Flags().StringVar(&name, "name", "", "the App's name, at most 34 characters and unique on GitHub (default: Supavise <domain>)")
-	create.Flags().BoolVar(&replace, "replace", false, "replace the App this server has; the users' authorizations go with it")
+	create.Flags().BoolVar(&replace, "replace", false, "replace the App this server has; the users' authorizations and the projects' connections to repositories go with it (reconnect them afterwards)")
 
 	var asJSON bool
 	status := &cobra.Command{
@@ -140,11 +140,11 @@ organization. An App you already made is named in [github] of config.toml instea
 	remove := &cobra.Command{
 		Use:   "remove",
 		Short: "Forget the App this server created (it stays on GitHub)",
-		Long: `Removes the App's credentials and every user's authorization from this server. The
-dashboard hides its GitHub buttons again. Connections to repositories are kept but do nothing
-until an App exists; the App itself is deleted on GitHub (Settings > Developer settings > GitHub
-Apps), which also ends its webhooks. Preview branches that pull requests made stay: delete them from
-the Branches page. An App named in config.toml is removed by editing the file.`,
+		Long: `Removes the App's credentials, every user's authorization and every connection of a project to
+a repository from this server, because they name installations of this App. The dashboard hides its
+GitHub buttons again. The App itself is deleted on GitHub (Settings > Developer settings > GitHub
+Apps), which also ends its webhooks. Preview branches that pull requests made stay, no longer
+following their pull requests: delete them from the Branches page. An App named in config.toml is removed by editing the file.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			n, err := openNode(cmd.Context())
