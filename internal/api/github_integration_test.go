@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -12,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -714,6 +716,111 @@ func TestGitHubWebhookRoute(t *testing.T) {
 	}
 	if rec := post(good); rec.Code != 200 {
 		t.Fatalf("after the slots were free: %d", rec.Code)
+	}
+}
+
+// A body that trickles in must not hold one of the route's slots for longer than ghHookReadTime. The
+// deadline has to reach the connection through the API's middleware writer, which the unit tests
+// above (a recorder) never exercise: this test serves the API from a real http.Server.
+func TestGitHubWebhookBodyDeadlineAppliesThroughTheMiddleware(t *testing.T) {
+	f := newFixture(t)
+	withGitHub(t, f, true)
+	read := ghHookReadTime
+	ghHookReadTime = 200 * time.Millisecond
+	defer func() { ghHookReadTime = read }()
+	ts := httptest.NewServer(f.srv)
+	defer ts.Close()
+	calledRoutes.Store("POST /hooks/github", true)
+
+	stalled := func() net.Conn {
+		t.Helper()
+		c, err := net.Dial("tcp", strings.TrimPrefix(ts.URL, "http://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A well-formed signature header, a declared body of 100 bytes, and one byte of it.
+		_, err = io.WriteString(c, "POST /hooks/github HTTP/1.1\r\nHost: x\r\nX-GitHub-Event: push\r\nX-GitHub-Delivery: slow\r\n"+
+			"X-Hub-Signature-256: sha256="+strings.Repeat("ab", 32)+"\r\nContent-Length: 100\r\n\r\n{")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	// Every slot is taken by a sender that has stopped sending.
+	var conns []net.Conn
+	for i := 0; i < cap(ghHookSlots); i++ {
+		conns = append(conns, stalled())
+	}
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for _, c := range conns {
+		_ = c.SetReadDeadline(deadline)
+		br := bufio.NewReader(c)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("a stalled delivery got no answer within the deadline (the slot is held): %v", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusRequestTimeout {
+			t.Fatalf("a stalled delivery: %d, want 408", resp.StatusCode)
+		}
+		// The deadline is the connection's own: the server ends the connection after the answer instead of
+		// waiting for the rest of a body that is not coming (a timer alone would leave it open).
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, err := br.ReadByte(); err != io.EOF {
+			t.Fatalf("the connection of a stalled delivery stays open after the answer: %v", err)
+		}
+	}
+	if n := len(ghHookSlots); n != 0 {
+		t.Fatalf("%d slot(s) still held after the deadline", n)
+	}
+	// A real delivery is read again, and the connection of a keep-alive client has no deadline left over.
+	body := `{"zen":"x"}`
+	req, _ := http.NewRequest("POST", ts.URL+"/hooks/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "ping")
+	req.Header.Set("X-GitHub-Delivery", "after-the-stall")
+	req.Header.Set("X-Hub-Signature-256", signHook("whsec", body))
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("a delivery after the stalled ones: %d", resp.StatusCode)
+	}
+}
+
+// Where the writer has no deadline to set (a recorder; a wrapper that does not unwrap), the body is
+// read under a timer of the same length and the slot is freed.
+func TestGitHubWebhookBodyTimerCoversAWriterWithoutADeadline(t *testing.T) {
+	f := newFixture(t)
+	withGitHub(t, f, true)
+	read := ghHookReadTime
+	ghHookReadTime = 100 * time.Millisecond
+	defer func() { ghHookReadTime = read }()
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	req := httptest.NewRequest("POST", "/hooks/github", pr)
+	req.ContentLength = 100
+	req.Header.Set("X-Hub-Signature-256", "sha256="+strings.Repeat("cd", 32))
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { f.srv.ServeHTTP(rec, req); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler is still waiting for a body that does not come")
+	}
+	if rec.Code != http.StatusRequestTimeout {
+		t.Fatalf("%d %s, want 408", rec.Code, rec.Body)
+	}
+	if n := len(ghHookSlots); n != 0 {
+		t.Fatalf("%d slot(s) still held", n)
 	}
 }
 

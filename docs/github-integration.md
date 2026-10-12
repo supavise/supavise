@@ -154,7 +154,7 @@ The author of a pull request chooses the SQL, the function code and `config.toml
 | A user's GitHub token and refresh token | Sealed, per user; refreshed before they expire; removed when GitHub refuses them or the user removes the connection (the token is revoked at GitHub too). |
 | Installation tokens | In memory, for under an hour. |
 
-The webhook checks the `X-Hub-Signature-256` header in constant time before it reads anything, remembers each `X-GitHub-Delivery` so that a replay does nothing, refuses a request whose signature header cannot be GitHub's, and one declaring a body over 4 MiB, before it reads the body, then reads at most 16 bodies at a time (15 seconds each) and limits the rate of deliveries. A push of more commits than fit in 4 MiB is refused with 413; **Resync** deploys production for it.
+The webhook checks the `X-Hub-Signature-256` header in constant time before it reads anything, remembers each `X-GitHub-Delivery` so that a replay does nothing, refuses a request whose signature header cannot be GitHub's, and one declaring a body over 4 MiB, before it reads the body, then reads at most 16 bodies at a time, each within 15 seconds (a sender that is slower is answered with 408 and its connection is closed) and limits the rate of deliveries. A push of more commits than fit in 4 MiB is refused with 413; **Resync** deploys production for it.
 
 ## A server GitHub cannot reach
 
