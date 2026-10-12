@@ -1,7 +1,10 @@
 package registry
 
 import (
+	"os"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -270,4 +273,119 @@ func shorten(s string) string {
 		return s[:100] + "..."
 	}
 	return s
+}
+
+// ---- reads against a registry one migration behind --------------------------------------------
+
+// readFallbackFrom is the first migration number whose columns must be readable without them: a
+// binary can meet a registry that has not run its newest migrations (the daemon reads before its
+// migrations ran, a follower whose leader has not upgraded, a database restored from before them), so
+// a query that selects a column added to a table the previous release already had must fall back when
+// the column is missing. Tables created from this number on are only read by code of this release.
+const readFallbackFrom = 1500
+
+// readFallbacks names, for each such column ("table.column"), the file and the identifier that make
+// the reads of that table work without it.
+var readFallbacks = map[string]struct{ file, marker string }{
+	// withOrgCols (postgres.go) retries every organization read without opt_in_tags (SQLSTATE 42703).
+	"organizations.opt_in_tags": {"postgres.go", "withOrgCols"},
+}
+
+// columnsAddedToOlderTables lists "table.column" for every column the migrations numbered readFallbackFrom
+// or higher add to a table that an earlier migration created. files maps a migration name to its text.
+func columnsAddedToOlderTables(files map[string]string) []string {
+	var names []string
+	for n := range files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	number := func(name string) int { n, _ := strconv.Atoi(name[:4]); return n }
+	createdAt := map[string]int{} // table -> number of the migration that created it
+	for _, name := range names {
+		for _, st := range splitStatements(files[name]) {
+			if m := reCreateTable.FindStringSubmatch(st.skeleton); m != nil {
+				if _, seen := createdAt[m[1]]; !seen {
+					createdAt[m[1]] = number(name)
+				}
+			}
+		}
+	}
+	var out []string
+	for _, name := range names {
+		if number(name) < readFallbackFrom {
+			continue
+		}
+		for _, st := range splitStatements(files[name]) {
+			alter := reAlterTableName.FindStringSubmatch(st.skeleton)
+			if alter == nil {
+				continue
+			}
+			for _, action := range splitTopLevel(alter[2], ',') {
+				col := reAddColumnName.FindStringSubmatch(strings.TrimSpace(action))
+				if col != nil && createdAt[alter[1]] < readFallbackFrom {
+					out = append(out, alter[1]+"."+col[1])
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+var (
+	reAlterTableName = regexp.MustCompile(`^alter table (?:if exists )?supavise\.([a-z_0-9]+) (.*)$`)
+	reAddColumnName  = regexp.MustCompile(`^add column (?:if not exists )?([a-z_0-9]+) `)
+)
+
+// TestColumnsAddedToOlderTablesCanBeReadWithoutThem fails when a migration of this release adds a column
+// to a table the previous release had and nothing in readFallbacks says how reads cope without it. The
+// failure that prompted it: organizations.opt_in_tags (1550) made every organization read fail on a
+// registry that had not run 1550, which stops a follower's base backup while its leader is a release behind.
+func TestColumnsAddedToOlderTablesCanBeReadWithoutThem(t *testing.T) {
+	files := map[string]string{}
+	for _, name := range MigrationNames() {
+		body, err := migrationFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[name] = string(body)
+	}
+	got := columnsAddedToOlderTables(files)
+	if len(got) == 0 {
+		t.Fatal("found no column added to an older table; organizations.opt_in_tags (1550) is one")
+	}
+	for _, col := range got {
+		fb, ok := readFallbacks[col]
+		if !ok {
+			t.Errorf("%s is added to a table the previous release reads, and readFallbacks says nothing about how its reads work without it: "+
+				"retry the query without the column when it is missing (missingColumn, pause_pg.go; see withOrgCols), then list it in readFallbacks", col)
+			continue
+		}
+		src, err := os.ReadFile(fb.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(src), fb.marker) {
+			t.Errorf("%s: %s no longer mentions %s", col, fb.file, fb.marker)
+		}
+	}
+	for col := range readFallbacks {
+		if !slices.Contains(got, col) {
+			t.Errorf("readFallbacks lists %s, which no migration adds to an older table", col)
+		}
+	}
+}
+
+func TestColumnsAddedToOlderTablesFinder(t *testing.T) {
+	got := columnsAddedToOlderTables(map[string]string{
+		"0001_init.sql":         `create table supavise.orgs (id int); create table supavise.old (id int);`,
+		"1499_released.sql":     `alter table supavise.orgs add column released text;`, // before readFallbackFrom: not counted
+		"1500_new_table.sql":    `create table supavise.fresh (id int);`,
+		"1510_more.sql":         `alter table supavise.fresh add column later text, add column more int default 0;`,
+		"1520_old.sql":          `alter table supavise.orgs add column a text, add column if not exists b int default 0; alter table supavise.old add column c text;`,
+		"1530_not_a_column.sql": `create index old_id on supavise.old (id);`,
+	})
+	if want := []string{"old.c", "orgs.a", "orgs.b"}; !slices.Equal(got, want) {
+		t.Fatalf("columns = %v, want %v", got, want)
+	}
 }

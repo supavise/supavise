@@ -142,7 +142,14 @@ func (s *Service) serveFunctionsAgain(ctx context.Context, ref string) {
 // branch lacks is added, and one both have in another form is overwritten with the parent's, unless
 // only the branch changed it. Functions only the branch has are left alone, and nothing is deleted
 // (a deletion is done on the branch). It returns what it did, for the run log.
-func (s *Service) pushFunctions(ctx context.Context, b *Branch, parent *registry.Project) (string, error) {
+//
+// A function with no recorded base is not overwritten unless force is set. The node cannot tell who
+// changed it: a branch that an earlier release made has no base at all (v0.3.x copied no functions and
+// recorded nothing, so every function such a branch holds is its own work), and a function both sides
+// created apart has none either. Overwriting would destroy what the branch deployed, where a push of
+// v0.3.x never touched functions. The branch keeps its copy and the run says so; force takes the
+// parent's.
+func (s *Service) pushFunctions(ctx context.Context, b *Branch, parent *registry.Project, force bool) (string, error) {
 	c := s.carrier()
 	if c == nil {
 		return "", nil
@@ -156,7 +163,7 @@ func (s *Service) pushFunctions(ctx context.Context, b *Branch, parent *registry
 		return "", fmt.Errorf("read the branch's Edge Functions: %w", err)
 	}
 	base := s.functionBase(ctx, b.Ref)
-	var take, added, updated, kept []string
+	var take, added, updated, kept, unrecorded []string
 	synced := map[string]string{}
 	for _, slug := range sortedKeys(pd) {
 		dp := pd[slug]
@@ -169,11 +176,16 @@ func (s *Service) pushFunctions(ctx context.Context, b *Branch, parent *registry
 			take, added = append(take, slug), append(added, slug)
 		case known && dp == b0:
 			kept = append(kept, slug) // only the branch changed it
+		case !known && !force:
+			unrecorded = append(unrecorded, slug) // who changed it is not known: the branch's copy stays, and so does the base
 		default:
 			take = append(take, slug)
-			if known && db != b0 {
+			switch {
+			case !known:
+				updated = append(updated, slug+" (the branch's version is gone; the node had no record of what the branch started with)")
+			case db != b0:
 				updated = append(updated, slug+" (the branch's own changes are gone)")
-			} else {
+			default:
 				updated = append(updated, slug)
 			}
 		}
@@ -203,6 +215,10 @@ func (s *Service) pushFunctions(ctx context.Context, b *Branch, parent *registry
 	if len(kept) > 0 {
 		parts = append(parts, "kept the branch's version of "+strings.Join(kept, ", ")+" (the parent did not change it)")
 	}
+	if len(unrecorded) > 0 {
+		parts = append(parts, "kept the branch's version of "+strings.Join(unrecorded, ", ")+
+			" (the parent has it in another form and the node has no record of what the branch started with, so it cannot tell who changed it; push with force takes the parent's)")
+	}
 	if len(parts) == 0 {
 		return "", nil
 	}
@@ -216,13 +232,18 @@ func (s *Service) pushFunctions(ctx context.Context, b *Branch, parent *registry
 type functionMerge struct {
 	deploy    []string
 	conflicts []string
+	// unrecorded are the slugs that both sides have in different forms and that have no base entry: a
+	// branch an earlier release made, or a function both sides created apart. Who changed them is not
+	// known, so they stop a merge like a conflict does, and force deploys the branch's version of them.
+	unrecorded []string
 	// synced are the digests both sides will have afterwards, which become the base.
 	synced map[string]string
 }
 
 // planFunctionMerge works out which of the branch's functions go to the parent. A function the
 // branch changed since the base (or created) is deployed; one only the parent changed is left; one
-// both changed in different ways is a conflict. Nothing is ever deleted from the parent.
+// both changed in different ways is a conflict; one the parent has in another form and the base does not
+// list is unrecorded (functionMerge.unrecorded). Nothing is ever deleted from the parent.
 func (s *Service) planFunctionMerge(ctx context.Context, b *Branch, parent *registry.Project) (*functionMerge, error) {
 	c := s.carrier()
 	if c == nil {
@@ -250,12 +271,12 @@ func (s *Service) planFunctionMerge(ctx context.Context, b *Branch, parent *regi
 				continue // the parent removed it and the branch did not change it: it stays removed
 			}
 			m.deploy = append(m.deploy, slug)
+		case !known:
+			m.unrecorded = append(m.unrecorded, slug)
 		default:
-			branchChanged := !known || db != b0
-			parentChanged := !known || dp != b0
 			switch {
-			case !branchChanged:
-			case parentChanged:
+			case db == b0:
+			case dp != b0:
 				m.conflicts = append(m.conflicts, slug)
 			default:
 				m.deploy = append(m.deploy, slug)
@@ -263,6 +284,26 @@ func (s *Service) planFunctionMerge(ctx context.Context, b *Branch, parent *regi
 		}
 	}
 	return m, nil
+}
+
+// refuse is the error that stops a merge before it runs anything when the plan holds a function both
+// sides changed, or one the node cannot tell who changed; nil when force is set or there are none.
+// The hint differs: a push takes the parent's version of a function both changed, but it keeps the
+// branch's version of one with no base, so for that one only force moves it.
+func (m *functionMerge) refuse(force bool) error {
+	if force || (len(m.conflicts) == 0 && len(m.unrecorded) == 0) {
+		return nil
+	}
+	var parts []string
+	if len(m.conflicts) > 0 {
+		parts = append(parts, fmt.Sprintf("the branch and the parent both changed the Edge Function(s) %s; update the branch (push) to take the parent's version, or use force to deploy the branch's version",
+			strings.Join(m.conflicts, ", ")))
+	}
+	if len(m.unrecorded) > 0 {
+		parts = append(parts, fmt.Sprintf("the branch and the parent have the Edge Function(s) %s in different forms, and the node has no record of what the branch started with (it was made by an earlier release), so it cannot tell who changed them; use force to deploy the branch's version, or push with force to take the parent's",
+			strings.Join(m.unrecorded, ", ")))
+	}
+	return fmt.Errorf("%w: %s", ErrDiverged, strings.Join(parts, "; "))
 }
 
 // deployFunctions runs the plan: the deploy step of a merge. force deploys the branch's version of a
@@ -275,6 +316,7 @@ func (s *Service) deployFunctions(ctx context.Context, b *Branch, parent *regist
 	slugs := append([]string{}, m.deploy...)
 	if force {
 		slugs = append(slugs, m.conflicts...)
+		slugs = append(slugs, m.unrecorded...)
 	}
 	sort.Strings(slugs)
 	if len(slugs) > 0 {
