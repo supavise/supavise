@@ -57,6 +57,8 @@ type fakeGitHub struct {
 	// headQueue answers the next reads of a branch's head with these commits first (a lagging API).
 	heads     map[string]string
 	headQueue map[string][]string
+	// convertStatus makes the manifest conversion fail with this status (0: it works).
+	convertStatus int
 }
 
 type fakeCheck struct {
@@ -569,6 +571,12 @@ func (f *fakeGitHub) revoke(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeGitHub) convert(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
+	if f.convertStatus != 0 {
+		status := f.convertStatus
+		f.mu.Unlock()
+		f.fail(w, status, "GitHub is having a problem")
+		return
+	}
 	ok := f.manifestCodes[r.PathValue("code")]
 	delete(f.manifestCodes, r.PathValue("code"))
 	f.mu.Unlock()

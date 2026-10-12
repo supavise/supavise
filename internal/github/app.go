@@ -464,7 +464,9 @@ func (s *Service) CompleteManifest(ctx context.Context, code, state string) (*Ap
 	}
 	var cv conversion
 	if err := s.cl.do(ctx, "", "POST", "/app-manifests/"+url.PathEscape(code)+"/conversions", nil, &cv); err != nil {
-		return nil, fmt.Errorf("GitHub did not accept the code: %w", err)
+		// The code is in the path and works as a credential until it is used or an hour has passed: it
+		// is in the error of GitHub's answer and in the text of a failed connection, and the callback logs the error.
+		return nil, fmt.Errorf("GitHub did not accept the code: %w", scrub(err, code))
 	}
 	if cv.ID == 0 || cv.Slug == "" || cv.ClientID == "" || cv.ClientSecret == "" || cv.WebhookSecret == "" || cv.PEM == "" {
 		return nil, errors.New("github: the manifest conversion did not return the App's credentials")
@@ -523,3 +525,42 @@ func (s *Service) changed(ctx context.Context) {
 		s.log.Warn("could not restart the dashboard after the GitHub App changed; restart supavise-studio for its GitHub buttons to follow", "err", err)
 	}
 }
+
+// scrub returns err without secret in any text it prints or in the fields of the errors it wraps:
+// the path of an *APIError, the URL of a *url.Error, or the message of any other error. An error
+// that does not contain the secret comes back as it is.
+func scrub(err error, secret string) error {
+	if err == nil || secret == "" {
+		return err
+	}
+	enc := url.PathEscape(secret)
+	repl := func(s string) string {
+		return strings.ReplaceAll(strings.ReplaceAll(s, enc, "{code}"), secret, "{code}")
+	}
+	var ae *APIError
+	if errors.As(err, &ae) {
+		c := *ae
+		c.Path, c.Message = repl(c.Path), repl(c.Message)
+		return &c
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		c := *ue
+		c.URL = repl(c.URL)
+		return &c
+	}
+	if msg := err.Error(); repl(msg) != msg {
+		return &scrubbed{msg: repl(msg), err: err}
+	}
+	return err
+}
+
+// scrubbed prints a message with a secret taken out and still answers errors.Is and As for the error
+// it replaces.
+type scrubbed struct {
+	msg string
+	err error
+}
+
+func (e *scrubbed) Error() string { return e.msg }
+func (e *scrubbed) Unwrap() error { return e.err }
