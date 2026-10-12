@@ -252,6 +252,54 @@ func TestBranchesAndBranchCheck(t *testing.T) {
 	}
 }
 
+// The branch name of the picker's check rides in the path of a request made with the installation
+// token, which sees every repository of the installation, and GitHub resolves dot segments: a name
+// that climbs out of /branches/ would be an existence oracle for the others.
+func TestABranchNameThatClimbsOutOfTheBranchesPathIsRefusedBeforeAnyRequest(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	_, _ = h.svc.Authorize(ctx, "u1", "good-code")
+	if _, err := h.svc.Branch(ctx, "u1", h.gh.repoID, "main"); err != nil {
+		t.Fatal(err)
+	}
+	before := h.gh.callsTo("GET /repos/")
+	for _, name := range []string{
+		"../../../../repos/victim/private/branches/main", "..", ".", "a/../b", "a/./b", "./x", "feature/..", "a//b",
+		"%2e%2e/x", "a%2Fb", "x%5cy", "a\\b", "line\nbreak", "nul\x00", "a b", "sp~ce", "a:b", "a?b", "a*b", "a[b", "a^b", "x@{1}", "@",
+		"/lead", "trail/", "dot.", ".hidden", "a/.hidden", "x.lock", "a/x.lock/b", strings.Repeat("x", 300),
+	} {
+		if _, err := h.svc.Branch(ctx, "u1", h.gh.repoID, name); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Branch(%q) = %v, want ErrInvalid", name, err)
+		}
+	}
+	if after := h.gh.callsTo("GET /repos/"); after != before {
+		t.Fatalf("%d request(s) reached GitHub for names that are not branch names: %v", after-before, h.gh.calls)
+	}
+	// Names GitHub holds still pass.
+	h.gh.mu.Lock()
+	h.gh.branches = append(h.gh.branches, "feature/login-2.0", "release_v1.2", "über", "100%done")
+	h.gh.mu.Unlock()
+	for _, name := range []string{"feature/login-2.0", "release_v1.2", "über", "100%done", "main"} {
+		if got, err := h.svc.Branch(ctx, "u1", h.gh.repoID, name); err != nil || got != name {
+			t.Errorf("Branch(%q) = %q, %v", name, got, err)
+		}
+	}
+}
+
+func TestTheClientRefusesAPathWithADotSegment(t *testing.T) {
+	cl := &Client{API: "http://127.0.0.1:1"}
+	for _, p := range []string{"/repos/a/b/branches/../../../x", "/repos/a/b/./c", "/repos/a/b/branches/.."} {
+		if _, err := cl.newRequest(context.Background(), "", "GET", p, nil); err == nil {
+			t.Errorf("newRequest(%q) accepted a dot segment", p)
+		}
+	}
+	for _, p := range []string{"/repos/a/b/branches/feature%2F..x", "/repos/a/b/contents/.github/x?ref=..", "/repos/a/b/branches/v1.2"} {
+		if _, err := cl.newRequest(context.Background(), "", "GET", p, nil); err != nil {
+			t.Errorf("newRequest(%q): %v", p, err)
+		}
+	}
+}
+
 func TestConnectionConfigIsParsedAndPassedOn(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
