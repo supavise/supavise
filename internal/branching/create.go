@@ -273,6 +273,9 @@ type createJob struct {
 	// the branch's own, read before its cluster was removed. Without it the parent's is replayed.
 	history    []Migration
 	useHistory bool
+	// repoBuilt marks a reset of a branch that a repository builds (the Git integration's preview
+	// branch): its seed is the repository's, applied by a commit, and never the parent's stored seed.
+	repoBuilt bool
 }
 
 // doCreate is the body of a branch creation. It returns the detail recorded on success.
@@ -302,12 +305,22 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		}
 	}
 	started := s.now()
+	// A branch that starts with an empty database cannot start PostgREST on the schemas the parent
+	// exposes: they exist after the build. Its list is held back until then (schemas.go).
+	var held *schemaHold
+	if method == MethodSchema {
+		held = s.holdSchemas(ctx, j)
+		defer func() { s.keepHeld(ctx, j, held) }()
+	}
 	s.phase(ctx, StepHealth)
 	switch method {
 	case MethodSchema:
 		req.Keys = j.keys
 		if _, err := s.eng.Create(ctx, req); err != nil {
 			return "", err
+		}
+		if held != nil {
+			held.created = true
 		}
 	case MethodBackup:
 		if err := s.createFromBackup(ctx, j); err != nil {
@@ -343,6 +356,12 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 	detail := "schema only"
 	switch {
 	case method == MethodSchema && j.in.SchemaSource != nil && !j.recreate:
+		// The base of the branch's Edge Functions is what the parent has now, as for a copy of them: the
+		// repository's functions replace the parent's, and a push or a merge later tells which side changed a
+		// function by comparing both with this.
+		if err := s.recordParentFunctions(ctx, j.parent.Ref, j.ref); err != nil {
+			return "", err
+		}
 		d, err := j.in.SchemaSource.Schema(ctx, runFrom(ctx), j.ref)
 		if err != nil {
 			return "", err
@@ -364,6 +383,11 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 	default:
 		detail = fmt.Sprintf("data cloned by %s in %d ms (%d files, %s apparent, %s of new disk, %d WAL segments)",
 			method, stats.TotalMillis, stats.Files, lifecycle.HumanBytes(stats.Bytes), lifecycle.HumanBytes(stats.ExtraDiskByte), stats.WALSegments)
+	}
+	if method == MethodSchema {
+		if err := s.exposeHeld(ctx, j, held); err != nil {
+			return "", err
+		}
 	}
 	if (!j.recreate || j.in.WithData) && j.in.SchemaSource == nil {
 		// What the branch and its parent agree on now: the diff later shows what the branch changed
@@ -410,6 +434,12 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 	}
 	if egress != "" {
 		payload["egress"] = egress
+	}
+	if held != nil && len(held.exposed) > 0 {
+		payload["exposed_schemas"] = held.exposed
+	}
+	if held != nil && len(held.missing) > 0 {
+		payload["unexposed_schemas"] = held.missing
 	}
 	s.event(ctx, j.parent.Ref, "branch.created", payload)
 	s.event(ctx, j.ref, "branch.created", payload)

@@ -9,7 +9,7 @@ import (
 // SettingsCopier is the part of *projectconfig.Manager the Engine uses to give a branch the saved
 // settings of its parent.
 type SettingsCopier interface {
-	CopyForBranch(ctx context.Context, from, to string) (*projectconfig.BranchCopy, error)
+	CopyForBranch(ctx context.Context, from, to string, o projectconfig.BranchCopyOptions) (*projectconfig.BranchCopy, error)
 }
 
 // SizingSettings returns the Postgres settings the compute class puts on the postmaster's command
@@ -18,11 +18,16 @@ func SizingSettings() []string { return append([]string(nil), cmdlineSettings...
 
 // copyInitialSettings gives a new project the saved settings of CreateRequest.SettingsFrom (its
 // parent, for a branch) before its units first start, so that GoTrue, PostgREST, Storage and Realtime
-// begin on the copied values: Auth providers and SMTP, MFA, hooks, PostgREST's schemas and row cap,
-// Storage's limits, Realtime's and the Postgres settings that do not size the cluster. What
+// begin on the copied values: Auth providers and MFA, hooks that run in the database, PostgREST's row
+// cap, Storage's limits, Realtime's and the Postgres settings that do not size the cluster. What
 // identifies the parent or names its host, and what sizes it, is left out
-// (projectconfig.BranchExcluded). A project made again after a failure or a reset keeps what it
-// has. A failure is recorded and does not stop the project: it starts on the defaults.
+// (projectconfig.BranchExcluded), and so are the parent's credentials and the connections they belong
+// to (projectconfig.BranchWithheld: SMTP, SMS, OAuth, captcha and hook secrets). A project whose
+// database starts empty (no Seed) does not get PostgREST's db_schema either, because PostgREST would
+// not start on a schema that does not exist yet; whoever builds the schema applies it afterwards
+// (ExposeSchemasThatExist). The event names what was withheld and deferred, never a value. A project
+// made again after a failure or a reset keeps what it has. A failure is recorded and does not stop
+// the project: it starts on the defaults.
 func (e *Engine) copyInitialSettings(ctx context.Context, ref string, req CreateRequest) {
 	if req.SettingsFrom == "" || req.Recreate {
 		return
@@ -31,7 +36,7 @@ func (e *Engine) copyInitialSettings(ctx context.Context, ref string, req Create
 	if !ok {
 		return
 	}
-	res, err := c.CopyForBranch(ctx, req.SettingsFrom, ref)
+	res, err := c.CopyForBranch(ctx, req.SettingsFrom, ref, projectconfig.BranchCopyOptions{Seeded: req.Seed != nil})
 	payload := map[string]any{"from": req.SettingsFrom}
 	if res != nil {
 		copied := map[string]int{}
@@ -39,6 +44,20 @@ func (e *Engine) copyInitialSettings(ctx context.Context, ref string, req Create
 			copied[string(svc)] = len(names)
 		}
 		payload["copied"] = copied
+		if len(res.Withheld) > 0 {
+			withheld := map[string][]string{}
+			for svc, names := range res.Withheld {
+				withheld[string(svc)] = names
+			}
+			payload["withheld"] = withheld
+		}
+		if len(res.Deferred) > 0 {
+			deferred := map[string][]string{}
+			for svc, names := range res.Deferred {
+				deferred[string(svc)] = names
+			}
+			payload["deferred"] = deferred
+		}
 		if len(res.Failed) > 0 {
 			failed := map[string]string{}
 			for svc, msg := range res.Failed {

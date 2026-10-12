@@ -635,18 +635,22 @@ done
 [[ $st == FUNCTIONS_DEPLOYED ]] || fail "the branch ended $st: $(api GET "$CFG/branches/settings-branch" | json_get 'd.get("supavise_detail")')"
 BCFG="/v1/projects/$BR"
 BAUTH=$(api GET "$BCFG/config/auth")
-[[ $(json_get 'd["external_github_enabled"]' <<<"$BAUTH") == True && $(json_get 'd["external_github_client_id"]' <<<"$BAUTH") == client-id ]] || fail "the provider did not reach the branch: $BAUTH"
+[[ $(json_get 'd["external_github_client_id"]' <<<"$BAUTH") == client-id ]] || fail "the provider's client id did not reach the branch: $BAUTH"
+# A branch gets no credential of the parent: the provider stays off without a secret of its own.
+[[ $(json_get 'd["external_github_enabled"]' <<<"$BAUTH") != True ]] || fail "the provider is on in the branch without a secret of the branch's own: $BAUTH"
 [[ $(json_get 'd["disable_signup"]' <<<"$BAUTH") == True ]] || fail "disable_signup did not reach the branch"
 [[ $(json_get 'd["site_url"]' <<<"$BAUTH") != https://site.example.com ]] || fail "the parent's site_url was copied to the branch"
 [[ $(json_get 'd["uri_allow_list"]' <<<"$BAUTH") != "https://new.example.com/**" ]] || fail "the parent's redirect allow list was copied to the branch"
-# The sealed client secret came along: the branch's GoTrue starts the GitHub flow with the parent's client id.
+# The branch's owner gives it a secret of its own and switches the provider on: the branch's GoTrue starts the
+# GitHub flow with the client id that came from the parent.
+must 200 PATCH "$BCFG/config/auth" '{"external_github_enabled":true,"external_github_secret":"branch-client-secret"}'
 BGH=""
 for ((i = 0; i < 60; i++)); do
   BGH=$(curl -s -o /dev/null -D - -m 30 -H "Host: $BR.api.$SUPAVISE_DOMAIN" "http://127.0.0.1/auth/v1/authorize?provider=github" | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}')
   [[ $BGH == *client_id=client-id* ]] && break
   sleep 2
 done
-[[ $BGH == *client_id=client-id* ]] || fail "the branch's GoTrue does not run on the copied provider: '$BGH'"
+[[ $BGH == *client_id=client-id* ]] || fail "the branch's GoTrue does not run on the provider the branch's owner switched on: '$BGH'"
 [[ $(api GET "$BCFG/postgrest" | json_get 'd["max_rows"]') == 9 ]] || fail "PostgREST's max_rows did not reach the branch"
 bsql() { api POST "$BCFG/database/query" -d "$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1]}))' "$1")"; }
 [[ $(api GET "$BCFG/config/database/postgres" | json_get 'd["statement_timeout"]') == 7s ]] || fail "a non-sizing Postgres setting did not reach the branch"
