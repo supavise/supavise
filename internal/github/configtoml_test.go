@@ -2,6 +2,7 @@ package github
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -159,8 +160,16 @@ sql_paths = ["./seed.sql", "./seeds/*.sql"]
 	if st["fileSizeLimit"] != int64(50<<20) {
 		t.Errorf("storage = %v", st)
 	}
-	if f, _ := st["features"].(map[string]any); f["imageTransformation"].(map[string]any)["enabled"] != true {
-		t.Errorf("features = %v", st["features"])
+	// This node runs no imgproxy: `enabled = true` is not applied, and the run log says why. Studio and the
+	// CLI get a refusal for the same setting from the API.
+	if f, _ := st["features"].(map[string]any); f["imageTransformation"] != nil {
+		t.Errorf("image transformation was switched on: %v", st["features"])
+	}
+	if !hasWarning(p, "storage.image_transformation.enabled = true is not applied") || !hasWarning(p, "imgproxy") {
+		t.Errorf("warnings = %v", p.Warnings)
+	}
+	if slices.Contains(p.Applied, "storage.image_transformation.enabled") {
+		t.Errorf("applied lists image transformation: %v", p.Applied)
 	}
 	if len(p.Buckets) != 1 || p.Buckets[0].Name != "avatars" || !p.Buckets[0].Public || p.Buckets[0].FileSizeLimit != 5<<20 || len(p.Buckets[0].AllowedMIMETypes) != 2 {
 		t.Errorf("buckets = %+v", p.Buckets)
@@ -353,7 +362,7 @@ func TestBucketsSQLQuotesEveryValue(t *testing.T) {
 	}
 }
 
-func TestABranchDoesNotSendItsParentsSecretsToAHostTheRepositoryNames(t *testing.T) {
+func TestABranchDoesNotSendItsSecretsToAHostTheRepositoryNames(t *testing.T) {
 	cfg := `
 [auth.email.smtp]
 host = "mail.attacker.example"
@@ -398,10 +407,27 @@ url = "https://sso.example.com"
 	if _, present := prod.Patches[projectconfig.Auth]["smtp_pass"]; present {
 		t.Errorf("production had its SMTP password cleared: %v", prod.Patches[projectconfig.Auth])
 	}
-	// A config.toml that does not name a destination leaves the inherited secrets alone.
+	// A config.toml that does not name a destination leaves the branch's secrets alone.
 	doc2, _ := ParseConfig([]byte("[auth.email.smtp]\nsender_name = \"App\"\n"))
 	same, _ := PlanConfig(PlanInput{Doc: doc2, Ref: "bbbbbbbbbbbbbbbbbbbb", Branch: true})
 	if _, present := same.Patches[projectconfig.Auth]["smtp_pass"]; present {
-		t.Errorf("an SMTP sender name cleared the inherited password: %v", same.Patches[projectconfig.Auth])
+		t.Errorf("an SMTP sender name cleared the password: %v", same.Patches[projectconfig.Auth])
+	}
+}
+
+// `enabled = false` still applies, so a project that has image transformation on can be switched off
+// from the repository; `true` is left out with a warning and the rest of [storage] still applies.
+func TestConfigTomlAppliesImageTransformationOffAndSkipsOn(t *testing.T) {
+	off := plan(t, "[storage]\nfile_size_limit = \"10MiB\"\n[storage.image_transformation]\nenabled = false\n", "refrefrefrefrefrefref", false, nil)
+	f, _ := off.Patches[projectconfig.Storage]["features"].(map[string]any)
+	if it, _ := f["imageTransformation"].(map[string]any); it["enabled"] != false || !slices.Contains(off.Applied, "storage.image_transformation.enabled") {
+		t.Errorf("enabled = false: features %v, applied %v", off.Patches[projectconfig.Storage], off.Applied)
+	}
+	on := plan(t, "[storage]\nfile_size_limit = \"10MiB\"\n[storage.image_transformation]\nenabled = true\n", "refrefrefrefrefrefref", false, nil)
+	if _, has := on.Patches[projectconfig.Storage]["features"]; has || on.Patches[projectconfig.Storage]["fileSizeLimit"] != int64(10<<20) {
+		t.Errorf("enabled = true: storage patch %v", on.Patches[projectconfig.Storage])
+	}
+	if !hasWarning(on, "set it to false") {
+		t.Errorf("warnings = %v", on.Warnings)
 	}
 }

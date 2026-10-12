@@ -125,6 +125,10 @@ func poolerCross(eff, _ Values, cx CrossContext) error {
 // StorageSchema is the settings of a project's Storage tenant (UpdateStorageConfigBody).
 var StorageSchema = buildStorageSchema()
 
+// NoImageTransformation is why a node cannot switch image transformation on. The Management API
+// refuses the save with it, and the Git integration leaves the setting out of a config.toml with it.
+const NoImageTransformation = "Storage resizes images through imgproxy, which the node does not run, so a render URL would not work"
+
 // DefaultStorageFeatures is what Storage reports before any change: the features the
 // self-hosted fleet runs (the S3 protocol endpoint) and the ones it does not (image
 // transformation needs imgproxy, which is optional; Iceberg and vector buckets need

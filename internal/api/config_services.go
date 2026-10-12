@@ -243,7 +243,7 @@ func (s *Server) getStorage(key string) handlerFunc {
 // images through imgproxy, which a node does not run: the switch would save, the toast would say "Successfully
 // updated storage settings", and every render URL would answer 404. The reason is a 4xx, which the dashboard
 // and the CLI show as the error.
-var errNoImageTransformation = errf(http.StatusBadRequest, "Image transformation is not available on this Supavise node: Storage resizes images through imgproxy, which the node does not run, so a render URL would not work. "+
+var errNoImageTransformation = errf(http.StatusBadRequest, "Image transformation is not available on this Supavise node: "+projectconfig.NoImageTransformation+". "+
 	"Leave it off (in config.toml: [storage.image_transformation] enabled = false).")
 
 // refuseImageTransformation answers 400 when patch switches image transformation from off to on. A save that

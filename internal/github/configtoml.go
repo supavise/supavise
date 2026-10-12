@@ -84,8 +84,9 @@ type PlanInput struct {
 	Ref        string
 	Persistent bool
 	// Branch is true when Ref is a branch and not the project the repository is connected to. A
-	// branch starts on its parent's saved settings, secrets included, so the repository must not be
-	// able to send those secrets somewhere else (dropInheritedSecrets).
+	// branch starts on its parent's saved settings, less the credentials, and its owner can give it
+	// secrets of its own, so the repository must not be able to send those somewhere else
+	// (dropInheritedSecrets).
 	Branch bool
 	Env    EnvLookup
 	// Template returns the content of a file named in the config (relative to supabase/).
@@ -469,13 +470,14 @@ func PlanConfig(in PlanInput) (*ConfigPlan, error) {
 	return plan, nil
 }
 
-// dropInheritedSecrets clears the secret a branch inherited from its parent when config.toml sends
-// the secret's destination somewhere else and gives the branch no secret of its own: the SMTP
-// password when the SMTP host is set, the client secret of an OAuth provider when its url is set.
-// Whoever can open a pull request chooses config.toml, and may have no access to the project's
-// secrets; a branch's mail or token requests go to the host the repository names, so the parent's
-// credential must not go with them. A secret that config.toml gives (env(NAME) of a secret of the
-// branch) is applied as before.
+// dropInheritedSecrets clears the secret a branch holds when config.toml sends the secret's
+// destination somewhere else and gives the branch no secret of its own: the SMTP password when the SMTP
+// host is set, the client secret of an OAuth provider when its url is set. A branch does not start
+// with its parent's credentials (projectconfig.BranchWithheld), so the secret is one somebody set on
+// the branch, or one an earlier commit gave it. Whoever can open a pull request chooses config.toml,
+// and may have no access to the branch's secrets; a branch's mail or token requests go to the host the
+// repository names, so the credential must not go with them. A secret that config.toml gives
+// (env(NAME) of a secret of the branch) is applied as before.
 func (p *planner) dropInheritedSecrets() {
 	auth := p.plan.Patches[projectconfig.Auth]
 	keys := make([]string, 0, len(auth))
@@ -501,7 +503,7 @@ func (p *planner) dropInheritedSecrets() {
 			continue
 		}
 		auth[secret] = nil
-		p.warn("%s sets where %s goes, so the secret the branch inherited from its project is cleared; give the branch its own with a secret set by env(NAME)", path, secret)
+		p.warn("%s sets where %s goes, so the secret the branch holds for it is cleared; give the branch its own with a secret set by env(NAME)", path, secret)
 	}
 }
 
@@ -739,7 +741,13 @@ func (p *planner) storage() {
 	p.apply(one{"storage.file_size_limit", projectconfig.Storage, "fileSizeLimit", asBytes})
 	features := map[string]any{}
 	if v, ok := p.get("storage.image_transformation.enabled"); ok {
-		if b, ok := v.(bool); ok {
+		if b, ok := v.(bool); ok && b {
+			// The same refusal Studio and the CLI get from the node, as a warning here: an error would fail
+			// the configure step of every run of a repository that has the setting, and with it the Storage
+			// settings and the migrations that follow. `false` still applies, so a project that has it on can
+			// be switched off.
+			p.warn("storage.image_transformation.enabled = true is not applied: %s (set it to false)", projectconfig.NoImageTransformation)
+		} else if ok {
 			features["imageTransformation"] = map[string]any{"enabled": b}
 			p.plan.Applied = append(p.plan.Applied, "storage.image_transformation.enabled")
 		}
