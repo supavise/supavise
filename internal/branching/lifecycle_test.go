@@ -52,9 +52,13 @@ func TestScheduledDeletePausesAndRestoreResumes(t *testing.T) {
 	if back.DeletionScheduledAt != nil || back.ProjectStatus != registry.StatusActiveHealthy || h.eng.resumed[b.Ref] != 1 {
 		t.Fatalf("restored branch = %+v, resumes %d", back, h.eng.resumed[b.Ref])
 	}
-	// Nothing to restore now.
-	if _, err := h.svc.Restore(ctx, b.Ref); !isConflict(err) {
+	// Nothing to restore now: a second restore (Studio sends two per click) succeeds and changes nothing.
+	again, err := h.svc.Restore(ctx, b.Ref)
+	if err != nil {
 		t.Fatalf("restore of a running, unscheduled branch: %v", err)
+	}
+	if again.DeletionScheduledAt != nil || h.eng.resumed[b.Ref] != 1 {
+		t.Fatalf("second restore = %+v, resumes %d", again, h.eng.resumed[b.Ref])
 	}
 }
 

@@ -129,6 +129,9 @@ type Service struct {
 	lastPrune time.Time
 	// notifyMu serializes the creation of the notify signing key (notify.go).
 	notifyMu sync.Mutex
+	// restoreMu serializes Restore: Studio sends a restore twice per click (its menu item calls the
+	// mutation from both onSelect and onClick), and the second must find the first's result.
+	restoreMu sync.Mutex
 	wg       sync.WaitGroup
 	base     context.Context
 	stop     context.CancelFunc
