@@ -4,8 +4,9 @@
 # Starts pebble and pebble-challtestsrv (built from source with Go), points Pebble's
 # DNS at the challenge test server so every name resolves to 127.0.0.1, and runs
 # TestPebbleIssuance (the node's own hosts), TestPebbleCustomHostname (a customer's hostname:
-# initialize, DNS verification, activation, REST and Auth over its certificate, delete) and
-# TestPebbleFollowerMirrorsTheLeader (a follower serves the leader's certificates, issues nothing,
+# initialize, DNS verification, activation, REST and Auth over its certificate, delete),
+# TestPebbleCustomHostnameOnABranch (the same on a branch, through a reset window that answers 503 with the
+# same certificate, and its delete) and TestPebbleFollowerMirrorsTheLeader (a follower serves the leader's certificates, issues nothing,
 # then issues after a promotion) against it.
 # Needs: go, git, curl, free ports 5001, 5002, 8053, 8055, 14000, 15000.
 set -euo pipefail
@@ -51,4 +52,4 @@ SUPAVISE_TEST_PEBBLE_URL=https://localhost:14000/dir \
 SUPAVISE_TEST_PEBBLE_CA="$work/pebble/test/certs/pebble.minica.pem" \
 SUPAVISE_TEST_CHALLTESTSRV_URL=http://127.0.0.1:8055 \
 SUPAVISE_TEST_CHALLTESTSRV_DNS=127.0.0.1:8053 \
-  go test -count=1 -v -run 'TestPebbleIssuance|TestPebbleCustomHostname|TestPebbleFollowerMirrorsTheLeader' ./internal/proxy/
+  go test -count=1 -v -run 'TestPebbleIssuance|TestPebbleCustomHostname|TestPebbleCustomHostnameOnABranch|TestPebbleFollowerMirrorsTheLeader' ./internal/proxy/

@@ -249,7 +249,27 @@ func (o *Orchestrator) planProject(ctx context.Context, opts ProjectOptions) (*P
 	if err := o.pingCheck(ctx, pl, to); err != nil {
 		return nil, nil, err
 	}
+	if kids := o.branchRefsOf(ctx, p.Ref); len(kids) > 0 {
+		pl.Notes = append(pl.Notes, fmt.Sprintf("%d branch(es) of %s stay on %s: %s. A branch is homed on its parent's server and has no replica, so it does not move with the parent. "+
+			"Merge, push and diff still reach both databases across the servers; a branch with data cannot be created or reset from this parent until the parent and the branch are on one server again (delete and recreate the branches there)",
+			len(kids), p.Ref, from.Name, listRefs(kids)))
+	}
 	return pl, run, nil
+}
+
+// branchRefsOf lists the refs of the branches whose parent is ref; a registry that cannot be read lists none.
+func (o *Orchestrator) branchRefsOf(ctx context.Context, ref string) []string {
+	ps, err := o.store().ListProjects(ctx)
+	if err != nil {
+		return nil
+	}
+	var kids []string
+	for _, p := range ps {
+		if p.Branch != nil && p.Branch.ParentRef == ref {
+			kids = append(kids, p.Ref)
+		}
+	}
+	return kids
 }
 
 // nodeFailureAdvice says what an operator does about a project whose home node is down. Only the
@@ -668,7 +688,7 @@ func (o *Orchestrator) planProjects(ctx context.Context, pl *Plan, run *serverRu
 		pl.Checks = append(pl.Checks, hard(fail("projects without a replica", fmt.Sprintf("%d: %s (--restore-missing builds their standby from the archive, with data loss up to archive_timeout)", len(without), listRefs(without)))))
 	}
 	if len(skipped) > 0 {
-		pl.Notes = append(pl.Notes, fmt.Sprintf("%d branch project(s) have no replica and stay on %s: %s", len(skipped), run.from.Name, listRefs(skipped)))
+		pl.Notes = append(pl.Notes, fmt.Sprintf("%d branch project(s) have no replica and do not move: they stay on %s, which is stopped, so they are unavailable until it is back (a branch is disposable and is not restored from the archive; create new ones from the parents on the new leader): %s", len(skipped), run.from.Name, listRefs(skipped)))
 	}
 }
 

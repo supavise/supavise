@@ -2,8 +2,9 @@
 
 Branches for agents (docs/design.md section 9a). A branch is a project with a parent: its own
 Postgres, GoTrue and PostgREST, its own ref, keys and host, its own fleet tenants. An agent
-creates one per task, merges what worked and deletes the rest. A non-persistent branch deletes
-itself when its lifetime ends.
+creates one per task, merges what worked and deletes the rest. Like a hosted branch, one made from
+the dashboard, the API, the CLI or MCP has no lifetime unless the node sets one; a branch nobody uses
+sleeps (see "Idle pause").
 
 `branching.Service` is the library. The Management API's branch endpoints
 (`internal/api/branches.go`) and `supavise branches` (`cmd/supavise/cmd_branches.go`) are thin
@@ -15,8 +16,9 @@ drives them against the API.
 ## Wiring
 
 `supavise serve` (`internal/app/serve.go`) builds the service, hands it to the API as
-`Deps.Branching`, runs the expiry sweeper (`svc.Run(gctx)`) and drains running branch operations
-with the API's drain at shutdown (a cut-off operation ends `MIGRATIONS_FAILED`).
+`Deps.Branching` and to the edge proxy as `Options.IdleWaker`, runs the expiry sweeper (`svc.Run(gctx)`)
+and the idle loop (`svc.RunIdle(gctx)`, on a server that leads, once the projects are up), and drains
+running branch operations with the API's drain at shutdown (a cut-off operation ends `MIGRATIONS_FAILED`).
 
 ```go
 svc, err := branching.New(branching.Deps{
@@ -25,8 +27,10 @@ svc, err := branching.New(branching.Deps{
     Backup: bk,         // optional *backup.Service (app.NewBackupService), with SetManager(n.Engine)
     Functions: fns,     // optional api.NewBranchFunctions(store, secrets): copies Edge Functions between a branch and its parent
     Log:    log,
+    Activity: requests, // the *reqstats.Counter the proxy adds to; without it nothing sleeps
 })
 go svc.Run(ctx)                                  // the expiry sweeper
+go svc.RunIdle(ctx)                              // the idle pause and the wake gates
 srv := api.NewServer(api.Deps{ /* ... */ Branching: svc })
 svc.Drain(shutdownCtx)                           // on shutdown, after the API stops accepting requests
 ```
@@ -51,7 +55,9 @@ One file per operation, so that a change to one operation stays in one file:
 | `carry.go` | what is carried between a branch and its parent besides schema: Edge Functions (`FunctionCarrier`), their base digests and the create-body secrets |
 | `schemadiff/` | the schema engine: reads a database into a `Snapshot`, plans the DDL between two, merges and syncs snapshots |
 | `update.go` | `Update` (PATCH of a branch) |
-| `delete.go` | `Delete`, `Restore`, `DisableBranching` and `removeBranch` |
+| `delete.go` | `Delete` (and the scheduled delete that pauses), `Restore`, `DisableBranching` and `removeBranch` |
+| `idle.go`, `idlegate.go` | the idle pause (`IdleSweep`, `RunIdle`), `Wake`, and the listeners that wake a sleeping branch on a database connection |
+| `expiry.go`, `placement.go` | the warning before a branch with a hostname expires, and the refusal of a clone whose parent is on another server |
 | `migrations.go` | the migration history (`Migration`, `Compare`, `Apply`, covered migrations), `SchemaDatabase` (snapshots and history written without running it) and `replay` into a schema-only branch |
 | `stmts.go` | which statements of a migration a recorded schema diff holds and which it does not (`carriedStatements`) |
 | `sweep.go`, `notify.go` | the expiry sweeper and the `notify_url` call |
@@ -441,14 +447,106 @@ to a list of migrations) when it cannot read or express something.
 `DELETE /v1/branches/{id}` deletes at once: fleet tenants, units, data, registry row. A **non-persistent**
 branch gets no final backup and its whole WAL archive and base backups are removed (a reset reuses the
 ref). A **persistent** branch gets the lifecycle's final base backup when a backup backend is configured and
-its archive stays, like any deleted project's. `?force=false` schedules the deletion after
-`soft_delete_grace_minutes` (60); `POST .../restore` cancels it. `DELETE /v1/projects/{ref}/branches` deletes
-every branch of the project.
+its archive stays, like any deleted project's. The same holds for the other two ways to delete a branch:
+`DELETE /v1/projects/{branchRef}` and `DELETE /platform/projects/{branchRef}` (what a client that treats the
+branch as a project sends) and `supavise projects delete <branchRef>` go through `Service.Delete`, so the
+rules, the archive purge and the parent's `branch.deleted` event are the same everywhere. A project's
+Storage objects in an S3 bucket (`[fleet] storage_backend = "s3"`) are emptied too, by delete and by reset
+(`lifecycle.ObjectRemover`, `storagemigrate.ObjectRemover`); the file backend's directory has always gone with
+the project, and a reset now removes it as well.
 
-`expires_at` is set when a non-persistent branch becomes ready, `now + [branching] default_ttl` (7 days;
-`supavise branches create --ttl 6h`; `off` disables). `Service.Run(ctx)` sweeps every
-`sweep_interval_seconds` (60), at start too; `supavise branches sweep [--dry-run]` does one pass by hand.
-`PATCH` with `persistent: true` clears the expiry, `false` starts the default lifetime.
+`?force=false` schedules the deletion after `soft_delete_grace_minutes` (60) **and pauses the branch**:
+`preview_project_status` becomes `INACTIVE`, the one state in which Studio enables Restore. The pause is the
+owner's, so a request does not wake it (a branch the node had paused for idleness becomes the owner's).
+`POST /v1/branches/{id}/restore`, and a resume from the paused page (`POST /platform/projects/{ref}/restore`),
+cancels the deletion and starts the branch again; Restore also starts a paused branch that has no deletion
+scheduled, and answers 409 for one that is neither. A pause that fails leaves the deletion scheduled and the
+branch running (`branch.deletion_pause_failed`). `supavise branches list` shows `deleted in 59m0s (restore
+cancels)` in the EXPIRES column. `DELETE /v1/projects/{ref}/branches` deletes every branch of the project.
+
+**Lifetime.** A branch has none unless the node asks for one: `[branching] default_ttl` is empty (never)
+by default, as a hosted branch that is not tied to a pull request never expires, and `supavise branches create
+--ttl 6h` gives one branch a lifetime whatever the default. A branch tied to a pull request lives until the pull
+request closes (the GitHub integration deletes it). A node that sets `default_ttl` (`36h`, `7d`) gives a
+non-persistent branch `expires_at = now + default_ttl` when it becomes ready; `PATCH` with `persistent: true`
+clears it, `false` starts the default lifetime again (none without `default_ttl`). A branch made before this
+release keeps the expiry it was given. `Service.Run(ctx)` sweeps every `sweep_interval_seconds` (60), at start
+too; `supavise branches sweep [--dry-run]` does one pass by hand. The API shows the expiry as
+`supavise_expires_at` and `supavise branches list` as a remaining time.
+
+**Warning.** A branch with a custom or vanity hostname loses the hostname, its certificate and its DNS target
+when it expires. When such a non-persistent branch is within `expiry_warning_hours` (24) of `expires_at`, the
+sweeper records `branch.expiring` on the branch and its parent, and posts `{"type": "branch.expiring", ...}` to
+the branch's `notify_url` in the envelope and with the Standard Webhooks headers of the run notifications
+(`supavise.expires_at`, `supavise.hostnames`). Once per expiry: moving the expiry warns again.
+
+### Idle pause
+
+A **non-persistent** branch that nothing has used for `[branching] idle_pause_after` (30 minutes; `0` or `off`
+never) is paused as a whole: Postgres, GoTrue and PostgREST stop, the status is `INACTIVE`, the data stays, and
+the branch holds no memory. The first HTTP request or database connection starts it again. The loop is
+`RunIdle` (`idle.go`): every `sweep_interval_seconds`, or a third of the period when that is shorter, it looks at
+each branch homed on this server.
+
+What counts as use: the branch was seen running less than the period ago (a restart of the daemon, a create,
+a wake or a resume starts the clock again); an HTTP request to its API on any of its hosts in the period, or one
+still being served, a WebSocket included (`reqstats.Counter.Last` and `Active`); a Management API call that ran
+SQL on the branch in the period (Studio's SQL and table editors, MCP's `execute_sql` and `apply_migration`, a
+migration the CLI pushed): it opens a session and closes it before it answers, so `api.Server.running` marks the
+branch used with `reqstats.Counter.Touch`, which moves `Last` and counts no request; a database client the loop
+finds connected (`pg_stat_activity`: a session running a statement now, or whose last statement ended less than the
+period ago, such as the pooler's users or a `psql` that is still open). A session that opened and closed between two
+sweeps leaves nothing to find, so a `psql -c` or a direct `supabase db push` against the database port alone is not
+noticed (the loop looks every `sweep_interval_seconds`, or a third of the period when that is shorter). The roles of
+GoTrue, PostgREST and Storage, `pg_cron` and the loop's own session are not clients, because what they do for a
+client came in through the proxy, which counts it. A database that cannot be read leaves the branch running.
+
+Never paused: persistent branches, branches scheduled for deletion, the default branch (the project itself),
+a branch with an operation in flight (in this process, in another, an unfinished action run, or a merge into its
+parent), and everything when the cluster has more than one server (below). Every pause is the node's own
+`PauseWith(registry.PauseIdle)`; `supavise.project_pause` (migration 1520) records its reason, so a branch the
+owner paused by hand (`supavise projects pause`, the dashboard, `supabase branches pause`) has none and **never
+wakes by itself**. A pause event `branch.idle_paused` and a wake `branch.idle_woken` are recorded.
+
+**Wake on a request.** The proxy holds a request that reaches a sleeping branch, after the keys have checked,
+while `Service.Wake` starts it (one start per branch, shared by everyone who waits), up to
+`idle_wake_timeout_seconds` (60); then it forwards. Past the bound, or when the start fails (not enough memory
+on the node), the answer is 503 with `Retry-After`, and the start goes on without the request. A TLS handshake
+for the host of a sleeping branch is allowed, because the wake comes after it.
+
+**Wake on a Management API call.** A call that runs SQL on a sleeping branch (`database/query`, a migration, Studio's
+SQL and table editors, MCP's `execute_sql`) wakes it the same way before it runs (`api.Server.running`), so an agent that
+left a branch alone need not resume it first. A branch the owner paused answers 409 "Project is paused; restore it first"
+as before.
+
+**Wake on a database connection.** A sleeping branch's `127.0.0.1:<20000+3n>` port, where Postgres listened and
+where the pooler and every other client dial, is held by a **wake gate** (`idlegate.go`). The first connection
+that sends its first packet makes the gate stop listening so that Postgres can bind the port, start the branch,
+open a connection to Postgres when it is up, replay the packet and pass the bytes both ways: the client sees a
+slow connect. A connection that sends nothing wakes nothing. `lifecycle.Engine` waits, before it starts Postgres,
+for nothing to listen on the port (`awaitDatabasePort`, at most three seconds), which is what lets a resume
+made by the CLI or by the owner, in another process, take the port back from the gate. Limits of the gate: a
+client that connects after the gate closed and before Postgres listens (the first seconds of the start) is
+refused, and one whose own connect timeout is shorter than the start gives up; both reconnect. The pooler's
+own limits on connecting to a database are Supavisor's.
+
+**In a cluster nothing sleeps.** A request that reaches another server's proxy could not wake the branch (the
+follower's registry is read-only) and its requests are not counted on the leader, so with more than one active
+server `IdleSweep` pauses nothing and starts the branches that sleep (`branch.idle_woken`, `by: cluster`). A
+follower's proxy has no `IdleWaker`.
+
+### Placement
+
+A branch is **homed on its parent's server** (`lifecycle.Engine.Create` copies the parent's `node_id`), so
+that the two databases are on one machine. What reads or writes both through SQL works wherever they are, the
+canonical ports of a project that runs on another server being forwarders to it: merge, push, diff and the
+migration replay of a schema-only create or reset. What copies the parent's data directory does not: a create
+or reset **with data** (a copy-on-write clone, or the parent's base backup restored on this server) is refused
+with 409 before anything exists when the parent is homed on another server, naming it and saying what to do
+(create the branch without data, or move the project here first: add a replica with `supavise replicas add`,
+then `supavise projects failover <ref>`). A reset **with data** of a branch whose own cluster is on another server than the parent's data (the parent or the leader moved after the branch was made) is refused the same way, before the old cluster is removed; a reset without data works. Failover leaves branches behind (`internal/failover/README.md`): a branch has
+no replica, so a server move does not move it, and a project move does not move the branches of the project.
+A branch homed on a server that is gone cannot be deleted until the server is back.
 
 ## Limits and guards
 
@@ -470,7 +568,8 @@ Limits:
 * Paused cron jobs and disabled foreign servers are turned back on by hand (the SQL above); no `supavise` command does it.
 * Egress is blocked only under systemd, covers the branch's Postgres unit only, and blocks WAL archiving to an
   `s3://` backend.
-* No idle sleep: an unused branch costs its idle memory (about 130 MB with GoTrue and PostgREST).
+* Idle sleep applies on a single server only, and a sleeping branch's first seconds of waking refuse new
+  database connections (Idle pause).
 * The `deploy` step is where a create copies the parent's Edge Functions and stores the create body's secrets, where a push copies
   the parent's changed ones and a merge deploys the branch's; a step with nothing to do is `EXITED`.
 * In a cluster, an operation a v0.3.x server runs leaves no action run (Studio's polls get 404 for it); the
@@ -485,7 +584,10 @@ Limits:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `default_ttl` | `7d` | lifetime of a non-persistent branch (`36h`, `7d`, `off`) |
+| `default_ttl` | none | lifetime of a non-persistent branch (`36h`, `7d`); empty and `off` never expire |
+| `idle_pause_after` | `30m` | a non-persistent branch nobody uses is paused after this; `0`/`off` disables |
+| `idle_wake_timeout_seconds` | 60 | how long a request or a connection waits for a sleeping branch |
+| `expiry_warning_hours` | 24 | a branch with a hostname is warned about this long before it expires |
 | `default_class` | `micro` | class of a branch without `desired_instance_size` |
 | `max_per_project`, `max_total` | 10, 50 | caps |
 | `sweep_interval_seconds` | 60 | |
@@ -501,7 +603,7 @@ Limits:
 supavise branches list <project-ref> [--json]
 supavise branches create <project-ref> <name> [--with-data [--allow-egress]] [--persistent] [--ttl 6h|off] [--size micro]
                       [--git-branch b] [--seed-file f] [--notify-url u] [--no-wait] [--json]
-supavise branches get|delete|restore|diff <id|ref|name --project <ref>>   # delete --schedule
+supavise branches get|delete|restore|diff <id|ref|name --project <ref>>   # delete --schedule (pauses; restore resumes)
 supavise branches merge|reset|push <id|ref|name> [--project <ref>] [--migration-version v] [--force] [--no-wait]
 supavise branches runs <id|ref|name> [--project <ref>] [--limit 20] [--json]    # the action runs of a branch
 supavise branches logs <id|ref|name> [run-id] [--project <ref>] [--json]         # the newest run's log, or run-id's
@@ -529,4 +631,9 @@ merge flow over `curl`, and parent drift; `functions-smoke.sh` and `settings-smo
 branch. `internal/branching/content_pg_test.go` and `schemadiff/integration_test.go` run the same flows over real databases on the
 Postgres of `SUPAVISE_TEST_DATABASE_URL`. The
 integration tests in `internal/branching` run real clusters and are skipped unless `SUPAVISE_TEST_UNPACKED`
-points at the unpacked artifacts directory.
+points at the unpacked artifacts directory. `tests/linux/branching/lifecycle.sh` starts `TestServeLifecycle` (the
+same node with the edge proxy and an idle period of 8 seconds) and checks over HTTP and `psql`: a scheduled
+delete pauses and restore resumes, an idle branch pauses, a request through the proxy and a connection to its
+port wake it, an owner's pause stays, a persistent branch and the parent never sleep, and a delete through the
+project routes purges the archive. The unit tests (`idle_test.go`, `lifecycle_test.go`, `placement_test.go`) use
+a fake clock, a fake `reqstats` and a fake engine.

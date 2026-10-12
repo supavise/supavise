@@ -127,6 +127,8 @@ type Engine struct {
 	capacity capacityState
 	// remoteBackups takes the final backup of a project homed on another node (SetRemoteBackups).
 	remoteBackups RemoteBackups
+	// objects removes a project's Storage objects from the S3 bucket (SetObjectRemover); nil: none.
+	objects ObjectRemover
 	// recordBudget is how long what a replica's restart left to record may take to write (zero: the
 	// budget of a cleanup); tests shorten it.
 	recordBudget time.Duration
@@ -467,8 +469,11 @@ func (e *Engine) Create(ctx context.Context, req CreateRequest) (*registry.Proje
 	if req.Branch != nil {
 		b := *req.Branch
 		p.Branch = &b
+		// A branch lives where its parent does: the operations that copy or compare the two
+		// databases then run on one server (placement.go).
+		p.NodeID = e.homeOfParent(ctx, b.ParentRef)
 	}
-	releaseCap, err := e.holdCapacity(ctx, req, size)
+	releaseCap, err := e.holdCapacity(ctx, req, size, e.capacityHome(ctx, req, p))
 	if err != nil {
 		return nil, err
 	}
@@ -587,8 +592,14 @@ func invalidState(p *registry.Project, op string) error {
 }
 
 // Pause implements Manager: GoTrue, PostgREST and PostgreSQL stop, in that order, and
-// the project becomes INACTIVE. Its route and fleet tenants stay; the data stays.
+// the project becomes INACTIVE. Its route and fleet tenants stay; the data stays. The pause is
+// the owner's: nothing wakes the project but a Resume (PauseWith records the other kind).
 func (e *Engine) Pause(ctx context.Context, ref string) error {
+	return e.PauseWith(ctx, ref, PauseOptions{})
+}
+
+// PauseWith is Pause with a reason (pause.go).
+func (e *Engine) PauseWith(ctx context.Context, ref string, o PauseOptions) error {
 	if err := e.upgradeBusy(ref, "pause"); err != nil {
 		return err
 	}
@@ -609,7 +620,13 @@ func (e *Engine) Pause(ctx context.Context, ref string) error {
 	if ref == config.SystemRef || !(p.Status.Running() || p.Status == registry.StatusRestoreFailed || inRestore(ctx, p)) {
 		return invalidState(p, "pause")
 	}
+	// The record of why goes in before the status changes, so that whoever sees the project
+	// INACTIVE also finds the reason; a pause the node makes for idleness is not made without it.
+	if err := e.recordPause(ctx, ref, o); err != nil {
+		return err
+	}
 	if err := e.setStatus(ctx, ref, registry.StatusPausing); err != nil {
+		e.forgetPause(ctx, ref)
 		return err
 	}
 	e.stopTimer(ctx, ref)
@@ -620,6 +637,7 @@ func (e *Engine) Pause(ctx context.Context, ref string) error {
 			back = p.Status
 		}
 		_ = e.setStatus(context.WithoutCancel(ctx), ref, back)
+		e.forgetPause(context.WithoutCancel(ctx), ref)
 		return fmt.Errorf("lifecycle: pause %s: %w", ref, err)
 	}
 	if err := e.setStatus(ctx, ref, registry.StatusInactive); err != nil {
@@ -672,6 +690,7 @@ func (e *Engine) resume(ctx context.Context, ref string, checkNode bool) error {
 	if err != nil {
 		return err
 	}
+	e.awaitDatabasePort(ctx, p)
 	if err := e.plane.Start(ctx, p, keys); err != nil {
 		cctx, cancel := cleanupCtx(ctx)
 		defer cancel()
@@ -694,6 +713,9 @@ func (e *Engine) resume(ctx context.Context, ref string, checkNode bool) error {
 	if err := e.setStatus(ctx, ref, registry.StatusActiveHealthy); err != nil {
 		return err
 	}
+	// The record stays until the project is running again, so that a request that arrives while it
+	// starts still finds a wake in progress.
+	e.forgetPause(ctx, ref)
 	e.startTimer(ctx, ref)
 	e.event(ctx, ref, "project.resumed", nil)
 	return nil
@@ -800,6 +822,12 @@ func (e *Engine) DeleteWith(ctx context.Context, ref string, o DeleteOptions) er
 		return fmt.Errorf("lifecycle: delete %s: %w", ref, err)
 	}
 	if o.KeepRecord {
+		e.forgetPause(ctx, ref)
+		if o.PurgeObjects {
+			// A branch reset: the new cluster starts with no objects, so the files of the old one are
+			// orphans. A restore keeps them, because it puts its snapshot of them back.
+			e.purgeStorageObjects(ctx, ref)
+		}
 		if err := e.reg.SetProjectStatus(ctx, ref, registry.StatusInitFailed); err != nil {
 			return err
 		}
@@ -813,6 +841,7 @@ func (e *Engine) DeleteWith(ctx context.Context, ref string, o DeleteOptions) er
 	if err := e.removeStorageObjects(ref); err != nil {
 		return fmt.Errorf("lifecycle: delete %s: remove its Storage objects: %w", ref, err)
 	}
+	e.purgeBucketObjects(ctx, ref)
 	if err := e.reg.DeleteProject(ctx, ref); err != nil {
 		return err
 	}
@@ -921,6 +950,7 @@ func (e *Engine) finalBackup(ctx context.Context, p *registry.Project, prev regi
 	}
 	if prev == registry.StatusInactive {
 		// Paused: the cluster is down. Start it alone for the backup, then stop it again.
+		e.awaitDatabasePort(ctx, p)
 		if err := e.plane.StartDatabase(ctx, p, keys); err != nil {
 			return err
 		}

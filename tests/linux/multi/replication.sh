@@ -42,7 +42,12 @@
 #   lb                 the project's load balancer host answers with the route it took
 # 4. Planned move of one project, with a continuous writer through n2's proxy
 #   project-switchover `supavise projects failover <ref>`: n2 becomes its home, zero acknowledged rows lost
+#   branch-follower    while the first project is homed on n2: a schema-only branch of it is homed on n2 too and
+#                      runs there, a branch with data is refused with the documented 409 naming n2, and the plan of
+#                      the move back names the branch that stays behind
 #   project-failback   and back to n1
+#   branch-plan        a branch of the second project is homed on n1; the plan of `supavise failover --to n2` says that
+#                      it has no replica, does not move and is unavailable until n1 is back
 # 5. Planned move of the server
 #   server-switchover  `supavise failover --to n2` run on n1: n2 leads, the shared services start there, zero rows lost
 #   server-failback    `supavise failover` on n1 again: n1 leads
@@ -77,7 +82,7 @@ RESULTS_TITLE="Two-server release test"
 MULTI_FAKE_AWS=0                 # lib-checks.sh does not start the fake AWS service (the spike's fakeaws checks use it)
 export MULTI_FAKE_AWS
 FACT_PREFIX=replication
-CHECK_ORDER="incus services launch boot prep net install claim projects storage token join cluster follower-status replica-setup replica-shapes replica-read replica-ddl pooler lb project-switchover project-failback server-switchover server-failback hard-failover fenced rejoin upgrade-refused upgrade-leader upgrade-follower status-final follower-status-final"
+CHECK_ORDER="incus services launch boot prep net install claim projects storage token join cluster follower-status replica-setup replica-shapes replica-read replica-ddl pooler lb project-switchover branch-follower project-failback branch-plan server-switchover server-failback hard-failover fenced rejoin upgrade-refused upgrade-leader upgrade-follower status-final follower-status-final"
 CHECK_ON_FAIL=on_fail
 
 # One prefix and one domain for the cluster: a joining server takes the leader's settings, and a domain left to the
@@ -379,6 +384,48 @@ project_move() {
 }
 c_project_switchover() { needs replica-read; project_move n1 n2; }
 c_project_failback() { needs project-moved-n2; project_move n2 n1; }
+
+# ---- branches across the servers (the lifecycle lane: a branch is homed on its parent's server) ---------------------
+c_branch_follower() {
+  needs project-moved-n2
+  local ref lead home bref plan
+  ref=$(sget ref1) lead=$(lead)
+  home=$(onl "$lead" home_of "$ref")
+  [[ $home == n2 ]] || fail "$ref is homed on $home, want the follower n2"
+  [[ $(onl "$lead" branch_create "$ref" follow-a false) == 201 ]] || { onl "$lead" cat /root/branch.json >&2; fail "creating a schema-only branch of a project homed on the follower was refused"; }
+  onl "$lead" wait_branch "$ref" follow-a FUNCTIONS_DEPLOYED 600
+  bref=$(onl "$lead" branch_json "$ref" follow-a 'd["project_ref"]')
+  [[ $(onl "$lead" home_of "$bref") == "$home" ]] || fail "the branch is homed on $(onl "$lead" home_of "$bref"), its parent on $home"
+  [[ $(onl "$home" pg_local "$bref" "select 1") == 1 ]] || fail "the branch does not run on $home"
+  note "branch.follower_home" "$home"
+  # A branch with data copies the parent's data directory, which is on n2: refused before anything is created.
+  [[ $(onl "$lead" branch_create "$ref" follow-b true) == 409 ]] || { onl "$lead" cat /root/branch.json >&2; fail "a branch with data of a project homed on the follower was not refused with 409"; }
+  onl "$lead" grep -q "homed on server" /root/branch.json || fail "the refusal does not name the server: $(onl "$lead" cat /root/branch.json)"
+  onl "$lead" grep -q "without data" /root/branch.json || fail "the refusal does not say what to do instead: $(onl "$lead" cat /root/branch.json)"
+  [[ -z $(onl "$lead" reg "select ref from supavise.projects where branch_name = 'follow-b'") ]] || fail "a branch exists after the refusal"
+  # The plan of the move back names the branch that stays on n2.
+  plan=$(onl "$lead" supavise projects failover "$ref" --to n1 --dry-run 2>&1) || true
+  grep -q "branch(es) of $ref stay on" <<<"$plan" && grep -q "$bref" <<<"$plan" || fail "the plan of the move does not name the branch: $plan"
+  onl "$lead" branch_delete "$ref" follow-a
+  echo "# a branch of $ref is homed and runs on $home, a branch with data is refused naming it, the move's plan names the branch"
+}
+
+c_branch_plan() {
+  needs project-moved-n1
+  local ref lead bref plan
+  ref=$(sget ref2) lead=$(lead)
+  [[ $(onl "$lead" home_of "$ref") == "$lead" ]] || fail "$ref is not homed on the leader $lead"
+  [[ $(onl "$lead" branch_create "$ref" plan-a false) == 201 ]] || fail "creating a branch of $ref was refused"
+  onl "$lead" wait_branch "$ref" plan-a FUNCTIONS_DEPLOYED 600
+  bref=$(onl "$lead" branch_json "$ref" plan-a 'd["project_ref"]')
+  [[ $(onl "$lead" home_of "$bref") == "$lead" ]] || fail "the branch is not homed on the leader"
+  plan=$(onl "$lead" supavise failover --to "$(follower)" --dry-run 2>&1) || true
+  grep -q "branch project(s) have no replica and do not move" <<<"$plan" || fail "the plan of the server move does not say that branches stay: $plan"
+  grep -q "$bref" <<<"$plan" || fail "the plan does not name the branch $bref: $plan"
+  grep -q "unavailable until" <<<"$plan" || fail "the plan does not say what it means for the branch: $plan"
+  onl "$lead" branch_delete "$ref" plan-a
+  echo "# the plan of a server move says that branch $bref stays on $lead and is unavailable until it is back"
+}
 
 # ---- 5. planned move of the server ---------------------------------------------------------------------------------
 # server_move NEW RUNNER: moves the leadership to NEW with `supavise failover --to NEW` run on RUNNER, with a writer
@@ -694,7 +741,9 @@ check replica-ddl "a new table is served by the replica's endpoint" c_replica_dd
 check pooler "the pooler of n2 serves the replica and the primary" c_pooler
 check lb "the load balancer host routes a read" c_lb
 check_snap project-switchover "projects failover moves the project to n2 with no acknowledged row lost" c_project_switchover
+check branch-follower "a branch is homed on its parent's server; one with data is refused naming it; the plan names the branch" c_branch_follower
 check_snap project-failback "projects failover moves it back to n1" c_project_failback
+check branch-plan "the plan of a server move says that branches stay behind" c_branch_plan
 check_snap server-switchover "failover --to n2 makes n2 the leader with no acknowledged row lost" c_server_switchover
 check_snap server-failback "failover makes n1 the leader again" c_server_failback
 check_snap hard-failover "failover --force promotes n2 after n1 is stopped at once; RPO and RTO" c_hard_failover

@@ -14,6 +14,9 @@
 # tests/linux/branching/content.sh the same way: what a branch carries from its parent and what a
 # merge brings back (schema, Edge Functions, settings).
 #
+# tests/linux/branching/lifecycle.sh does the same for the lifecycle: the scheduled delete, the idle pause
+# and the wake on a request or a connection, the owner's pause, and the delete through the project routes.
+#
 # Both runs also run the full branching scenario (schema-only and with_data branches,
 # isolation in both directions, merge, push, reset, delete, expiry), a clone of a parent under
 # write load checked with amcheck (file-clone filesystems only), the isolation of a clone from
@@ -112,4 +115,11 @@ branching_runs_check
 # shellcheck source=branching/content.sh
 source tests/linux/branching/content.sh
 branching_content_check
+
+# 5. The lifecycle of branches over HTTP and psql (tests/linux/branching/lifecycle.sh): the scheduled delete
+#    pauses a branch, an idle branch pauses and wakes on a request through the proxy or a connection, a
+#    branch the owner paused stays paused, a delete through the project routes purges the archive.
+# shellcheck source=branching/lifecycle.sh
+source tests/linux/branching/lifecycle.sh
+branching_lifecycle_check
 echo "branching-xfs: done"

@@ -76,6 +76,7 @@ The record of the run (`migrate.json`), its lock and the hold live in `<state>/s
 - `s3.go`, `transport.go`: the bucket, over the AWS SDK already used by the backups; single request up to 64 MiB, parts above that. The transport paces the request bodies and ends a stalled request.
 - `files.go`, `xattr_*.go`: the walk of the objects directory, the open of a file below a project's directory (`os.Root`) and the extended attributes (by path, or from the open file). `backup.WalkStorage` reads the attributes of every file it visits; a pass here reads them only for the files it sends.
 - `node.go`: the databases (supabase_admin over the project's private socket, or the forwarder on its canonical port with the sealed password for a project on another node), `supavise-storage` through a fleet manager that touches no other service, and the read-back through Storage's loopback port.
+- `remove.go`: `ObjectRemover`, which empties a project's `<ref>/` prefix in the configured bucket (a static key or the role of `[fleet]`, listing and deleting in batches of 500). The Engine calls it when a project is deleted or a branch is reset; it is not part of a migration.
 - `state.go`: the state file, the lock (`migrate.lock`, a flock the kernel drops when the process dies) and the text of `--status`. `hold/` is the write-hold marker.
 
 ## Tests

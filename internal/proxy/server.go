@@ -24,6 +24,8 @@ type Server struct {
 	log   *slog.Logger
 	table *table
 	waker Waker
+	// idleWaker wakes a project paused for idleness (Options.IdleWaker); nil: none.
+	idleWaker IdleWaker
 
 	apiHost, studioHost string
 
@@ -72,7 +74,7 @@ func New(opts Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		opts: opts, cfg: opts.Config, log: opts.Logger, waker: opts.Waker, cluster: opts.Cluster,
+		opts: opts, cfg: opts.Config, log: opts.Logger, waker: opts.Waker, idleWaker: opts.IdleWaker, cluster: opts.Cluster,
 		transports: map[time.Duration]*http.Transport{},
 	}
 	if s.log == nil {

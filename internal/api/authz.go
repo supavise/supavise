@@ -225,6 +225,8 @@ var routeRules = []routeRule{
 	rule("POST", "/platform/projects/{ref}/pause", chk(members.ActInfraExecute, "queue_jobs.projects.pause")),
 	rule("POST", "/v1/projects/{ref}/restore", chk(members.ActInfraExecute, "queue_jobs.projects.initialize_or_resume")),
 	rule("POST", "/platform/projects/{ref}/restore", chk(members.ActInfraExecute, "queue_jobs.projects.initialize_or_resume")),
+	// Whether a paused project can be resumed, and since when it is paused: what the paused page reads.
+	rule("GET", "/platform/projects/{ref}/pause/status", chk(members.ActRead, P)),
 	rule("POST", "/platform/projects/{ref}/wake", chk(members.ActInfraExecute, "queue_jobs.projects.initialize_or_resume")),
 	rule("POST", "/v1/projects/{ref}/restart", chk(members.ActInfraExecute, "reboot")),
 	rule("POST", "/platform/projects/{ref}/restart", chk(members.ActInfraExecute, "reboot")),

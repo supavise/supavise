@@ -31,6 +31,10 @@ type project struct {
 	ref    string
 	seq    int
 	status registry.Status
+	// idle is set when the registry says the node paused the project because nothing used it
+	// (registry.PauseIdle): a request or a database connection wakes it. It means nothing for a
+	// project that is not INACTIVE or COMING_UP.
+	idle bool
 	// home is the node where the primary runs (projects.node_id).
 	home string
 	// replicas are the project's read replicas, oldest first. The slice is replaced, never
@@ -236,6 +240,49 @@ func (t *table) nodeActive(node string) bool {
 
 func routable(ref string) bool { return ref != config.SystemRef }
 
+// idleRefs lists the projects the registry says were paused for idleness. The record is written
+// before the status change that makes the project INACTIVE, and that change is what reloads the
+// project, so a reader that sees INACTIVE finds the record. A registry with no such store, or one
+// that cannot be read, has none: the project then answers like any paused one.
+func (t *table) idleRefs(ctx context.Context) map[string]bool {
+	st := registry.BranchLifecycleOf(t.reg)
+	if st == nil {
+		return nil
+	}
+	ps, err := st.ListPauses(ctx)
+	if err != nil {
+		t.log.Warn("proxy table: could not read why projects are paused", "err", err)
+		return nil
+	}
+	idle := map[string]bool{}
+	for _, p := range ps {
+		if p.Reason == registry.PauseIdle {
+			idle[p.Ref] = true
+		}
+	}
+	return idle
+}
+
+// idleRef is idleRefs for one project that is waiting to be woken or being woken.
+func (t *table) idleRef(ctx context.Context, p *registry.Project) bool {
+	if p.Status != registry.StatusInactive && p.Status != registry.StatusComingUp {
+		return false
+	}
+	st := registry.BranchLifecycleOf(t.reg)
+	if st == nil {
+		return false
+	}
+	pause, err := st.GetPause(ctx, p.Ref)
+	switch {
+	case errors.Is(err, registry.ErrNotFound):
+		return false
+	case err != nil:
+		t.log.Warn("proxy table: could not read why a project is paused", "ref", p.Ref, "err", err)
+		return false
+	}
+	return pause.Reason == registry.PauseIdle
+}
+
 // reload replaces the whole table from the registry and drops cached keys.
 func (t *table) reload(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, reloadTimeout)
@@ -252,10 +299,11 @@ func (t *table) reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	idle := t.idleRefs(ctx)
 	projects := make(map[string]project, len(ps))
 	for _, p := range ps {
 		if routable(p.Ref) {
-			projects[p.Ref] = project{ref: p.Ref, seq: p.Seq, status: p.Status, home: p.NodeID}
+			projects[p.Ref] = project{ref: p.Ref, seq: p.Seq, status: p.Status, idle: idle[p.Ref], home: p.NodeID}
 		}
 	}
 	t.mu.Lock()
@@ -485,8 +533,9 @@ func (t *table) refreshProject(ctx context.Context, ref string) {
 		t.log.Warn("proxy table: project refresh failed, reloading", "ref", ref, "err", err)
 		_ = t.reload(ctx)
 	case routable(p.Ref):
+		idle := t.idleRef(ctx, p)
 		t.mu.Lock()
-		t.projects[p.Ref] = project{ref: p.Ref, seq: p.Seq, status: p.Status, home: p.NodeID}
+		t.projects[p.Ref] = project{ref: p.Ref, seq: p.Seq, status: p.Status, idle: idle, home: p.NodeID}
 		t.attachLocked(p.Ref)
 		t.mu.Unlock()
 	}
@@ -501,10 +550,11 @@ func (t *table) reloadProjects(ctx context.Context) {
 		t.log.Warn("proxy table: project reload failed", "err", err)
 		return
 	}
+	idle := t.idleRefs(ctx)
 	projects := make(map[string]project, len(ps))
 	for _, p := range ps {
 		if routable(p.Ref) {
-			projects[p.Ref] = project{ref: p.Ref, seq: p.Seq, status: p.Status, home: p.NodeID}
+			projects[p.Ref] = project{ref: p.Ref, seq: p.Seq, status: p.Status, idle: idle[p.Ref], home: p.NodeID}
 		}
 	}
 	t.mu.Lock()

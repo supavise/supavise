@@ -136,6 +136,9 @@ func (s *Service) preflightReset(ctx context.Context, b *Branch, parent, old *re
 	if !b.WithData {
 		return nil
 	}
+	if err := s.checkBranchHere(ctx, old, parent.Ref); err != nil {
+		return err
+	}
 	// A base-backup branch holds a full private copy that the reset removes before it clones
 	// again, so that space counts; a copy-on-write branch shares blocks with its parent and
 	// gives back little, so nothing is assumed.

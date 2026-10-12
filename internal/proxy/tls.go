@@ -404,9 +404,10 @@ func (s *Server) allowHost(_ context.Context, name string) error {
 		return nil
 	}
 	p, kind := s.table.hostProject(name)
-	if kind != "" && !servable(p.status) {
+	if kind != "" && !servable(p.status) && !p.sleeping() {
 		// REMOVED, INIT_FAILED, INACTIVE: nothing is served there, so a handshake for the
-		// host must not spend certificate rate limit (50 per week on <ip>.sslip.io).
+		// host must not spend certificate rate limit (50 per week on <ip>.sslip.io). A branch paused
+		// for idleness is the exception: its first visitor wakes it, and the handshake comes first.
 		return fmt.Errorf("%s belongs to a project that is %s", name, p.status)
 	}
 	switch kind {

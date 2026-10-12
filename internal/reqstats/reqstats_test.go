@@ -199,3 +199,81 @@ func TestNewProjectPrunesIdleOnes(t *testing.T) {
 		t.Errorf("projects = %d, want 2", c.Len())
 	}
 }
+
+func TestLastIsTheLatestCountToTheNanosecond(t *testing.T) {
+	c := New()
+	if _, ok := c.Last("p"); ok {
+		t.Fatal("a project with no counts has a last request")
+	}
+	t0 := time.Unix(1_700_000_000, 123)
+	c.Add("p", Rest, t0)
+	c.Add("p", Auth, t0.Add(2*time.Second))
+	c.Add("p", Rest, t0.Add(time.Second)) // a count that arrives late does not move it back
+	if got, ok := c.Last("p"); !ok || !got.Equal(t0.Add(2*time.Second)) {
+		t.Fatalf("last = %v, %v", got, ok)
+	}
+	if _, ok := c.Last("other"); ok {
+		t.Fatal("another project has a last request")
+	}
+	c.Forget("p")
+	if _, ok := c.Last("p"); ok {
+		t.Fatal("a forgotten project has a last request")
+	}
+}
+
+func TestTouchMovesLastWithoutCounting(t *testing.T) {
+	c := New()
+	t0 := time.Unix(1_700_000_000, 0)
+	c.Touch("p", t0)
+	if got, ok := c.Last("p"); !ok || !got.Equal(t0) {
+		t.Fatalf("last after a touch = %v, %v", got, ok)
+	}
+	c.Touch("p", t0.Add(-time.Second)) // late: does not move it back
+	if got, _ := c.Last("p"); !got.Equal(t0) {
+		t.Fatalf("a late touch moved last to %v", got)
+	}
+	c.Add("p", Rest, t0.Add(time.Minute))
+	c.Touch("p", t0.Add(2*time.Minute))
+	if got, _ := c.Last("p"); !got.Equal(t0.Add(2 * time.Minute)) {
+		t.Fatalf("last = %v, want the latest of the touch and the count", got)
+	}
+	if n := c.Series("p", t0, t0.Add(3*time.Minute), Minute); sumBuckets(n) != 1 {
+		t.Fatalf("a touch is counted as a request: %v", n)
+	}
+}
+
+func sumBuckets(bs []Bucket) uint64 {
+	var n uint64
+	for _, b := range bs {
+		n += b.Counts.Total()
+	}
+	return n
+}
+
+func TestActiveCountsRequestsStillBeingServed(t *testing.T) {
+	c := New()
+	if c.Active("p") != 0 {
+		t.Fatal("active before any request")
+	}
+	end1, end2 := c.Begin("p"), c.Begin("p")
+	if c.Active("p") != 2 || c.Active("q") != 0 {
+		t.Fatalf("active = %d, %d", c.Active("p"), c.Active("q"))
+	}
+	end1()
+	end1() // done twice counts once
+	if c.Active("p") != 1 {
+		t.Fatalf("active after one end = %d", c.Active("p"))
+	}
+	// A project that still serves a request is not pruned as idle, whatever its counts say.
+	old := time.Unix(1_000_000_000, 0)
+	c.Add("p", Rest, old)
+	c.Prune(old.Add(30 * 24 * time.Hour))
+	if c.Active("p") != 1 {
+		t.Fatal("a project with an open request was pruned")
+	}
+	end2()
+	c.Prune(old.Add(30 * 24 * time.Hour))
+	if c.Len() != 0 {
+		t.Fatalf("idle project kept, Len = %d", c.Len())
+	}
+}

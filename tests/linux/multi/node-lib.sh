@@ -646,3 +646,34 @@ node_dump() {
   echo "-- listening"; ss -ltnH 2>&1 | awk '{print $4}' | sort -t: -k2 -n | paste -sd' ' -
   true
 }
+
+# ---- branches ---------------------------------------------------------------------------------------------
+# branch_create PARENT NAME WITH_DATA: POST /v1/projects/PARENT/branches with the personal access token; prints the
+# status code and leaves the body in /root/branch.json.
+branch_create() {
+  papi POST "/v1/projects/$1/branches" -H 'Content-Type: application/json' \
+    -d "{\"branch_name\":\"$2\",\"with_data\":${3:-false}}" -o /root/branch.json -w '%{http_code}'
+}
+# branch_json PARENT NAME PYTHON-EXPRESSION: a field of GET /v1/projects/PARENT/branches/NAME, as d[...].
+branch_json() { papi GET "/v1/projects/$1/branches/$2" | json_get "$3"; }
+# wait_branch PARENT NAME STATUS SECONDS: the branch reaches STATUS (FUNCTIONS_DEPLOYED once it is ready).
+wait_branch() {
+  local i s=""
+  for ((i = 0; i < ${4:-600}; i += 3)); do
+    s=$(branch_json "$1" "$2" 'd["status"]' 2>/dev/null) || s=""
+    [[ $s == "$3" ]] && return 0
+    sleep 3
+  done
+  fail "branch $2 of $1 is '${s:-missing}' after ${4:-600}s, want $3"
+}
+# branch_delete PARENT NAME: DELETE /v1/branches/{id}, then waits until the branch is gone from the registry.
+branch_delete() {
+  local id ref i
+  id=$(branch_json "$1" "$2" 'd["id"]') ref=$(branch_json "$1" "$2" 'd["project_ref"]')
+  [[ $(papi DELETE "/v1/branches/$id" -o /dev/null -w '%{http_code}') == 200 ]] || fail "deleting branch $2 of $1 was refused"
+  for ((i = 0; i < 300; i += 3)); do
+    [[ -z $(reg "select ref from supavise.projects where ref = '$ref'") ]] && return 0
+    sleep 3
+  done
+  fail "branch $2 of $1 is still registered after 300s"
+}
