@@ -92,6 +92,20 @@ test('the allow-list matches by method, template and status, and tracks what it 
   assert.deepEqual(allow.unseen().dom, [])
 })
 
+test('a dom entry that the run has not seen is pending for the routes it covers, until a page shows it', () => {
+  const allow = new Allowlist({
+    dom: [
+      { route: '/project/[ref]/observability/api-overview', text: 'Failed to', reach: 'crawl', reason: 'a' },
+      { route: '/project/[ref]/auth/audit-logs', text: 'Error fetching', reach: 'static', reason: 'b' },
+    ],
+  })
+  assert.deepEqual(allow.pendingDom('/project/[ref]/observability/api-overview').map((e) => e.text), ['Failed to'])
+  assert.deepEqual(allow.pendingDom('/project/[ref]/observability/storage'), [], 'another route')
+  assert.deepEqual(allow.pendingDom('/project/[ref]/auth/audit-logs'), [], 'a static entry is never waited for')
+  domFindings('/project/[ref]/observability/api-overview', 'Failed to retrieve total requests', allow)
+  assert.deepEqual(allow.pendingDom('/project/[ref]/observability/api-overview'), [], 'seen once, nothing to wait for')
+})
+
 test('judging a response', () => {
   const allow = new Allowlist({
     stubs: [{ op: 'GET /platform/notifications', reach: 'crawl', reason: 'known stub' }],
@@ -153,6 +167,19 @@ test('noise that names a page, a blocked host or a partner line', () => {
   assert.equal(pairedLeftover([ev('Event')], []).length, 1)
   assert.equal(pairedLeftover([ev('Event'), ev('Event')], ['Usercentrics']).length, 1, 'one console line pairs with one page error')
   assert.equal(pairedLeftover([ev('Event')], ['something else']).length, 1)
+})
+
+test('a plain-object rejection is noise only when it is the cancelation of useMonaco()', () => {
+  const noise = readJSON(join(HERE, 'noise.json'))
+  const cancel = '[crawl] unhandled rejection with a plain object: {"type":"cancelation","msg":"operation is manually canceled"}'
+  const other = '[crawl] unhandled rejection with a plain object: {"code":"x"}'
+  const pair = noiseMatch(noise.pageerror, 'Object')
+  assert.ok(pair?.with, 'the page error Object counts only together with a console line')
+  assert.ok(noiseMatch(noise.console, cancel))
+  assert.equal(noiseMatch(noise.console, other), null, 'any other plain object stays a console finding')
+  assert.deepEqual(pairedLeftover([{ entry: pair, text: 'Object' }], [cancel]), [])
+  assert.equal(pairedLeftover([{ entry: pair, text: 'Object' }], []).length, 1, 'an Object that nothing explains is a finding')
+  assert.equal(noiseMatch(noise.pageerror, 'Object (a more precise message)'), null)
 })
 
 test('page text oracles', () => {
@@ -423,7 +450,8 @@ test('allowlist.json, noise.json and routes.json are well formed', () => {
       if (n.onPage) new RegExp(n.onPage)
       if (n.with) {
         assert.equal(k, 'pageerror', `${n.pattern}: only a page error pairs with a console line`)
-        assert.ok(noiseMatch(noise.console, n.with.replace(/\[Uu\]/g, 'U')), `${n.pattern}: nothing in console noise matches "${n.with}"`)
+        const sample = n.with.replace(/\[Uu\]/g, 'U').replace(/\\(.)/g, '$1').replace(/^\^/, '')
+        assert.ok(noiseMatch(noise.console, sample), `${n.pattern}: nothing in console noise matches "${n.with}"`)
       }
       for (const h of [].concat(n.blockedHost ?? [])) assert.ok(hosts.has(h), `${k} ${n.pattern}: ${h} is not in externalHosts`)
     }

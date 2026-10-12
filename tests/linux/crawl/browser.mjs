@@ -226,6 +226,20 @@ export async function openContext(browser, cfg, tracker, { guard = false } = {})
     return route.continue()
   })
   await ctx.addInitScript(() => {
+    // A promise rejected with a plain object that nobody handles reaches Playwright's pageerror as "Object", which says nothing
+    // about what the object holds. The console line keeps it, so that noise.json can name the rejections that are a library's
+    // and every other one shows what it is.
+    window.addEventListener('unhandledrejection', (ev) => {
+      const r = ev.reason
+      if (!r || typeof r !== 'object' || r instanceof Error || r instanceof Event) return
+      let what
+      try {
+        what = JSON.stringify(r)
+      } catch {
+        what = String(r)
+      }
+      console.error(`[crawl] unhandled rejection with a plain object: ${String(what).slice(0, 200)}`)
+    })
     // Toasts leave the DOM after a few seconds; keep their text for the checks.
     window.__toasts = []
     const start = () => {
