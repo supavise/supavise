@@ -1,6 +1,7 @@
 # Documentation
 
 - [guide.md](guide.md): using a Supavise node after the install.
+- [github-integration.md](github-integration.md): the GitHub App of your server, connecting a repository, what a pull request and a push to the production branch do, the `config.toml` sections that apply, and a GitHub Actions workflow for a server that GitHub cannot reach.
 - [design.md](design.md): the design and the contract the code follows.
 - [development.md](development.md): build, test, CI and the conventions contributors follow.
 - [reference/replicas.md](reference/replicas.md): read replicas, the second server and failover: names, the failure matrix, data-loss bounds and configuration.
@@ -8,6 +9,7 @@
 - [release-notes/v0.2.0.md](release-notes/v0.2.0.md): what the v0.2.0 release adds, and what to know before you upgrade to it.
 - [release-notes/v0.2.1.md](release-notes/v0.2.1.md): what the v0.2.1 release fixes: Studio moves when only its patches change, and the AWS stack update of a stack made in the CloudFormation console runs under a temporary stack policy.
 - [release-notes/v0.3.0.md](release-notes/v0.3.0.md): what the v0.3.0 release adds (Advisors, usage reports, resource warnings and alerts, Database Webhooks, `supavise logs`, moving a project from hosted Supabase), the Data API change for new tables, what to do before you upgrade, and what still differs from hosted.
+- [release-notes/v0.4.0.md](release-notes/v0.4.0.md): what the v0.4.0 release adds (branching as on hosted, the GitHub integration, a model provider of your own for Studio's AI Assistant, audit logs), the changes in how branches expire, pause and report their status, what to do before you upgrade, and what still differs from hosted.
 - [reference/footprint.md](reference/footprint.md): measured memory, cold start and disk use at 10, 25 and 50 projects, and the follower profile of a second server.
 
 Each package documents itself in its own `README.md`.

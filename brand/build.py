@@ -370,6 +370,10 @@ ICONS = {
                  '<path stroke="none" fill="@" d="M24 28h12v4H24z"/>',
     "plug":      '<path d="M18 4V14M30 4V14"/><path d="M12 14H36V24A12 12 0 0 1 12 24Z"/><path d="M24 36V44"/>'
                  '<path stroke="none" fill="@" d="M20 20h8v6H20z"/>',
+    "pullreq":   '<path d="M14 15V33"/><path d="M34 33V14H24"/><path d="M29 8L23 14L29 20"/>'
+                 '<path stroke="none" fill="@" d="M9 5h10v10H9zM9 33h10v10H9zM29 33h10v10H29z"/>',
+    "assistant": '<path d="M5 6H43V34H24L14 43V34H5Z"/>'
+                 '<path stroke="none" fill="@" d="M24 11L27 17L33 20L27 23L24 29L21 23L15 20L21 17Z"/>',
     "advisors":  '<circle cx="20" cy="20" r="14"/><path d="M31 31L43 43"/>'
                  '<path stroke="none" fill="@" d="M13 20.5L16 17.5L19.5 21L27 12.5L30 15.5L19.5 27Z"/>',
     "migrate":   '<path stroke="none" fill="@" d="M3 6h6v36H3z"/><path d="M42 6V42"/><path d="M14 16H36"/><path d="M30 9L37 16L30 23"/>'
@@ -385,9 +389,11 @@ FEATURES = [
     ("dashboard", "Dashboard", "The real Supabase Studio, with multiple organizations and projects"),
     ("project", "Every project", "Postgres, Auth, REST, GraphQL, Realtime, Storage, Edge Functions and custom domains"),
     ("chip", "Compute sizes", "Nano to 16XL per project, like hosted, resized from the dashboard"),
-    ("branch", "Branching", "Schema-only branches or full copies of your data, for previews and agents"),
     ("terminal", "Supabase CLI", "Link, push migrations and manage branches, with a profile file"),
+    ("branch", "Branching", "Like hosted: branches carry schema, functions and settings, and merge in the dashboard"),
+    ("pullreq", "GitHub previews", "A preview branch per pull request, with a check and a comment, from your own GitHub App"),
     ("plug", "MCP for AI tools", "Claude Code, Cursor and VS Code sign in to your server's MCP endpoint with OAuth"),
+    ("assistant", "AI Assistant", "Studio's AI Assistant with your own key, on OpenAI or any OpenAI-compatible gateway"),
     ("advisors", "Advisors", "Hosted's security and performance database checks, in the dashboard, CLI and MCP"),
     ("pulse", "Monitoring", "CPU, memory and disk reports, resource warnings, and alerts by email or webhook"),
     ("backup", "Backups", "Point-in-time restore from the dashboard, including Storage files"),
