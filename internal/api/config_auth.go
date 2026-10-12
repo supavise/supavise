@@ -55,10 +55,34 @@ func authView(key string, st *projectconfig.State, upper bool) map[string]any {
 		resp[k] = secretView(f, v)
 	}
 	resp[name("mailer_autoconfirm")] = st.AuthAutoconfirm()
+	if upper {
+		markCustomTemplates(resp, st)
+	}
 	if _, ok := resp[name("custom_oauth_max_providers")]; ok {
 		resp[name("custom_oauth_max_providers")] = 0
 	}
 	return resp
+}
+
+// markCustomTemplates fills MAILER_TEMPLATES_CUSTOM_CONTENTS and MAILER_SUBJECTS_CUSTOM_CONTENTS of Studio's
+// twin: for each template, whether a body or a subject is saved on top of GoTrue's own default. Studio's
+// Auth > Emails shows Reset template only for a template that is reported custom (hasCustomTemplate in
+// TemplateEditor.tsx), so with every flag false, as the spec's minimal object has them, a template that
+// the user had edited could never be reset from the dashboard. Text that is saved counts, and nothing
+// else: an unset setting, an empty text and a default of this node (the invitation and sign-in link
+// subjects that the node's mail settings add) do not.
+func markCustomTemplates(resp map[string]any, st *projectconfig.State) {
+	for _, marker := range []string{"MAILER_TEMPLATES_CUSTOM_CONTENTS", "MAILER_SUBJECTS_CUSTOM_CONTENTS"} {
+		flags, ok := resp[marker].(map[string]any)
+		if !ok {
+			continue
+		}
+		for setting := range flags {
+			if text, _ := st.Set[strings.ToLower(setting)].(string); text != "" {
+				flags[setting] = true
+			}
+		}
+	}
 }
 
 func (s *Server) getAuthConfig(key string, upper bool) handlerFunc {

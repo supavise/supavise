@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -219,5 +220,75 @@ func TestResetAuthTemplateClearsTheOverridesAndAnswersTheConfig(t *testing.T) {
 	}
 	if rec := f.do("POST", "/platform/auth/bbbbbbbbbbbbbbbbbbbb/templates/confirmation/reset", nil); rec.Code != 404 {
 		t.Errorf("unknown project: %d", rec.Code)
+	}
+}
+
+// Studio's Auth > Emails offers Reset template only for a template that the config reports as custom
+// (MAILER_TEMPLATES_CUSTOM_CONTENTS and MAILER_SUBJECTS_CUSTOM_CONTENTS, by setting name: hasCustomTemplate in
+// TemplateEditor.tsx). The two objects were the spec's minimal ones, every flag false, so a template that the
+// user had saved could not be reset from the dashboard.
+func TestAuthConfigReportsTheTemplatesThatAreCustom(t *testing.T) {
+	f := newFixture(t)
+	read := func() (templates, subjects map[string]any) {
+		rec := f.mustDo("GET", authPlatform, nil, 200)
+		validateAgainstSpec(t, "GET /platform/auth/{ref}/config", rec.Body.Bytes())
+		got := bodyMap(t, rec)
+		templates, _ = got["MAILER_TEMPLATES_CUSTOM_CONTENTS"].(map[string]any)
+		subjects, _ = got["MAILER_SUBJECTS_CUSTOM_CONTENTS"].(map[string]any)
+		if len(templates) == 0 || len(subjects) == 0 {
+			t.Fatalf("the config reports no custom flags: %v %v", templates, subjects)
+		}
+		return templates, subjects
+	}
+	custom := func(flags map[string]any) []string {
+		var out []string
+		for k, v := range flags {
+			if v == true {
+				out = append(out, k)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	// Nothing is saved: nothing is custom.
+	templates, subjects := read()
+	if got := custom(templates); len(got) != 0 {
+		t.Errorf("templates custom on a fresh project: %v", got)
+	}
+	if got := custom(subjects); len(got) != 0 {
+		t.Errorf("subjects custom on a fresh project: %v", got)
+	}
+
+	// A saved body or subject is custom, by the name of its setting, and only that one.
+	f.mustDo("PATCH", authPlatform, map[string]any{
+		"MAILER_TEMPLATES_CONFIRMATION_CONTENT":                     "<p>Welcome</p>",
+		"MAILER_TEMPLATES_MFA_FACTOR_ENROLLED_NOTIFICATION_CONTENT": "<p>A factor was added</p>",
+		"MAILER_SUBJECTS_RECOVERY":                                  "Recover your account",
+	}, 200)
+	templates, subjects = read()
+	if got := strings.Join(custom(templates), ","); got != "MAILER_TEMPLATES_CONFIRMATION_CONTENT,MAILER_TEMPLATES_MFA_FACTOR_ENROLLED_NOTIFICATION_CONTENT" {
+		t.Errorf("custom templates: %s", got)
+	}
+	if got := strings.Join(custom(subjects), ","); got != "MAILER_SUBJECTS_RECOVERY" {
+		t.Errorf("custom subjects: %s", got)
+	}
+
+	// A form that sends the markers back with its change still saves.
+	patch := map[string]any{
+		"SITE_URL":                         "https://app.example.com",
+		"MAILER_TEMPLATES_CUSTOM_CONTENTS": templates,
+		"MAILER_SUBJECTS_CUSTOM_CONTENTS":  subjects,
+	}
+	f.mustDo("PATCH", authPlatform, patch, 200)
+
+	// Clearing the text makes the template default again, as the reset does.
+	f.mustDo("PATCH", authPlatform, map[string]any{"MAILER_SUBJECTS_RECOVERY": ""}, 200)
+	if _, subjects = read(); len(custom(subjects)) != 0 {
+		t.Errorf("an emptied subject is still custom: %v", custom(subjects))
+	}
+	f.mustDo("POST", "/platform/auth/"+testRef+"/templates/confirmation/reset", nil, 200)
+	if templates, _ = read(); strings.Join(custom(templates), ",") != "MAILER_TEMPLATES_MFA_FACTOR_ENROLLED_NOTIFICATION_CONTENT" {
+		t.Errorf("custom templates after resetting the confirmation one: %v", custom(templates))
 	}
 }
