@@ -226,7 +226,12 @@ if step branches-create branches create "$BR" --project-ref "$REF" && branch_rea
       grep -qF -- "$want" <<<"$QUIET" || bad "branches get -o env has no $want"
     done
     grep -qF -- "$BREF" <<<"$QUIET" || bad "branches get -o env does not name the branch's project ref"
-    grep -qF -- "******" <<<"$QUIET" && bad "branches get -o env masks a value: the CLI got no password or JWT secret from the node"
+    # The CLI prints ****** for a value the node did not send. The api-keys request carries no reveal=true, and
+    # as on hosted a service_role key is not sent without it, so SUPABASE_SERVICE_ROLE_KEY is masked here by design;
+    # the password, the JWT secret and the anon key are not.
+    grep -qE -- '^POSTGRES_URL(_NON_POOLING)?=.*:\*{6}@' <<<"$QUIET" && bad "branches get -o env masks the database password: the CLI got none from GET /v1/branches/<ref>"
+    grep -qE -- '^SUPABASE_JWT_SECRET=.?\*{6}' <<<"$QUIET" && bad "branches get -o env masks the JWT secret: the CLI got none from GET /v1/branches/<ref>"
+    grep -qE -- '^SUPABASE_ANON_KEY=.?\*{6}' <<<"$QUIET" && bad "branches get -o env masks the anon key"
   fi
   QUIET=""
   if cli_quiet branches get "$BR" --project-ref "$REF"; then
