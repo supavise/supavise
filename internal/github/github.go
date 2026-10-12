@@ -62,6 +62,8 @@ type Branches interface {
 	List(ctx context.Context, ref string) ([]branching.Branch, error)
 	WaitIdle(ctx context.Context, ref string) (*branching.Branch, error)
 	Drive(ctx context.Context, idOrRef, op string, fn branching.Driver) (string, error)
+	// Wake resumes a branch that was paused and returns once it runs; Drive refuses one that does not.
+	Wake(ctx context.Context, idOrRef string) (*branching.Branch, error)
 	StartRun(ctx context.Context, op, branchRef, ownerRef, parentRef string) (*branching.Run, error)
 	GetRun(ctx context.Context, ownerRef, id string) (*registry.BranchRun, error)
 	Database() branching.Database
@@ -150,6 +152,13 @@ type Service struct {
 	base context.Context
 	stop context.CancelFunc
 
+	// builds admits the builds of preview branches, a few at a time (pr.go).
+	builds chan struct{}
+
+	// repoLists keeps each user's last list of repositories for a few seconds (repos.go).
+	repoMu    sync.Mutex
+	repoLists map[string]repoList
+
 	// limiter admits webhooks (webhook.go).
 	limit, badLimit rateLimiter
 	// prunedAt is when old deliveries were last removed.
@@ -169,6 +178,7 @@ func New(o Options) (*Service, error) {
 	s := &Service{
 		cfg: o.Cfg, reg: o.Registry, st: st, sec: o.Secrets, br: o.Branches, host: o.Host, log: o.Log, now: o.Now,
 		audit: o.Audit, onAppChange: o.OnAppChange, files: map[string]cachedFile{}, tokens: map[int64]instToken{},
+		builds: make(chan struct{}, o.Cfg.GitHub.Builds()),
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)

@@ -2,13 +2,17 @@ package github
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/supavise/supavise/internal/branching"
+	"github.com/supavise/supavise/internal/config"
 	"github.com/supavise/supavise/internal/registry"
 )
 
@@ -40,6 +44,10 @@ func TestTheQueueRunsOneJobPerKeyAndTheNewestReplacesTheOlder(t *testing.T) {
 		mu.Lock()
 		log = append(log, "second")
 		mu.Unlock()
+	}, func() {
+		mu.Lock()
+		log = append(log, "second:dropped")
+		mu.Unlock()
 	})
 	h.svc.enqueue("k", func(ctx context.Context) {
 		mu.Lock()
@@ -57,7 +65,7 @@ func TestTheQueueRunsOneJobPerKeyAndTheNewestReplacesTheOlder(t *testing.T) {
 	h.svc.wg.Wait()
 	mu.Lock()
 	defer mu.Unlock()
-	if got := strings.Join(log, ","); got != "first:start,first:cancelled,third" {
+	if got := strings.Join(log, ","); got != "first:start,first:cancelled,second:dropped,third" {
 		t.Fatalf("log = %s", got)
 	}
 }
@@ -347,5 +355,170 @@ func TestDeployProductionFromTheDashboardsResync(t *testing.T) {
 	}
 	if check == nil || check.HeadSHA != "head-main" || check.Conclusion != "success" {
 		t.Fatalf("check = %+v", check)
+	}
+}
+
+func TestARenamedRepositoryKeepsItsConnectionAndItsEventsWork(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	// The owner renames acme/app: the id stays, GitHub answers the old name with a redirect (here a
+	// 404 would do as little good), and the next event carries the new name.
+	h.gh.repo = "acme/app2"
+	h.deliver("pull_request", "d1", h.prEvent("opened", 3, "feature", "sha-1"))
+	conn, err := h.reg.GetGitHubConnection(context.Background(), h.conn.ID)
+	if err != nil || conn.RepositoryName != "acme/app2" {
+		t.Fatalf("connection after the rename = %+v, %v", conn, err)
+	}
+	if b := h.br.byName("feature"); b == nil || b.State != registry.BranchFunctionsDeployed {
+		t.Fatalf("the pull request of the renamed repository was not built: %+v", b)
+	}
+	if h.gh.callsTo("POST /repos/acme/app2/check-runs") != 1 || h.gh.callsTo("POST /repos/acme/app2/issues/3/comments") != 1 {
+		t.Fatalf("the report did not go to the new name: %v", h.gh.calls)
+	}
+}
+
+func TestARedirectIsAnErrorAndNotAnAnswerToDecode(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.Method+" "+r.URL.Path)
+		w.Header().Set("Location", "https://api.github.com/repositories/1001/check-runs")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+		_, _ = w.Write([]byte(`{"message":"Temporary Redirect","url":"https://api.github.com/repositories/1001/check-runs"}`))
+	}))
+	defer srv.Close()
+	cl := &Client{HTTP: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, API: srv.URL, Web: srv.URL}
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	err := cl.do(context.Background(), "tok", http.MethodPost, "/repos/acme/old/check-runs", map[string]string{"name": "x"}, &out)
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Status != http.StatusTemporaryRedirect || out.ID != 0 {
+		t.Fatalf("err = %v, out = %+v", err, out)
+	}
+	if len(asked) != 1 {
+		t.Fatalf("requests = %v: a POST must not be repeated", asked)
+	}
+}
+
+func TestAPausedPreviewBranchIsWokenForTheNextCommit(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	h.deliver("pull_request", "d1", h.prEvent("opened", 8, "idle", "sha-1"))
+	b := h.br.byName("idle")
+	h.br.mu.Lock()
+	h.br.paused = map[string]bool{b.Ref: true}
+	h.br.mu.Unlock()
+	h.gh.setCommit("sha-2", repoFiles(map[string]string{"supabase/migrations/20240102000000_done.sql": mig2}))
+	h.deliver("pull_request", "d2", h.prEvent("synchronize", 8, "idle", "sha-2"))
+	if len(h.br.woken) != 1 || h.br.woken[0] != b.Ref {
+		t.Fatalf("woken = %v", h.br.woken)
+	}
+	if got := h.br.byName("idle"); got.State != registry.BranchFunctionsDeployed || len(h.db.applied(b.Ref)) != 2 {
+		t.Fatalf("the commit was not applied to the woken branch: %+v, %v", got, h.db.applied(b.Ref))
+	}
+}
+
+func TestTwoProjectsOfOneRepositoryKeepTheirOwnComments(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repA, err := h.svc.reporterFor(ctx, h.gh.instID, h.gh.repo, "aaaaaaaaaaaaaaaaaaaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repB, err := h.svc.reporterFor(ctx, h.gh.instID, h.gh.repo, "bbbbbbbbbbbbbbbbbbbb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both report on pull request 5 with no comment id yet, as two jobs of a new pull request do.
+	a, err := repA.comment(ctx, 5, 0, "report of A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := repB.comment(ctx, 5, 0, "report of B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == 0 || b == 0 || a == b {
+		t.Fatalf("comment ids = %d, %d: the second project adopted the first's comment", a, b)
+	}
+	// Each finds its own again when its link has lost the id.
+	if again, err := repB.comment(ctx, 5, 0, "second report of B"); err != nil || again != b {
+		t.Fatalf("B's comment after losing the id = %d, %v, want %d", again, err, b)
+	}
+	if h.gh.comments[a].Updates != 0 || !strings.Contains(h.gh.comments[a].Body, "report of A") {
+		t.Fatalf("A's comment was edited by B: %+v", h.gh.comments[a])
+	}
+}
+
+func TestACommentAnotherAppWroteIsNotAdoptedAndAForbiddenEditMakesANewOne(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	rep, err := h.svc.reporterFor(ctx, h.gh.instID, h.gh.repo, prodRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A comment with our marker that another App wrote (a second server on the repository, or
+	// somebody copying the first line) is left alone.
+	h.gh.comments[900] = &fakeComment{ID: 900, PR: 7, Body: rep.marker() + "\nold", AppID: h.gh.appID + 1}
+	id, err := rep.comment(ctx, 7, 0, "mine")
+	if err != nil || id == 900 || h.gh.comments[900].Updates != 0 {
+		t.Fatalf("comment = %d, %v, foreign comment %+v", id, err, h.gh.comments[900])
+	}
+	// A comment this App may no longer edit is replaced.
+	h.gh.comments[id].Forbidden = true
+	next, err := rep.comment(ctx, 7, id, "again")
+	if err != nil || next == id || next == 0 {
+		t.Fatalf("comment after a 403 = %d, %v (was %d)", next, err, id)
+	}
+}
+
+func TestMigrationsAreAppliedUnderTheProjectsApplyLockSoThatAMergeDoesNotInterleave(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	_ = h.reg.CreateProject(ctx, &registry.Project{Ref: prodRef, Name: "prod", Status: registry.StatusActiveHealthy})
+	_ = h.reg.SetDefaultBranchGit(ctx, prodRef, "main")
+	h.gh.setCommit("head-main", repoFiles(nil))
+	if _, err := h.svc.DeployProduction(ctx, prodRef); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.wg.Wait()
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	h.deliver("pull_request", "d1", h.prEvent("opened", 2, "feature", "sha-1"))
+	if len(h.db.applyLog) < 2 {
+		t.Fatalf("migrations applied = %v", h.db.applyLog)
+	}
+	if len(h.db.unlocked) != 0 {
+		t.Fatalf("migrations applied without the apply lock: %v", h.db.unlocked)
+	}
+}
+
+func TestABurstOfPullRequestsRunsAtMostTheConfiguredNumberOfBuilds(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.GitHub.MaxConcurrentBuilds = 2 })
+	h.gh.setCommit("sha-1", repoFiles(nil))
+	// Every build applies its first migration; the gate holds each one there.
+	h.db.gate = make(chan struct{})
+	h.db.gateAt = "20240101000000"
+	h.db.entered = make(chan struct{}, 8)
+	for n := 1; n <= 5; n++ {
+		body, _ := jsonBody(h.prEvent("opened", n, fmt.Sprintf("feature-%d", n), "sha-1"))
+		h.svc.HandleWebhook(context.Background(), Delivery{Event: "pull_request", ID: fmt.Sprintf("burst-%d", n), Signature: h.sign(body), Body: body})
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-h.db.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("build %d never reached its migration", i+1)
+		}
+	}
+	select {
+	case <-h.db.entered:
+		t.Fatal("a third build started while two were running")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(h.db.gate)
+	h.svc.wg.Wait()
+	if got := len(h.br.names()); got != 5 {
+		t.Fatalf("branches after the burst = %v, want all five built in turn", h.br.names())
 	}
 }

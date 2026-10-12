@@ -78,6 +78,10 @@ func (s *Service) DeployProduction(ctx context.Context, projectRef string) (stri
 		if err := s.deployProduction(ctx, *conn, branch, c.SHA, run); err != nil && ctx.Err() == nil {
 			s.log.Warn("a production deployment failed", "repo", conn.RepositoryName, "err", err)
 		}
+	}, func() {
+		// A newer deployment replaced this one before it started (or the service is stopping): the run
+		// made for it ends here and does not stay open.
+		run.Finish(errors.New("replaced by a newer deployment before it started"))
 	})
 	return run.ID(), nil
 }
@@ -88,7 +92,7 @@ func (s *Service) deployProduction(ctx context.Context, conn registry.GitHubConn
 	if s.br == nil {
 		return errors.New("this node has no branching service")
 	}
-	rep, err := s.reporterFor(ctx, conn.InstallationID, conn.RepositoryName)
+	rep, err := s.reporterFor(ctx, conn.InstallationID, conn.RepositoryName, conn.ProjectRef)
 	if err != nil {
 		if pre != nil {
 			pre.Finish(err)
@@ -228,7 +232,7 @@ func (s *Service) syncGitBranch(ctx context.Context, conn registry.GitHubConnect
 }
 
 func (s *Service) syncOne(ctx context.Context, conn registry.GitHubConnection, b *branching.Branch, link *registry.GitHubBranchLink, gitBranch, sha string) error {
-	rep, err := s.reporterFor(ctx, conn.InstallationID, conn.RepositoryName)
+	rep, err := s.reporterFor(ctx, conn.InstallationID, conn.RepositoryName, conn.ProjectRef)
 	if err != nil {
 		return err
 	}
@@ -241,6 +245,7 @@ func (s *Service) syncOne(ctx context.Context, conn registry.GitHubConnection, b
 	ev := prEvent{HeadRef: gitBranch, HeadSHA: sha}
 	if link == nil {
 		link = s.linkFor(conn, ev, b, checkID)
+		s.markSeeded(link) // the branch was made by somebody else and has its own data
 	}
 	link.HeadRef, link.HeadSHA, link.CheckRunID = gitBranch, sha, checkID
 	var oc outcome
@@ -251,7 +256,7 @@ func (s *Service) syncOne(ctx context.Context, conn registry.GitHubConnection, b
 	case err != nil:
 		oc = outcome{Parent: conn.ProjectRef, Headline: "Supavise could not read the repository.", Detail: err.Error()}
 	default:
-		src := &repoSource{s: s, conn: conn, sn: sn, job: ctx, persistent: b.Persistent, have: link.Functions}
+		src := &repoSource{s: s, conn: conn, sn: sn, job: ctx, persistent: b.Persistent, have: link.Functions, seedDue: link.SeededAt == nil}
 		oc = s.driveBranch(ctx, conn, b, link, src, checkID)
 	}
 	return s.finishPR(ctx, conn, ev, rep, checkID, oc)

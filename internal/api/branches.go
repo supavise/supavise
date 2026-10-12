@@ -152,12 +152,11 @@ func branchJSON(b *branching.Branch) (*branchOut, error) {
 	return bo, nil
 }
 
-func (s *Server) writeBranch(w http.ResponseWriter, r *http.Request, status int, b *branching.Branch) error {
+func (s *Server) writeBranch(w http.ResponseWriter, status int, b *branching.Branch) error {
 	out, err := branchJSON(b)
 	if err != nil {
 		return err
 	}
-	s.annotatePRs(r.Context(), out)
 	writeJSON(w, status, out)
 	return nil
 }
@@ -252,7 +251,7 @@ func (s *Server) createBranch(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return s.writeBranch(w, r, http.StatusCreated, b)
+	return s.writeBranchPR(w, r, http.StatusCreated, b)
 }
 
 // createBranchV2 is POST /v2/projects/{ref}/branches: the same creation with a JSON:API body and
@@ -440,7 +439,7 @@ func (s *Server) getBranchByName(w http.ResponseWriter, r *http.Request) error {
 		}
 		return mapBranchErr(err)
 	}
-	return s.writeBranch(w, r, http.StatusOK, b)
+	return s.writeBranchPR(w, r, http.StatusOK, b)
 }
 
 // getBranch returns the connection details of a branch (BranchDetailResponse).
@@ -516,7 +515,7 @@ func (s *Server) updateBranch(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return mapBranchErr(err)
 	}
-	return s.writeBranch(w, r, http.StatusOK, b)
+	return s.writeBranchPR(w, r, http.StatusOK, b)
 }
 
 func (s *Server) deleteBranch(w http.ResponseWriter, r *http.Request) error {

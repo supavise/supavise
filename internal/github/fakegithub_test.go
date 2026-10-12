@@ -51,6 +51,7 @@ type fakeGitHub struct {
 	missingInst   bool
 	truncated     bool
 	defaultBranch string
+	readOnly      bool // the user can read the repository and not push to it
 	branches      []string
 }
 
@@ -70,6 +71,9 @@ type fakeComment struct {
 	PR      int
 	Body    string
 	Updates int
+	// AppID is the App that wrote the comment (0: the fake's own); Forbidden makes an edit answer 403.
+	AppID     int64
+	Forbidden bool
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -396,7 +400,12 @@ func (f *fakeGitHub) listComments(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	out := []map[string]any{{"id": 1, "body": "an unrelated comment"}}
 	for _, id := range ids {
-		out = append(out, map[string]any{"id": id, "body": f.comments[id].Body})
+		c := f.comments[id]
+		app := c.AppID
+		if app == 0 {
+			app = f.appID
+		}
+		out = append(out, map[string]any{"id": id, "body": c.Body, "performed_via_github_app": map[string]any{"id": app}})
 	}
 	f.writeJSON(w, http.StatusOK, out)
 }
@@ -415,6 +424,10 @@ func (f *fakeGitHub) updateComment(w http.ResponseWriter, r *http.Request) {
 	c, ok := f.comments[id]
 	if !ok {
 		f.fail(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	if c.Forbidden {
+		f.fail(w, http.StatusForbidden, "Resource not accessible by integration")
 		return
 	}
 	c.Body = in.Body
@@ -520,7 +533,8 @@ func (f *fakeGitHub) userRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.writeJSON(w, http.StatusOK, map[string]any{"total_count": 1, "repositories": []map[string]any{
-		{"id": f.repoID, "full_name": f.repo, "default_branch": f.defaultBranch, "archived": false}}})
+		{"id": f.repoID, "full_name": f.repo, "default_branch": f.defaultBranch, "archived": false,
+			"permissions": map[string]bool{"admin": false, "maintain": false, "push": !f.readOnly, "pull": true}}}})
 }
 
 func (f *fakeGitHub) revoke(w http.ResponseWriter, r *http.Request) {

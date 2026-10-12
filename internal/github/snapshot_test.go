@@ -232,3 +232,37 @@ func TestPathsThatCouldEscapeASandboxAreNotRead(t *testing.T) {
 		t.Fatalf("entries = %v", sn.Files(""))
 	}
 }
+
+func TestAllTheFilesOfARunCountAgainstOneLimitAndACachedFileCountsOnce(t *testing.T) {
+	h := newHarness(t)
+	sn := snapshotOf(t, h, "s1", map[string]string{
+		"supabase/functions/a/index.ts": strings.Repeat("a", 400),
+		"supabase/functions/b/index.ts": strings.Repeat("b", 400),
+		"supabase/functions/c/index.ts": strings.Repeat("c", 400),
+	})
+	ctx := context.Background()
+	sn.budget = 1000 // each function is under any per-call limit; the three together are not
+	if _, err := sn.Read(ctx, "functions/a/index.ts", maxFileBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sn.Read(ctx, "functions/b/index.ts", maxFileBytes); err != nil {
+		t.Fatal(err)
+	}
+	// A file read twice is fetched once and counted once.
+	if _, err := sn.Read(ctx, "functions/a/index.ts", maxFileBytes); err != nil {
+		t.Fatalf("a cached file counted again: %v", err)
+	}
+	if _, err := sn.Read(ctx, "functions/c/index.ts", maxFileBytes); err == nil || !strings.Contains(err.Error(), "may read") {
+		t.Fatalf("the third function took the run past its limit: %v", err)
+	}
+	// Reading them as the deploy step does fails the run the same way.
+	sn2 := snapshotOf(t, h, "s1", map[string]string{
+		"supabase/functions/a/index.ts": strings.Repeat("a", 400),
+		"supabase/functions/b/index.ts": strings.Repeat("b", 400),
+		"supabase/functions/c/index.ts": strings.Repeat("c", 400),
+	})
+	sn2.budget = 1000
+	if _, _, err := sn2.Functions(ctx, nil, nil); err == nil || !strings.Contains(err.Error(), "may read") {
+		t.Fatalf("functions past the run's limit: %v", err)
+	}
+}

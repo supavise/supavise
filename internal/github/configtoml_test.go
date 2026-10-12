@@ -352,3 +352,56 @@ func TestBucketsSQLQuotesEveryValue(t *testing.T) {
 		t.Fatalf("sql = %s", sql)
 	}
 }
+
+func TestABranchDoesNotSendItsParentsSecretsToAHostTheRepositoryNames(t *testing.T) {
+	cfg := `
+[auth.email.smtp]
+host = "mail.attacker.example"
+user = "u"
+[auth.external.gitlab]
+enabled = true
+client_id = "id"
+url = "https://gitlab.attacker.example"
+[auth.external.keycloak]
+enabled = true
+client_id = "id"
+secret = "env(KEYCLOAK_SECRET)"
+url = "https://sso.example.com"
+`
+	doc, err := ParseConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := func(name string) (string, bool, error) { return "s3cret", name == "KEYCLOAK_SECRET", nil }
+	branch, err := PlanConfig(PlanInput{Doc: doc, Ref: "bbbbbbbbbbbbbbbbbbbb", Branch: true, Env: env})
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := branch.Patches[projectconfig.Auth]
+	for _, k := range []string{"smtp_pass", "external_gitlab_secret"} {
+		if v, present := auth[k]; !present || v != nil {
+			t.Errorf("%s = %v (present %v), want it cleared (nil)", k, v, present)
+		}
+	}
+	// A secret config.toml gives the branch is applied as it says.
+	if auth["external_keycloak_secret"] != "s3cret" {
+		t.Errorf("external_keycloak_secret = %v", auth["external_keycloak_secret"])
+	}
+	if !hasWarning(branch, "smtp_pass") || !hasWarning(branch, "external_gitlab_secret") || hasWarning(branch, "external_keycloak_secret") {
+		t.Errorf("warnings = %v", branch.Warnings)
+	}
+	// The project itself is configured as the repository says: nothing is cleared there.
+	prod, err := PlanConfig(PlanInput{Doc: doc, Ref: "pppppppppppppppppppp", Env: env})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := prod.Patches[projectconfig.Auth]["smtp_pass"]; present {
+		t.Errorf("production had its SMTP password cleared: %v", prod.Patches[projectconfig.Auth])
+	}
+	// A config.toml that does not name a destination leaves the inherited secrets alone.
+	doc2, _ := ParseConfig([]byte("[auth.email.smtp]\nsender_name = \"App\"\n"))
+	same, _ := PlanConfig(PlanInput{Doc: doc2, Ref: "bbbbbbbbbbbbbbbbbbbb", Branch: true})
+	if _, present := same.Patches[projectconfig.Auth]["smtp_pass"]; present {
+		t.Errorf("an SMTP sender name cleared the inherited password: %v", same.Patches[projectconfig.Auth])
+	}
+}

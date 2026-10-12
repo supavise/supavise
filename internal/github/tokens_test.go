@@ -279,3 +279,33 @@ func TestConnectionConfigIsParsedAndPassedOn(t *testing.T) {
 		t.Fatalf("with a working directory: %+v, %v", doc, err)
 	}
 }
+
+func TestTheBranchPickersAnswerFromOneListingAndAReadOnlyRepositoryIsNotOffered(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, err := h.svc.Authorize(ctx, "u1", "good-code"); err != nil {
+		t.Fatal(err)
+	}
+	listings := func() int { return h.gh.callsTo("GET /user/installations") }
+	// Studio asks about the production branch for every value typed.
+	for i := 0; i < 5; i++ {
+		if _, err := h.svc.Branch(ctx, "u1", h.gh.repoID, "main"); err != nil {
+			t.Fatalf("branch check %d: %v", i, err)
+		}
+	}
+	if n := listings(); n != 2 { // the installations and the repositories of the one installation, once
+		t.Fatalf("calls to list the user's repositories = %d, want 2 for five checks", n)
+	}
+	// A repository the user can only read is not offered, and cannot be connected by its id.
+	h.gh.readOnly = true
+	h.svc.repoMu.Lock()
+	h.svc.repoLists = nil
+	h.svc.repoMu.Unlock()
+	if repos, _, err := h.svc.Repositories(ctx, "u1"); err != nil || len(repos) != 0 {
+		t.Fatalf("repositories of a read-only user = %+v, %v", repos, err)
+	}
+	_, err := h.svc.Connect(ctx, ConnectInput{UserID: "u1", OrgID: 1, ProjectRef: "zzzzzzzzzzzzzzzzzzzz", InstallationID: h.gh.instID, RepositoryID: h.gh.repoID})
+	if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "may not push") {
+		t.Fatalf("connect of a read-only repository: %v", err)
+	}
+}

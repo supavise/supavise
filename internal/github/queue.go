@@ -20,8 +20,10 @@ type job struct {
 
 // enqueue starts fn on its own goroutine under key. fn gets a context that ends when newer work
 // with the same key arrives or the service stops; it should then stop soon and leave the branch
-// consistent (a migration that was cut in the middle rolled back).
-func (s *Service) enqueue(key string, fn func(ctx context.Context)) {
+// consistent (a migration that was cut in the middle rolled back). A job that never starts, because
+// newer work replaced it while it waited or the service stopped, calls dropped instead, so that
+// whatever the caller prepared for it (an action run) is not left open.
+func (s *Service) enqueue(key string, fn func(ctx context.Context), dropped ...func()) {
 	ctx, cancel := context.WithCancel(s.base)
 	j := &job{cancel: cancel, done: make(chan struct{})}
 	s.q.mu.Lock()
@@ -53,6 +55,9 @@ func (s *Service) enqueue(key string, fn func(ctx context.Context)) {
 		superseded := s.q.jobs[key] != j
 		s.q.mu.Unlock()
 		if superseded || ctx.Err() != nil {
+			for _, d := range dropped {
+				d()
+			}
 			return
 		}
 		defer func() {
