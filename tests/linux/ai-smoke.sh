@@ -54,6 +54,10 @@ trap cleanup EXIT
 
 # Ports away from anything the runner may listen on, as in oauth-smoke.sh.
 P_SESSION=15432 P_TRANSACTION=16543 P_REALTIME=14000 P_STORAGE=15000 P_STORAGE_ADMIN=15001 P_PGMETA=18080 P_API=14001 P_STUDIO=13000
+# The trap below listens on 127.0.0.2:443. A listener on the wildcard :443 (the daemon's https listener by default)
+# cannot share the port with it, and the daemon would exit at start with "address already in use": the
+# https listener goes to an unused loopback port. Nothing here uses https; the script reaches the edge on port 80.
+P_HTTPS=18443
 OWNER_EMAIL=owner@example.com
 # Values for this run only. The dummy key reaches the node through standard input, never a command line.
 PASSWORD=ai-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')
@@ -99,6 +103,9 @@ preflight
 install_binary
 setup_node
 cat >>"$SUPAVISE_CONF" <<CONF
+
+[listen]
+https = "127.0.0.1:$P_HTTPS"
 
 [ports]
 supavisor_session = $P_SESSION
