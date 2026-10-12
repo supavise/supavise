@@ -342,16 +342,6 @@
    "reason": "Billing is off on a node: profile.disabled_features holds billing:all, so Studio never shows this page and a stub answer is never read."
   },
   {
-   "op": "GET /platform/organizations/{slug}/usage",
-   "reach": "static",
-   "reason": "Organization usage is a billing page; the deadends lane of v0.4.0 decides whether it is reachable, and the entry goes with that decision."
-  },
-  {
-   "op": "GET /platform/organizations/{slug}/usage/daily",
-   "reach": "static",
-   "reason": "Organization usage is a billing page; the deadends lane of v0.4.0 decides whether it is reachable, and the entry goes with that decision."
-  },
-  {
    "op": "* /platform/pg-meta",
    "reach": "static",
    "reason": "A path prefix that Studio builds other URLs from (the MCP URL builder, pg-meta routes); it is never requested as it stands."

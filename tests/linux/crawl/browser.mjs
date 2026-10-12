@@ -29,16 +29,6 @@ export async function launch(cfg) {
   })
 }
 
-// stripUpgrade drops `upgrade-insecure-requests` from a CSP: Studio's policy would turn every sub-resource of this
-// plain-HTTP node into an https request.
-function stripUpgrade(headers) {
-  const h = { ...headers }
-  for (const k of ['content-security-policy', 'content-security-policy-report-only']) {
-    if (h[k]) h[k] = h[k].split(';').filter((d) => d.trim() !== 'upgrade-insecure-requests').join(';')
-  }
-  return h
-}
-
 // A Tracker collects what pages do: one record per label, findings judged against the allow-list and the noise list.
 export class Tracker {
   constructor({ cfg, allow, noise, callsFile }) {
@@ -229,7 +219,9 @@ export async function openContext(browser, cfg, tracker, { guard = false } = {})
       // address with the Host header of the page, and hand a redirect to the browser as it is.
       const px = cfg.proxy ?? { host: '127.0.0.1', port: 80 }
       const res = await route.fetch({ url: `http://${px.host}:${px.port}${u.pathname}${u.search}`, headers: { ...req.headers(), host: u.host }, maxRedirects: 0 })
-      return route.fulfill({ response: res, headers: stripUpgrade(res.headers()) })
+      // The page keeps the headers the node sends: the proxy drops upgrade-insecure-requests from Studio's CSP on a
+      // plain-HTTP node, so a regression shows as ERR_SSL_PROTOCOL_ERROR here.
+      return route.fulfill({ response: res })
     }
     return route.continue()
   })
