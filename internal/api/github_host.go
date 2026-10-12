@@ -51,7 +51,15 @@ func (h ghHost) SaveSettings(ctx context.Context, ref string, svc projectconfig.
 	if err != nil {
 		return nil, err
 	}
-	ch, _, err := h.s.saveSettings(ctx, p, svc, patch, lifecycle.ApplyOptions{})
+	var ch *projectconfig.Change
+	if svc == projectconfig.PostgREST {
+		// The route's own refusal of a schema that does not exist: without it the restart would wait out
+		// PostgREST's readiness timeout and roll the save back.
+		err = h.s.checkExposedSchemas(ctx, p, patch)
+	}
+	if err == nil {
+		ch, _, err = h.s.saveSettings(ctx, p, svc, patch, lifecycle.ApplyOptions{})
+	}
 	if err != nil {
 		var ae *Error
 		if errors.As(err, &ae) {

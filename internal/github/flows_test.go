@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/supavise/supavise/internal/branching"
 	"github.com/supavise/supavise/internal/config"
+	"github.com/supavise/supavise/internal/projectconfig"
 	"github.com/supavise/supavise/internal/registry"
 )
 
@@ -520,5 +522,65 @@ func TestABurstOfPullRequestsRunsAtMostTheConfiguredNumberOfBuilds(t *testing.T)
 	h.svc.wg.Wait()
 	if got := len(h.br.names()); got != 5 {
 		t.Fatalf("branches after the burst = %v, want all five built in turn", h.br.names())
+	}
+}
+
+// PostgREST does not start on a schema that does not exist, and the migrations of a commit may make the
+// schema its config.toml exposes: PostgREST's settings are saved after the migrations, in one save, and the
+// other services' settings stay before them.
+func TestThePostgRESTSettingsOfConfigTomlAreSavedAfterTheMigrationsThatMayMakeTheirSchemas(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(map[string]string{
+		"supabase/migrations/20240102000000_api.sql": "create schema api;",
+		"supabase/config.toml":                       "project_id = \"app\"\n[api]\nschemas = [\"public\", \"graphql_public\", \"api\"]\nmax_rows = 500\n[auth]\nsite_url = \"https://app.example.com\"\n",
+	}))
+	h.deliver("pull_request", "d1", h.prEvent("opened", 1, "feature", "sha-1"))
+	b := h.br.byName("feature")
+	if b == nil || b.State != registry.BranchFunctionsDeployed {
+		t.Fatalf("the run did not finish: %+v", b)
+	}
+	var steps []string
+	for _, e := range h.db.timeline {
+		steps = append(steps, strings.TrimSuffix(strings.Replace(e, b.Ref, "branch", 1), "@"+b.Ref))
+	}
+	want := []string{"save auth@branch", "migrate branch/20240101000000", "migrate branch/20240102000000", "save postgrest@branch"}
+	if !slices.Equal(steps, want) {
+		t.Fatalf("order of the steps:\n got %v\nwant %v", steps, want)
+	}
+	pr := h.host.patches["postgrest@"+b.Ref]
+	if pr["db_schema"] != "public,graphql_public,api" || pr["max_rows"] != int64(500) {
+		t.Fatalf("postgrest settings = %v", pr)
+	}
+
+	// A later commit that does not touch the migrations saves the settings in the same place.
+	h.db.mu.Lock()
+	h.db.timeline = nil
+	h.db.mu.Unlock()
+	h.gh.setCommit("sha-2", repoFiles(map[string]string{
+		"supabase/migrations/20240102000000_api.sql": "create schema api;",
+		"supabase/config.toml":                       "project_id = \"app\"\n[api]\nschemas = [\"public\", \"graphql_public\", \"api\"]\nmax_rows = 400\n",
+	}))
+	h.deliver("pull_request", "d2", h.prEvent("synchronize", 1, "feature", "sha-2"))
+	if got := h.host.patches["postgrest@"+b.Ref]["max_rows"]; got != int64(400) {
+		t.Fatalf("max_rows after the second commit = %v", got)
+	}
+}
+
+// A list that still names a schema the node cannot find after the migrations fails the run with the node's
+// message, at the migrate step and after the migrations are applied, so the next commit starts from there.
+func TestAConfigTomlSchemaTheMigrationsDoNotMakeFailsTheRunWithTheNodesMessage(t *testing.T) {
+	h := newHarness(t)
+	h.gh.setCommit("sha-1", repoFiles(map[string]string{
+		"supabase/config.toml": "project_id = \"app\"\n[api]\nschemas = [\"public\", \"nope\"]\n",
+	}))
+	// The node's answer for a schema it cannot find (the API checks the database before it restarts PostgREST).
+	h.host.saveErr = map[projectconfig.Service]error{projectconfig.PostgREST: errors.New("db_schema names a schema that does not exist in the database: nope")}
+	h.deliver("pull_request", "d1", h.prEvent("opened", 1, "feature", "sha-1"))
+	b := h.br.byName("feature")
+	if b == nil || b.State != registry.BranchMigrationsFailed || !strings.Contains(b.Detail, "does not exist in the database: nope") || !strings.Contains(b.Detail, "after the migrations") {
+		t.Fatalf("branch = %+v", b)
+	}
+	if got := h.db.applied(b.Ref); len(got) != 1 {
+		t.Fatalf("the migrations were not applied before the failure: %v", got)
 	}
 }
