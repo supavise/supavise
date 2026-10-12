@@ -55,10 +55,12 @@ type Run struct {
 	op  string
 	ref string // the branch the run works on
 
-	mu     sync.Mutex
-	cur    string         // the step Phase opened and nothing has closed
-	logged map[string]int // bytes logged per step
-	failed string         // the step that failed
+	mu       sync.Mutex
+	cur      string         // the step Phase opened and nothing has closed
+	logged   map[string]int // bytes logged per step
+	failed   string         // the step that failed
+	finished bool           // Finish ran: a second call changes nothing
+	driven   bool           // StartRun made it: this process holds it live until its row is finished
 }
 
 type runCtxKey struct{}
@@ -147,7 +149,16 @@ func (s *Service) StartRun(ctx context.Context, op, branchRef, ownerRef, parentR
 	if err := st.CreateBranchRun(ctx, rec); err != nil {
 		return nil, fmt.Errorf("record the %s run: %w", op, err)
 	}
-	return s.newRun(rec.ID, op, branchRef), nil
+	// This process works on the run until its row is finished: the sweep must not fail it for being
+	// quiet (a migration that takes an hour logs nothing), and PATCH .../status must refuse it. A
+	// restart empties the set, and the runner recorded on the row (pid, instance) then lets the
+	// sweep recover the run at once.
+	s.mu.Lock()
+	s.driven[rec.ID] = struct{}{}
+	s.mu.Unlock()
+	r := s.newRun(rec.ID, op, branchRef)
+	r.driven = true
+	return r, nil
 }
 
 func (s *Service) newRun(id, op, ref string) *Run {
@@ -363,6 +374,11 @@ func (r *Run) fail(step string, err error) {
 }
 
 func (r *Run) finishRow(status, failure string) {
+	if r.driven {
+		r.s.mu.Lock()
+		delete(r.s.driven, r.id)
+		r.s.mu.Unlock()
+	}
 	st := r.s.runStore()
 	if st == nil {
 		return
@@ -383,6 +399,10 @@ func (r *Run) Finish(err error) (failedStep string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.finished {
+		return r.failed
+	}
+	r.finished = true
 	if r.failed != "" {
 		return r.failed
 	}
@@ -576,10 +596,14 @@ func (s *Service) SetRunSteps(ctx context.Context, ownerRef, id string, steps ma
 	return rec, nil
 }
 
-// runLive reports whether this process is working on the run.
+// runLive reports whether this process is working on the run: an operation of the service
+// (begin) or a run that code outside the package drives and has not finished (StartRun).
 func (s *Service) runLive(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.driven[id]; ok {
+		return true
+	}
 	for _, r := range s.runs {
 		if r.id == id {
 			return true

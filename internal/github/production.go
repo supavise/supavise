@@ -135,6 +135,9 @@ func (s *Service) DeployProduction(ctx context.Context, projectRef string) (stri
 	return run.ID(), nil
 }
 
+// errDeployStopped ends a production run whose deployment was cut short without finishing it.
+var errDeployStopped = errors.New("the deployment stopped unexpectedly")
+
 // deployProduction applies the commit to the project. pre is a run the caller started, nil to
 // start one.
 func (s *Service) deployProduction(ctx context.Context, conn registry.GitHubConnection, branch, sha string, pre *branching.Run) error {
@@ -154,6 +157,9 @@ func (s *Service) deployProduction(ctx context.Context, conn registry.GitHubConn
 			return err
 		}
 	}
+	// The run is held live in this process until it is finished (branching.StartRun): a panic below must not
+	// leave it open until the next restart.
+	defer run.Finish(errDeployStopped)
 	details := s.cfg.DashboardURL() + "/project/" + conn.ProjectRef + "/branches"
 	checkID, cerr := rep.start(ctx, CheckNameProduction, sha, details, checkOutput{Title: "Deploying to production",
 		Summary: fmt.Sprintf("Supavise is applying `%s` (%s) to the production database and Edge Functions.", branch, short(sha))})

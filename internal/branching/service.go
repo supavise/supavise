@@ -122,6 +122,9 @@ type Service struct {
 
 	mu   sync.Mutex
 	runs map[string]*run // by branch ref
+	// driven are the ids of the action runs that code outside the package drives in this process
+	// (StartRun): runLive counts them as live until their row is finished (runs.go).
+	driven map[string]struct{}
 	// lastPrune is when old action runs were last removed (runs.go).
 	lastPrune time.Time
 	// notifyMu serializes the creation of the notify signing key (notify.go).
@@ -142,7 +145,7 @@ func New(d Deps) (*Service, error) {
 	s := &Service{
 		cfg: d.Cfg, reg: d.Registry, sec: d.Secrets, eng: d.Engine, bk: d.Backup, db: d.DB, fns: d.Functions, log: d.Log, now: d.Now,
 		http: d.HTTPClient, createWait: d.CreateWait, opTimeout: d.OpTimeout, staleAfter: d.StaleAfter,
-		detect: nil, runs: map[string]*run{}, activity: d.Activity, nodeID: d.NodeID, idle: newIdleState(), listen: listenLoopback,
+		detect: nil, runs: map[string]*run{}, driven: map[string]struct{}{}, activity: d.Activity, nodeID: d.NodeID, idle: newIdleState(), listen: listenLoopback,
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
