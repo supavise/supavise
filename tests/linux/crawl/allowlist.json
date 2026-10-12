@@ -2,16 +2,6 @@
  "_comment": "Read by internal/api/studio_calls_test.go (the static gate) and by tests/linux/crawl (the runtime crawl). stubs: Studio calls that only a spec-derived stub answers (reach crawl: the crawl must see it; static: it is not reachable by the crawl). statuses: honest 4xx/5xx answers of handlers, by route and status. dom: page texts the crawl's oracles would flag. An entry needs a reason; an entry that no longer applies fails the run, so the lists only shrink.",
  "stubs": [
   {
-   "op": "POST /platform/auth/{ref}/templates/{template}/reset",
-   "reach": "static",
-   "reason": "The deadends lane of v0.4.0 adds a handler (template reset, Remove MFA factors); the entry goes with it."
-  },
-  {
-   "op": "DELETE /platform/auth/{ref}/users/{id}/factors",
-   "reach": "static",
-   "reason": "The deadends lane of v0.4.0 adds a handler (template reset, Remove MFA factors); the entry goes with it."
-  },
-  {
    "op": "POST /platform/auth/{ref}/validate/spam",
    "reach": "static",
    "reason": "The node has no email spam-rule engine; the stub's empty rule list says that no rule matched, which is true here."
@@ -27,11 +17,6 @@
    "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
   },
   {
-   "op": "POST /platform/database/{ref}/backups/download",
-   "reach": "static",
-   "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
-  },
-  {
    "op": "GET /platform/database/{ref}/backups/downloadable-backups",
    "reach": "static",
    "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
@@ -40,21 +25,6 @@
    "op": "POST /platform/database/{ref}/backups/enable-physical-backups",
    "reach": "static",
    "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
-  },
-  {
-   "op": "GET /platform/database/{ref}/clone",
-   "reach": "static",
-   "reason": "Restore to a new project has no handler yet: the deadends lane of v0.4.0 adds it, and the entry goes with it. database:restore_to_new_project hides the page until then."
-  },
-  {
-   "op": "POST /platform/database/{ref}/clone",
-   "reach": "static",
-   "reason": "Restore to a new project has no handler yet: the deadends lane of v0.4.0 adds it, and the entry goes with it. database:restore_to_new_project hides the page until then."
-  },
-  {
-   "op": "GET /platform/database/{ref}/clone/status",
-   "reach": "static",
-   "reason": "Restore to a new project has no handler yet: the deadends lane of v0.4.0 adds it, and the entry goes with it. database:restore_to_new_project hides the page until then."
   },
   {
    "op": "POST /platform/feedback/conversations/escalation",
@@ -90,56 +60,6 @@
    "op": "GET /platform/integrations",
    "reach": "static",
    "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
-  },
-  {
-   "op": "DELETE /platform/integrations/github/authorization",
-   "reach": "static",
-   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "GET /platform/integrations/github/authorization",
-   "reach": "static",
-   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "POST /platform/integrations/github/authorization",
-   "reach": "static",
-   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "GET /platform/integrations/github/connections",
-   "reach": "static",
-   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "POST /platform/integrations/github/connections",
-   "reach": "static",
-   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "DELETE /platform/integrations/github/connections/{connection_id}",
-   "reach": "static",
-   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "PATCH /platform/integrations/github/connections/{connection_id}",
-   "reach": "static",
-   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "GET /platform/integrations/github/connections/{connection_id}/config",
-   "reach": "static",
-   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "GET /platform/integrations/github/repositories",
-   "reach": "static",
-   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "GET /platform/integrations/github/repositories/{repository_id}/branches/{branch_name}",
-   "reach": "static",
-   "reason": "The GitHub integration has no handler yet: the github lane of v0.4.0 replaces this stub, and the entry goes with it."
   },
   {
    "op": "GET /platform/integrations/partners/{ref}",
@@ -280,11 +200,6 @@
    "op": "POST /platform/organizations/{slug}/apps/{app_id}/signing-keys",
    "reach": "static",
    "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
-  },
-  {
-   "op": "GET /platform/organizations/{slug}/audit",
-   "reach": "static",
-   "reason": "Audit logs have no handler yet: the deadends lane of v0.4.0 records and lists them, and the entry goes with it."
   },
   {
    "op": "POST /platform/organizations/{slug}/available-versions",
@@ -447,11 +362,6 @@
    "reason": "A path prefix that Studio builds other URLs from (the MCP URL builder, pg-meta routes); it is never requested as it stands."
   },
   {
-   "op": "GET /platform/profile/audit",
-   "reach": "static",
-   "reason": "Audit logs have no handler yet: the deadends lane of v0.4.0 records and lists them, and the entry goes with it."
-  },
-  {
    "op": "POST /platform/profile/audit-login",
    "reach": "crawl",
    "reason": "Audit logs have no handler yet: the deadends lane of v0.4.0 records and lists them, and the entry goes with it."
@@ -475,11 +385,6 @@
    "op": "GET /platform/profile/scoped-access-tokens/{id}",
    "reach": "static",
    "reason": "Scoped access tokens have no handler: the account page lists none, which is true. Personal access tokens and OAuth are the node's credentials."
-  },
-  {
-   "op": "* /platform/projects/{projectRef}/api/graphql",
-   "reach": "static",
-   "reason": "The Data API docs call the project's REST and GraphQL endpoints through the Management API; the deadends lane of v0.4.0 adds the handlers, and the entry goes with it."
   },
   {
    "op": "GET /platform/projects/{projectRef}/ha-admin/v1/gateways",
@@ -515,21 +420,6 @@
    "op": "POST /platform/projects/{ref}/analytics/log-drains/{token}/test",
    "reach": "static",
    "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
-  },
-  {
-   "op": "GET /platform/projects/{ref}/api/rest",
-   "reach": "static",
-   "reason": "The Data API docs call the project's REST and GraphQL endpoints through the Management API; the deadends lane of v0.4.0 adds the handlers, and the entry goes with it."
-  },
-  {
-   "op": "GET /platform/projects/{ref}/daily-stats",
-   "reach": "static",
-   "reason": "The Reports pages read daily stats; the deadends lane of v0.4.0 answers from the metrics store, and the entry goes with it."
-  },
-  {
-   "op": "GET /platform/projects/{ref}/pause/status",
-   "reach": "static",
-   "reason": "The lifecycle lane of v0.4.0 adds the pause status handler (can_restore for any paused project); the entry goes with it."
   },
   {
    "op": "GET /platform/projects/{ref}/privatelink/associations",
@@ -777,16 +667,6 @@
    "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
   },
   {
-   "op": "GET /platform/storage/{ref}/archive",
-   "reach": "static",
-   "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
-  },
-  {
-   "op": "POST /platform/storage/{ref}/archive",
-   "reach": "static",
-   "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
-  },
-  {
    "op": "GET /platform/storage/{ref}/vector-buckets",
    "reach": "static",
    "reason": "Iceberg analytics buckets and vector buckets need services Storage does not run here: profile.disabled_features holds storage:analytics and storage:vectors."
@@ -862,11 +742,6 @@
    "reason": "Telemetry is off (NEXT_PUBLIC_ENVIRONMENT=prod without consent), so Studio does not send these; the stub only keeps a stray call from failing."
   },
   {
-   "op": "PUT /platform/update-email",
-   "reach": "static",
-   "reason": "Sign-up, password reset and e-mail change go through GoTrue on a node; these hosted-platform calls are only made by hosted sign-in pages that the Supavise build replaces."
-  },
-  {
    "op": "GET /platform/vercel/redirect/{installation_id}",
    "reach": "static",
    "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
@@ -902,21 +777,6 @@
    "reason": "Project claims are a hosted marketplace flow; no page of a node links to them."
   },
   {
-   "op": "GET /v1/projects/{ref}/actions",
-   "reach": "static",
-   "reason": "Action runs have no handler yet: the runs lane of v0.4.0 (internal/api/actions.go) replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "GET /v1/projects/{ref}/actions/{run_id}",
-   "reach": "static",
-   "reason": "Action runs have no handler yet: the runs lane of v0.4.0 (internal/api/actions.go) replaces this stub, and the entry goes with it."
-  },
-  {
-   "op": "GET /v1/projects/{ref}/actions/{run_id}/logs",
-   "reach": "static",
-   "reason": "Action runs have no handler yet: the runs lane of v0.4.0 (internal/api/actions.go) replaces this stub, and the entry goes with it."
-  },
-  {
    "op": "GET /v1/projects/{ref}/config/auth/signing-keys",
    "reach": "static",
    "reason": "Read-only mode, the signing key list and compute changes are answered with the empty state of a project that has none; Supavise signs with the legacy secret only (docs/reference/studio-platform-calls.md)."
@@ -940,11 +800,6 @@
    "op": "DELETE /v1/projects/{ref}/database/jit/{user_id}",
    "reach": "static",
    "reason": "Just-in-time database access is a hosted feature; the stub answers the disabled state, and the pages that read it show it as off."
-  },
-  {
-   "op": "PUT /v1/projects/{ref}/database/migrations",
-   "reach": "static",
-   "reason": "The dashboard merge records its diff migration here; the content lane of v0.4.0 replaces this stub, and the entry goes with it."
   },
   {
    "op": "GET /v1/projects/{ref}/jit-access",
@@ -1088,6 +943,30 @@
    "status": 400,
    "reach": "static",
    "reason": "The switch is disabled, so Studio never sends the update; the refusal is for API clients."
+  },
+  {
+   "op": "GET /platform/storage/{ref}/archive",
+   "status": 400,
+   "reach": "static",
+   "reason": "The Download backups menu of a paused project asks for a Storage archive that a node does not make; the refusal ends Studio's polling and gives the reason."
+  },
+  {
+   "op": "POST /platform/storage/{ref}/archive",
+   "status": 400,
+   "reach": "static",
+   "reason": "The Download backups menu of a paused project asks for a Storage archive that a node does not make; the refusal gives the reason."
+  },
+  {
+   "op": "POST /platform/database/{ref}/backups/download",
+   "status": 400,
+   "reach": "static",
+   "reason": "A node has no download of a paused project's backup; the refusal gives the reason, and the menu item stays disabled because pause/status names no downloadable backup."
+  },
+  {
+   "op": "PUT /platform/update-email",
+   "status": 400,
+   "reach": "static",
+   "reason": "A dashboard account is identified by its email address, so Account > Preferences refuses to change it and names the commands that invite a new address and remove the old account."
   }
  ],
  "dom": [
