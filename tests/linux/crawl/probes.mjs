@@ -39,7 +39,8 @@ class Env {
     await settle(page)
   }
 
-  // expectText waits for text (a string or a RegExp) to show on the page.
+  // expectText waits for text (a string or a RegExp) to show on the page. The text is what innerText returns, which is what the
+  // page draws: Studio sets headings in capitals with text-transform, so a regexp for a heading takes the i flag.
   async expectText(page, text, timeout = 30_000, what = '') {
     const re = text instanceof RegExp ? text : new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     const end = Date.now() + timeout
@@ -194,7 +195,7 @@ export const PROBES = [
       await waitFor('the Merge branch button to be enabled', async () => merge.isEnabled(), { timeout: 120_000, every: 2000 })
       await merge.click()
       await dialog(page).getByRole('button', { name: /^Merge branch$/ }).click()
-      await e.expectText(page, /Workflow completed successfully/, 300_000, 'the merge page')
+      await e.expectText(page, /Workflow completed successfully/i, 300_000, 'the merge page')
       await e.expectText(page, /Close branch/, 30_000, 'the merge page after the merge')
       // the merge reached the parent
       const there = await e.node.sql(P, `select to_regclass('public.probe_merge_table') is not null as present`)
@@ -256,7 +257,7 @@ export const PROBES = [
       const b = e.fx.branches['crawl-scheduled']
       const page = await e.page()
       await e.goto(page, `/project/${A}/branches`)
-      await e.expectText(page, /Scheduled for deletion branches/, 30_000, 'the Branches page')
+      await e.expectText(page, /Scheduled for deletion branches/i, 30_000, 'the Branches page')
       await e.expectText(page, b.name, 30_000, 'the scheduled branch')
       await waitFor('the scheduled branch to be paused (Restore is enabled for a paused one)', async () => (await e.node.status(b.ref)) === 'INACTIVE', { timeout: 120_000, every: 3000 })
       await e.goto(page, `/project/${A}/branches`)
@@ -286,7 +287,7 @@ export const PROBES = [
       await page.getByPlaceholder('subdomain.example.com').fill(e.fx.hostnames.P)
       await page.getByRole('button', { name: /^Add$/ }).click()
       const st = await waitFor('the hostname to be claimed', async () => {
-        const r = await e.node.api('GET', `/v1/projects/${P}/custom-hostname`, undefined, { expect: [404] })
+        const r = await e.node.api('GET', `/v1/projects/${P}/custom-hostname`, undefined, { expect: [400, 404] }) // 400 while none is claimed
         return r.status === 200 && r.json?.custom_hostname === e.fx.hostnames.P ? r.json.status : null
       }, { timeout: 60_000, every: 2000 })
       await e.expectNoText(page, /cannot be found/, 'the Custom domains section after the CNAME check')
@@ -448,7 +449,10 @@ export const PROBES = [
       await e.goto(page, `/org/${e.cfg.org}/audit`)
       await e.expectText(page, /Audit Logs/i, 30_000, 'the audit logs page')
       await e.expectNoText(page, /does not have any audit logs available yet/, 'the audit logs page')
-      await e.expectText(page, e.cfg.owner.email, 30_000, 'the audit logs page (the actor of the seeding)')
+      // Studio draws the actor as the member's username, and the email only for an actor that is no member (AuditLogs.columns.tsx);
+      // a node's username is the part of the email before the @ unless the user set one
+      const actor = e.cfg.owner.email.split('@')[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      await e.expectText(page, new RegExp(`(?:^|\\s)${actor}(?:\\s|$)`, 'm'), 30_000, 'the audit logs page (the actor of the seeding)')
     },
   },
   {
@@ -483,9 +487,10 @@ export const PROBES = [
       ok(backups.length > 0, `project A has no backup to restore from (GET /platform/database/{ref}/clone: ${JSON.stringify(clone.json)?.slice(0, 200)})`)
       const page = await e.page()
       await e.goto(page, `/project/${A}/database/backups/restore-to-new-project`)
-      await page.getByRole('button', { name: /^Restore$/ }).first().click()
-      const next = dialog(page).getByRole('button', { name: /Continue|Confirm|Next/i })
-      if (await next.first().isVisible().catch(() => false)) await next.first().click()
+      // Studio's flow: Continue under the restore time (the page lists physical backups with a Restore button each when the
+      // project has no point-in-time recovery), Continue in the confirmation, then the dialog that names the new project
+      await page.getByRole('button', { name: /^(?:Continue|Restore)$/ }).first().click()
+      await dialog(page).getByRole('button', { name: /^Continue$/ }).click()
       const d = dialog(page)
       await d.getByPlaceholder('Enter a name').fill('crawl-restored')
       await d.getByPlaceholder('Type in a strong password').fill(`Crawl-${Date.now()}-pw`)
@@ -524,6 +529,7 @@ export async function runProbes({ browser, cfg, fx, node, tracker, log, outDir }
     } finally {
       await env.close()
     }
+    tracker.finish()
     r.findings = rec.findings
     r.ms = Date.now() - t0
     results.push(r)
