@@ -2,6 +2,7 @@ package branching
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -44,6 +45,13 @@ type SweepResult struct {
 	Failed  map[string]string // ref -> error, for branches that could not be deleted
 }
 
+// lapsedAt reports whether b is due for deletion at now: a branch that is not persistent is past its expiry,
+// or any branch is past its scheduled deletion.
+func lapsedAt(b *Branch, now time.Time) bool {
+	return (!b.Persistent && b.ExpiresAt != nil && !b.ExpiresAt.After(now)) ||
+		(b.DeletionScheduledAt != nil && !b.DeletionScheduledAt.After(now))
+}
+
 // Sweep deletes non-persistent branches past expires_at and branches whose scheduled
 // deletion has come, without a final backup unless the branch is persistent, and marks
 // operations that no process works on as failed: the process that started one is gone (same
@@ -79,9 +87,7 @@ func (s *Service) Sweep(ctx context.Context, dryRun bool) (*SweepResult, error) 
 			}
 			continue // otherwise another process (the CLI) is working on it
 		}
-		lapsed := (!b.Persistent && b.ExpiresAt != nil && !b.ExpiresAt.After(now)) ||
-			(b.DeletionScheduledAt != nil && !b.DeletionScheduledAt.After(now))
-		if !lapsed {
+		if !lapsedAt(b, now) {
 			if !dryRun && s.warnExpiring(ctx, b, now, &notices) {
 				res.Warned = append(res.Warned, p.Ref)
 			}
@@ -91,7 +97,18 @@ func (s *Service) Sweep(ctx context.Context, dryRun bool) (*SweepResult, error) 
 			res.Expired = append(res.Expired, p.Ref)
 			continue
 		}
-		if err := s.deleteNow(ctx, b, "sweeper"); err != nil {
+		// The list was read before the deletions of this pass, which can take long (units stop, a persistent
+		// branch takes its final backup): the branch is read again, with the operation held, and deleted only
+		// if it is still due. A Restore, an Update that makes it persistent or extends it, or a deletion by
+		// hand since the list was read is respected.
+		err := s.deleteWith(ctx, b, "sweeper", false, func(cur *Branch) bool {
+			return !s.inFlight(ctx, cur) && lapsedAt(cur, s.now())
+		})
+		if errors.Is(err, errNoLongerDue) {
+			s.log.Info("left a branch that is no longer due for deletion", "ref", p.Ref, "name", b.Name)
+			continue
+		}
+		if err != nil {
 			s.log.Error("could not delete a lapsed branch", "ref", p.Ref, "name", b.Name, "err", err)
 			res.Failed[p.Ref] = err.Error()
 			continue

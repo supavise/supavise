@@ -6,14 +6,28 @@ import (
 )
 
 // PauseIdle is the reason of a pause the node made because a branch was not used. The first HTTP
-// request or database connection to a branch paused for it wakes the branch; a pause with no
-// reason (the owner's) never wakes by itself.
+// request or database connection to a branch paused for it wakes the branch, and so does an operation
+// that needs the branch to run (a merge, a push, a diff, a reset, the Git integration's commit). It is
+// the only reason that wakes by itself.
 const PauseIdle = "idle"
+
+// PauseQuarantine is the reason of a stop the node made because a branch could not be detached from its
+// parent: it still carries the parent's database passwords, subscriptions, foreign servers or keys. Nothing
+// wakes it by itself, a request, a database connection and a commit of the repository included; the
+// owner resumes it on purpose, or resets or deletes the branch.
+const PauseQuarantine = "quarantine"
+
+// WakesByItself reports whether a pause with this reason ends when something uses the project: only the
+// node's pause for idleness does. The owner's pause (the empty reason, and what a project paused before
+// the reason was recorded counts as) and a quarantine wait for a person.
+func WakesByItself(reason string) bool { return reason == PauseIdle }
 
 // Pause says why and since when a project is paused (migration 1520).
 type Pause struct {
 	Ref string
-	// Reason is "" for a pause the owner asked for and PauseIdle for one the node made.
+	// Reason is "" for a pause the owner asked for, PauseIdle for one the node made because the branch
+	// was not used, and PauseQuarantine for a stop the node made because the branch carries the
+	// parent's credentials.
 	Reason   string
 	PausedAt time.Time
 }

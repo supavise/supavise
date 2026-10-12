@@ -38,6 +38,12 @@ func (s *Service) Reset(ctx context.Context, idOrRef string, in ActionInput) (st
 	if err := s.checkIdle(ctx, b); err != nil {
 		return "", err
 	}
+	// A reset reads the branch's own migration history before it rebuilds the branch, so a branch the node
+	// paused for idleness starts first. One the owner paused (or a quarantine) is reset as it is: the history
+	// cannot be read, and the reset says so or builds from the parent's.
+	if b, err = s.wakeIfIdle(ctx, b, "reset"); err != nil {
+		return "", err
+	}
 	parent, err := s.activeParent(ctx, b)
 	if err != nil {
 		return "", err

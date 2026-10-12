@@ -515,12 +515,33 @@ func (s *Service) detach(ctx context.Context, ref string) error {
 // quarantine stops a branch that still carries the parent's database passwords because the
 // rotation failed, so that nobody holding the parent's credentials can open it, and returns
 // err with that said. The branch stays registered (MIGRATIONS_FAILED) for inspection, reset or delete.
+//
+// The stop is recorded as a quarantine (registry.PauseQuarantine), which no request, database
+// connection, Management API call or commit of a repository ever starts again; the owner's Resume, a reset
+// and a delete are the ways out. When the registry cannot record the reason the branch is stopped as an
+// owner's pause, which no automatic start undoes either.
 func (s *Service) quarantine(ctx context.Context, ref string, err error) error {
-	perr := s.eng.Pause(context.WithoutCancel(ctx), ref)
+	pctx := context.WithoutCancel(ctx)
+	rp, canRecord := s.eng.(reasonPauser)
+	var perr error
+	if canRecord {
+		if perr = rp.PauseWith(pctx, ref, lifecycle.PauseOptions{Reason: registry.PauseQuarantine}); perr != nil {
+			s.log.Warn("could not record the quarantine of a branch; stopping it as paused", "ref", ref, "err", perr)
+		}
+	}
+	if !canRecord || perr != nil {
+		perr = s.eng.Pause(pctx, ref)
+	}
 	if perr != nil {
-		// Already stopped (a restart that failed between its stop and its start) is what is wanted.
+		// Already stopped (a restart that failed between its stop and its start) is what is wanted; the
+		// reason is then recorded on the stop that is there, so that nothing starts the branch by itself.
 		if p, gerr := s.reg.GetProject(ctx, ref); gerr == nil && p.Status == registry.StatusInactive {
 			perr = nil
+			if st := registry.BranchLifecycleOf(s.reg); st != nil && s.pauseRecord(ctx, ref) != registry.PauseQuarantine {
+				if serr := st.SetPause(pctx, ref, registry.PauseQuarantine, s.now().UTC()); serr != nil {
+					s.log.Warn("could not mark a stopped branch as quarantined", "ref", ref, "err", serr)
+				}
+			}
 		}
 	}
 	if perr != nil {
