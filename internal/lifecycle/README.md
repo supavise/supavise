@@ -385,6 +385,17 @@ objects back. A branch is created **homed on its parent's node** (`homeOfParent`
 branch starts where the leader is), so that the two databases are on one machine
 (`internal/branching/README.md`, "Placement").
 
+`CreateRequest.SettingsFrom` names the project whose saved settings the new one starts with: a branch takes its
+parent's, before its units first start (`copyInitialSettings`, which skips a `Recreate`). The copy leaves out what
+names the parent's host or sizes it, and the parent's credentials with the connections that go with them
+(`projectconfig.BranchExcluded`, `BranchWithheld`). A create with no `Seed` also leaves out PostgREST's `db_schema`, because
+the database starts empty and PostgREST would not start on a schema that does not exist yet. The
+`project.settings_copied` event lists the withheld and deferred names, never a value. Whoever builds the schema then calls
+`Engine.ExposeSchemasThatExist(ref, list)`: it keeps the names of the list that are schemas of the database now, saves them as
+`db_schema` and restarts PostgREST once (`ApplyConfig`), and returns the names it left out. `SavedExposedSchemas` and
+`SetExposedSchemas` read the saved list and put it aside or back without a restart; `internal/branching` uses them to start a
+reset branch on the default schemas.
+
 ## Saved settings
 
 `Settings` (implemented by `projectconfig.Manager`, set as `Node.Settings`) is read whenever units and
