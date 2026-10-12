@@ -522,7 +522,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, tg *target) {
 		},
 		ModifyResponse: func(res *http.Response) error {
 			if tg.studio {
-				rewriteStudioResponse(res.Header)
+				rewriteStudioResponse(res.Header, s.studioIsPlainHTTP())
 				if tg.noFraming {
 					denyFraming(res.Header)
 				}

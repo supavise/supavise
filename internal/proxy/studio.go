@@ -8,8 +8,8 @@ import (
 	"github.com/supavise/supavise/internal/notice"
 )
 
-// Studio is served unmodified (four patches, no fixups), so the two things its build
-// gets wrong for a self-hosted node are corrected here, on the way through.
+// Studio is served as built (the patches are in the build, there are no fixups), so what its build
+// gets wrong for a self-hosted node is corrected here, on the way through.
 
 // Studio's own /api/incident-banner route asks incident.io, answers 500 without a key, and
 // react-query retries it after 1, 4 and 16 seconds while the sign-in form awaits the query
@@ -22,10 +22,25 @@ import (
 // reasoning and the answer to serve once Studio can show the operator's own words). The
 // operator's notices appear in `supavise status` and /healthz/detail.
 
+// Studio's /api/incident-status route (the status chip of /support/new and the new-project page) asks
+// statuspage.io and, in platform mode, answers 500 {"error":"Unable to fetch incidents at this time"}
+// whenever STATUSPAGE_PAGE_ID or STATUSPAGE_API_KEY is unset, which is every node: the console
+// logged the failure, react-query retried it with backoff and the chip never resolved. The proxy
+// answers it with the empty list the route returns when no incident is unresolved.
+
 // answerStudioLocally serves the routes supavise answers instead of Studio. It reports
 // whether it wrote a response.
 func (s *Server) answerStudioLocally(w http.ResponseWriter, r *http.Request) bool {
-	if r.URL.Path != "/api/incident-banner" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	var body []byte
+	switch r.URL.Path {
+	case "/api/incident-banner":
+		body = notice.BannerJSON()
+	case "/api/incident-status":
+		body = []byte("[]")
+	default:
 		return false
 	}
 	h := w.Header()
@@ -33,7 +48,7 @@ func (s *Server) answerStudioLocally(w http.ResponseWriter, r *http.Request) boo
 	h.Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodGet {
-		_, _ = w.Write(notice.BannerJSON())
+		_, _ = w.Write(body)
 	}
 	return true
 }
@@ -94,13 +109,50 @@ func blockedSource(src string, blocked []string) bool {
 	return false
 }
 
-// rewriteStudioResponse adjusts the headers of a Studio response.
-func rewriteStudioResponse(h http.Header) {
+// dropUpgradeInsecure removes the upgrade-insecure-requests directive from a Content-Security-Policy.
+// Studio's production build sends it (csp.ts, with NEXT_PUBLIC_ENVIRONMENT=prod), and a browser that
+// honors it turns every sub-resource of the page into an https request, even when the page itself
+// was served over http. On a node with tls.mode=off nothing listens for https, so every script,
+// style sheet and font of the page failed with ERR_SSL_PROTOCOL_ERROR and the page stayed blank;
+// the chunks a Web Worker imports carry the policy of their own response, so GraphiQL's worker
+// failed the same way. It returns csp unchanged when it has no such directive.
+func dropUpgradeInsecure(csp string) string {
+	if !strings.Contains(strings.ToLower(csp), "upgrade-insecure-requests") {
+		return csp
+	}
+	var kept []string
+	for _, d := range strings.Split(csp, ";") {
+		d = strings.TrimSpace(d)
+		if d == "" || strings.EqualFold(strings.Fields(d)[0], "upgrade-insecure-requests") {
+			continue
+		}
+		kept = append(kept, d)
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	return strings.Join(kept, "; ") + ";"
+}
+
+// rewriteStudioResponse adjusts the headers of a Studio response. plainHTTP says that the node's
+// public URLs are http (tls.mode=off with no https public URL), where the browser must not be
+// told to upgrade requests.
+func rewriteStudioResponse(h http.Header, plainHTTP bool) {
 	for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
 		for i, v := range h.Values(name) {
-			h[http.CanonicalHeaderKey(name)][i] = scrubCSP(v, blockedStudioHosts)
+			v = scrubCSP(v, blockedStudioHosts)
+			if plainHTTP {
+				v = dropUpgradeInsecure(v)
+			}
+			h[http.CanonicalHeaderKey(name)][i] = v
 		}
 	}
+}
+
+// studioIsPlainHTTP reports whether the node serves its dashboard over http: the public dashboard URL
+// is the one the browser opens, so it decides, whether [api] dashboard_url says it or tls.mode=off does.
+func (s *Server) studioIsPlainHTTP() bool {
+	return strings.HasPrefix(strings.ToLower(s.cfg.DashboardURL()), "http://")
 }
 
 // isStudioMCPPath reports whether a request to Studio's host is for Studio's own MCP route, /api/mcp.
