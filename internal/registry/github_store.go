@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The GitHub integration's state (migration 1540). The package internal/github owns what the rows
@@ -169,13 +168,9 @@ var (
 
 // ---- Postgres ---------------------------------------------------------------------------------
 
-// missingTable reports whether err says a table is not there (SQLSTATE 42P01). A server on this
-// release can read a registry whose leader has not applied migration 1540 yet, in a cluster that is
-// being upgraded one server at a time; for the GitHub state that means "none".
-func missingTable(err error) bool {
-	var pe *pgconn.PgError
-	return errors.As(err, &pe) && pe.Code == "42P01"
-}
+// missingTable (pause_pg.go) is what makes a registry that has not got migration 1540 yet read as "none"
+// here: a server on this release can follow a leader that has not applied it, in a cluster that is being
+// upgraded one server at a time.
 
 func (r *Postgres) GetGitHubApp(ctx context.Context) (*GitHubApp, error) {
 	var a GitHubApp
