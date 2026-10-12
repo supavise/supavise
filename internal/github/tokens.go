@@ -186,6 +186,10 @@ func (s *Service) Authorization(ctx context.Context, userID string) (*registry.G
 // refreshLocks serialize the refresh of one user's token: a refresh token works once.
 var refreshLocks sync.Map
 
+func expiring(row *registry.GitHubAuthorization, now time.Time) bool {
+	return row.AccessExpiresAt != nil && row.AccessExpiresAt.Sub(now) <= time.Minute
+}
+
 // userToken returns a token that GitHub accepts for the user, refreshing it when it is about to
 // expire. A user whose token cannot be refreshed loses their authorization.
 func (s *Service) userToken(ctx context.Context, userID string) (string, error) {
@@ -193,20 +197,31 @@ func (s *Service) userToken(ctx context.Context, userID string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if row.AccessExpiresAt == nil || row.AccessExpiresAt.Sub(s.now()) > time.Minute {
+	if !expiring(row, s.now()) {
 		b, err := s.sec.Open(row.SealedAccess)
 		return string(b), err
 	}
+	return s.refreshUser(ctx, userID, "")
+}
+
+// refreshUser exchanges the user's refresh token for a new access token. stale is the access token
+// that GitHub just refused ("" when the stored expiry says it is about to lapse): if the stored token
+// is another one, somebody refreshed meanwhile and it is returned. When GitHub refuses the refresh
+// token too, the authorization is removed.
+func (s *Service) refreshUser(ctx context.Context, userID, stale string) (string, error) {
 	mu, _ := refreshLocks.LoadOrStore(userID, &sync.Mutex{})
 	mu.(*sync.Mutex).Lock()
 	defer mu.(*sync.Mutex).Unlock()
-	// Another call may have refreshed while this one waited.
-	if row, err = s.Authorization(ctx, userID); err != nil {
+	row, err := s.Authorization(ctx, userID)
+	if err != nil {
 		return "", err
 	}
-	if row.AccessExpiresAt == nil || row.AccessExpiresAt.Sub(s.now()) > time.Minute {
-		b, err := s.sec.Open(row.SealedAccess)
-		return string(b), err
+	cur, err := s.sec.Open(row.SealedAccess)
+	if err != nil {
+		return "", err
+	}
+	if stale != "" && string(cur) != stale || stale == "" && !expiring(row, s.now()) {
+		return string(cur), nil
 	}
 	drop := func() (string, error) {
 		_, _ = s.st.DeleteGitHubAuthorization(ctx, userID)
@@ -240,15 +255,22 @@ func (s *Service) userToken(ctx context.Context, userID string) (string, error) 
 	return ans.AccessToken, nil
 }
 
-// asUser runs call with the user's token. When GitHub refuses the token the authorization is
-// removed and the call fails with ErrNotAuthorized.
+// asUser runs call with the user's token. When GitHub refuses the token it is refreshed once and the
+// call repeated; when that fails too the authorization is removed and the call fails with
+// ErrNotAuthorized.
 func (s *Service) asUser(ctx context.Context, userID string, call func(token string) error) error {
 	tok, err := s.userToken(ctx, userID)
 	if err != nil {
 		return err
 	}
 	err = call(tok)
-	if IsStatus(err, http.StatusUnauthorized) {
+	if !IsStatus(err, http.StatusUnauthorized) {
+		return err
+	}
+	if tok, err = s.refreshUser(ctx, userID, tok); err != nil {
+		return err
+	}
+	if err = call(tok); IsStatus(err, http.StatusUnauthorized) {
 		_, _ = s.st.DeleteGitHubAuthorization(ctx, userID)
 		return ErrNotAuthorized
 	}

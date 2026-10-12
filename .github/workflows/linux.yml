@@ -481,6 +481,32 @@ jobs:
           path: /tmp/supavise-egress-logs
           if-no-files-found: ignore
 
+  # The GitHub integration on a node with real clusters (internal/github, docs/github-integration.md),
+  # against a fake GitHub (tests/linux/github/fake-github.mjs): the authorization and connection of a
+  # project, a signed pull_request that builds a branch from the repository (migration, seed, function,
+  # config.toml, a check run and a comment), a new commit that applies only what is new, a replay, a fork
+  # and a bad signature that do nothing, closing that deletes the branch, and a push to the production
+  # branch that migrates the project. Real GitHub is never contacted.
+  github-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The test clusters use ports 39000-39999, which lie inside Linux's ephemeral range (see
+      # branching-xfs).
+      - name: keep the test ports out of the ephemeral range
+        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=39000-39999
+      - name: the driver against the stand-in node, then against real clusters
+        run: |
+          tests/linux/github/selftest.sh
+          tests/linux/github-smoke.sh
+
   # Host convergence on a node that a v0.1.x-shaped release installed (the merge base with
   # origin/main), with a project: `system install-units` on the new binary as the old driver runs it,
   # the converged marker and `--check --json`, no unit restarted by it or by the daemon's restart

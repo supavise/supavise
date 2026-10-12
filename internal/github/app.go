@@ -109,7 +109,8 @@ func (s *Service) readFile(path string) ([]byte, error) {
 }
 
 // App returns the server's App: the one [github] names, else the one the manifest flow stored.
-// ErrNotConfigured when there is none.
+// ErrNotConfigured when there is none. The profile asks for it on every page the dashboard opens, so
+// the parsed key is kept while the files or the sealed rows stay as they are.
 func (s *Service) App(ctx context.Context) (*App, error) {
 	if g := s.cfg.GitHub; g.OperatorApp() {
 		return s.operatorApp()
@@ -120,6 +121,16 @@ func (s *Service) App(ctx context.Context) (*App, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	h := sha256.New()
+	for _, b := range [][]byte{row.SealedClientSecret, row.SealedWebhookSecret, row.SealedPrivateKey} {
+		h.Write(b)
+		h.Write([]byte{0})
+	}
+	fmt.Fprintf(h, "%d %s %s %s", row.AppID, row.Slug, row.ClientID, row.Name)
+	sig := string(h.Sum(nil))
+	if a := s.cachedApp(sig); a != nil {
+		return a, nil
 	}
 	a := &App{ID: row.AppID, Slug: row.Slug, Name: row.Name, ClientID: row.ClientID, OwnerLogin: row.OwnerLogin, HTMLURL: row.HTMLURL, Source: SourceManifest}
 	open := func(sealed []byte) ([]byte, error) { return s.sec.Open(sealed) }
@@ -139,11 +150,39 @@ func (s *Service) App(ctx context.Context) (*App, error) {
 		return nil, err
 	}
 	a.ClientSecret, a.WebhookSecret = string(cs), string(ws)
+	s.keepApp(sig, a)
 	return a, nil
+}
+
+func (s *Service) cachedApp(sig string) *App {
+	s.filesMu.Lock()
+	defer s.filesMu.Unlock()
+	if s.appSig == sig && s.app != nil {
+		return s.app
+	}
+	return nil
+}
+
+func (s *Service) keepApp(sig string, a *App) {
+	s.filesMu.Lock()
+	s.appSig, s.app = sig, a
+	s.filesMu.Unlock()
 }
 
 func (s *Service) operatorApp() (*App, error) {
 	g := s.cfg.GitHub
+	// The files are re-read when one of them changes: their size and modification time are the signature.
+	var sig strings.Builder
+	for _, path := range []string{g.ClientSecretFile, g.PrivateKeyFile, g.WebhookSecretFile} {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("github: %w", err)
+		}
+		fmt.Fprintf(&sig, "%s %d %d|", path, fi.Size(), fi.ModTime().UnixNano())
+	}
+	if a := s.cachedApp(sig.String()); a != nil {
+		return a, nil
+	}
 	secret := func(name, path string) (string, error) {
 		b, err := s.readFile(path)
 		if err != nil {
@@ -170,6 +209,7 @@ func (s *Service) operatorApp() (*App, error) {
 	if a.Key, err = ParsePrivateKey(pk); err != nil {
 		return nil, err
 	}
+	s.keepApp(sig.String(), a)
 	return a, nil
 }
 
