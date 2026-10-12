@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Studio's AI Assistant with a provider the operator brings, under real systemd units and the Studio build
-# under test (the `ai-e2e` job of studio.yml, which downloads the artifact its `build` job made):
+# under test (the `ai-e2e` job of studio.yml, which takes the artifact its `build` job made or an earlier run's):
 #
 #   sudo env "PATH=$PATH" SUPAVISE_BIN=/path/to/supavise-linux-amd64 \
 #     tests/linux/ai-smoke.sh --studio-artifact /path/to/supavise-studio-<tag>-p<N>-linux-amd64.tar.zst
