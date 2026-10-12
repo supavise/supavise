@@ -68,18 +68,30 @@ func (s *Service) loadSnapshot(ctx context.Context, repo string, installationID 
 		return nil, err
 	}
 	sn := &Snapshot{Repo: repo, SHA: sha, Dir: path.Join(workdir, "supabase"), svc: s, token: tok, cache: map[string][]byte{}, entries: map[string]treeEntry{}}
-	var ta treeAnswer
-	base := "/repos/" + escapeSegments(repo) + "/git/trees/"
-	if err := s.cl.do(ctx, tok, http.MethodGet, base+url.PathEscape(sha)+"?recursive=1", nil, &ta); err != nil {
+	// GitHub's documentation lets the trees API take a tree sha or a ref name; the commit names its tree.
+	var cm struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := s.cl.do(ctx, tok, http.MethodGet, "/repos/"+escapeSegments(repo)+"/git/commits/"+url.PathEscape(sha), nil, &cm); err != nil {
 		if IsStatus(err, http.StatusNotFound) || IsStatus(err, http.StatusUnprocessableEntity) {
 			return nil, fmt.Errorf("%w: commit %s of %s", ErrNotFound, short(sha), repo)
 		}
 		return nil, err
 	}
+	if cm.Tree.SHA == "" {
+		return nil, fmt.Errorf("github: commit %s of %s names no tree", short(sha), repo)
+	}
+	var ta treeAnswer
+	base := "/repos/" + escapeSegments(repo) + "/git/trees/"
+	if err := s.cl.do(ctx, tok, http.MethodGet, base+url.PathEscape(cm.Tree.SHA)+"?recursive=1", nil, &ta); err != nil {
+		return nil, err
+	}
 	prefix := sn.Dir + "/"
 	if ta.Truncated {
 		// The whole repository does not fit one answer: descend to the directory and list that.
-		if ta, err = s.subtree(ctx, tok, repo, sha, sn.Dir); err != nil {
+		if ta, err = s.subtree(ctx, tok, repo, cm.Tree.SHA, sn.Dir); err != nil {
 			return nil, err
 		}
 		prefix = ""
@@ -105,7 +117,7 @@ func (s *Service) loadSnapshot(ctx context.Context, repo string, installationID 
 	return sn, nil
 }
 
-// subtree reads the tree of a directory of the commit, recursively.
+// subtree reads the tree of a directory below the tree sha, recursively.
 func (s *Service) subtree(ctx context.Context, tok, repo, sha, dir string) (treeAnswer, error) {
 	base := "/repos/" + escapeSegments(repo) + "/git/trees/"
 	cur := sha
