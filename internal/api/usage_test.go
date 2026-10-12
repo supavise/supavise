@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -30,7 +31,9 @@ func (*sized) Forget(string)                            {}
 const (
 	usageRefTwo   = "bbbbbbbbbbbbbbbbbbbb"
 	usageRefOther = "cccccccccccccccccccc"
-	gb            = float64(1 << 30)
+	sizeGiB       = float64(1 << 30)
+	// decimalGB is the unit of the "usage" figure Studio prints as GB.
+	decimalGB = 1e9
 )
 
 func day(d int, bytes float64) metrics.Row {
@@ -61,10 +64,10 @@ func orgUsageFixture(t *testing.T, mx MetricsSource) *fixture {
 
 func sizes() *sized {
 	return &sized{days: map[string][]metrics.Row{
-		testRef:       {day(8, 4*gb), day(9, 6*gb), day(10, 5*gb)},
-		usageRefTwo:   {day(9, 2*gb), day(10, 2*gb)},
-		usageRefOther: {day(10, 100*gb)},
-		"system":      {day(10, 50*gb)},
+		testRef:       {day(8, 4*sizeGiB), day(9, 6*sizeGiB), day(10, 5*sizeGiB)},
+		usageRefTwo:   {day(9, 2*sizeGiB), day(10, 2*sizeGiB)},
+		usageRefOther: {day(10, 100*sizeGiB)},
+		"system":      {day(10, 50*sizeGiB)},
 	}}
 }
 
@@ -86,6 +89,9 @@ type usageBody struct {
 		} `json:"project_allocations"`
 	} `json:"usages"`
 }
+
+// nearly compares a figure of the answer, which is rounded to six decimals.
+func nearly(got, want float64) bool { return math.Abs(got-want) < 1e-6 }
 
 func decodeUsage(t *testing.T, rec interface {
 	Bytes() []byte
@@ -111,26 +117,35 @@ func TestOrgUsageReportsDatabaseSize(t *testing.T) {
 		t.Fatalf("usage = %s", rec.Body)
 	}
 	u := b.Usages[0]
-	// 5 GiB (the mean of 4, 6 and 5) and 2 GiB: 7 GiB. The other organization's and the system project's
-	// databases are not counted.
-	if u.Metric != "DATABASE_SIZE" || u.Usage != 7 || u.UsageOriginal != 7*gb || u.Cost != 0 || !u.AvailableInPlan || u.Capped || !u.Unlimited || u.PricingStrategy != "NONE" {
+	// 5 GiB (the mean of 4, 6 and 5) and 2 GiB: 7 GiB, which is 7.516 GB. The other organization's and the
+	// system project's databases are not counted. Only "usage" is in GB: "usage_original" and each
+	// allocation are in bytes, as Studio's tooltip (formatUsage divides by 1e9) and project rows read them.
+	if u.Metric != "DATABASE_SIZE" || !nearly(u.Usage, 7*sizeGiB/decimalGB) || u.UsageOriginal != 7*sizeGiB || u.Cost != 0 || !u.AvailableInPlan || u.Capped || !u.Unlimited || u.PricingStrategy != "NONE" {
 		t.Errorf("entry = %+v", u)
 	}
-	if len(u.ProjectAllocation) != 2 || u.ProjectAllocation[0].Ref != testRef || u.ProjectAllocation[0].Name != "First project" || u.ProjectAllocation[0].Usage != 5 ||
-		u.ProjectAllocation[1].Ref != usageRefTwo || u.ProjectAllocation[1].Usage != 2 {
+	if len(u.ProjectAllocation) != 2 || u.ProjectAllocation[0].Ref != testRef || u.ProjectAllocation[0].Name != "First project" || u.ProjectAllocation[0].Usage != 5*sizeGiB ||
+		u.ProjectAllocation[1].Ref != usageRefTwo || u.ProjectAllocation[1].Usage != 2*sizeGiB {
 		t.Errorf("allocations = %+v", u.ProjectAllocation)
+	}
+	// The tooltip's rows and its Total row use one unit, so the rows add up to usage_original.
+	var sum float64
+	for _, a := range u.ProjectAllocation {
+		sum += a.Usage
+	}
+	if sum != u.UsageOriginal {
+		t.Errorf("allocations add up to %v bytes, usage_original is %v", sum, u.UsageOriginal)
 	}
 
 	// One project of the organization.
 	rec = f.do("GET", "/platform/organizations/default/usage?project_ref="+usageRefTwo, nil)
 	b = decodeUsage(t, rec.Body)
-	if rec.Code != 200 || len(b.Usages) != 1 || b.Usages[0].Usage != 2 || len(b.Usages[0].ProjectAllocation) != 1 {
+	if rec.Code != 200 || len(b.Usages) != 1 || !nearly(b.Usages[0].Usage, 2*sizeGiB/decimalGB) || len(b.Usages[0].ProjectAllocation) != 1 || b.Usages[0].ProjectAllocation[0].Usage != 2*sizeGiB {
 		t.Errorf("one project: %d %s", rec.Code, rec.Body)
 	}
 	// A range: only the days inside it, as Studio sends it for a custom period.
 	rec = f.do("GET", "/platform/organizations/default/usage?start=2026-10-09T00:00:00.000Z&end=2026-10-10T00:00:00.000Z", nil)
 	b = decodeUsage(t, rec.Body)
-	if rec.Code != 200 || len(b.Usages) != 1 || b.Usages[0].Usage != 8 {
+	if rec.Code != 200 || len(b.Usages) != 1 || !nearly(b.Usages[0].Usage, 8*sizeGiB/decimalGB) {
 		t.Errorf("range: %d %s, want 6 + 2 GiB", rec.Code, rec.Body)
 	}
 }
@@ -195,13 +210,13 @@ func TestOrgUsageDaily(t *testing.T) {
 	want := []struct {
 		date  string
 		bytes float64
-	}{{"2026-10-08", 4 * gb}, {"2026-10-09", 8 * gb}, {"2026-10-10", 7 * gb}}
+	}{{"2026-10-08", 4 * sizeGiB}, {"2026-10-09", 8 * sizeGiB}, {"2026-10-10", 7 * sizeGiB}}
 	if len(got.Usages) != len(want) {
 		t.Fatalf("points = %s", rec.Body)
 	}
 	for i, w := range want {
 		g := got.Usages[i]
-		if g.Date != w.date || g.Metric != "DATABASE_SIZE" || g.UsageOriginal != w.bytes || g.Usage != w.bytes/gb || string(g.Breakdown) != "null" {
+		if g.Date != w.date || g.Metric != "DATABASE_SIZE" || g.UsageOriginal != w.bytes || !nearly(g.Usage, w.bytes/decimalGB) || string(g.Breakdown) != "null" {
 			t.Errorf("point %d = %+v, want %s %v bytes", i, g, w.date, w.bytes)
 		}
 	}
