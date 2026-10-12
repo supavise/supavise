@@ -176,7 +176,6 @@ system_up
 supavise fleet start || fail "fleet start"
 PSQL=$(ls -d "$SUPAVISE_STATE"/artifacts/postgres/*/bin/psql | head -1)
 reg() { sudo -u "$SUPAVISE_USER" "$PSQL" "host=$SUPAVISE_STATE/projects/system/postgres/sock port=5433 user=supabase_admin dbname=supavise" -Atc "$1" </dev/null; }
-reg "insert into supavise.organizations (slug, name) values ('$ORG2', 'Second')" >/dev/null || fail "making organization $ORG2"
 start_daemon
 
 log "Studio from the build under test"
@@ -195,6 +194,9 @@ CLAIM=$(supavise claim token | tr -d '[:space:]')
 [[ $(api POST /claim -H 'Content-Type: application/json' -o /dev/null -w '%{http_code}' --data-binary @- \
   <<<"{\"token\":\"$CLAIM\",\"email\":\"$OWNER_EMAIL\",\"password\":\"$PASSWORD\",\"organization_name\":\"$ORG_NAME\"}") == 201 ]] || fail "claim"
 unset CLAIM
+# The second organization comes after the claim: a claim makes its user Owner of the first organization there is, and
+# creates the one named in the request only when there is none.
+reg "insert into supavise.organizations (slug, name) values ('$ORG2', 'Second')" >/dev/null || fail "making organization $ORG2"
 JWT=$(api POST '/auth/v1/token?grant_type=password' -H 'Content-Type: application/json' --data-binary @- \
   <<<"{\"email\":\"$OWNER_EMAIL\",\"password\":\"$PASSWORD\"}" | json_get 'd["access_token"]') || fail "owner sign-in"
 OWNER_PAT=$(api POST /platform/profile/access-tokens -H @<(printf 'Authorization: Bearer %s\n' "$JWT") -H 'Content-Type: application/json' -d '{"name":"studio-crawl"}' | json_get 'd["token"]') || fail "owner PAT"
