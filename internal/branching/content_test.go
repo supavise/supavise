@@ -593,6 +593,150 @@ func TestMergeFailsBeforeRunningAnythingWhenBothSidesChangedAFunction(t *testing
 	}
 }
 
+// forgetFunctionBase leaves the branch the way an earlier release made it: no record of the Edge
+// Functions it started with (v0.3.x copied none and recorded nothing).
+func (c *contentHarness) forgetFunctionBase(ref string) {
+	c.t.Helper()
+	st := registry.BranchContentOf(c.reg)
+	base, err := st.GetBranchFunctionBase(context.Background(), ref)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	if err := st.PutBranchFunctionBase(context.Background(), ref, nil, sortedKeys(base)); err != nil {
+		c.t.Fatal(err)
+	}
+	if base, _ = st.GetBranchFunctionBase(context.Background(), ref); len(base) != 0 {
+		c.t.Fatalf("function base after forgetting it = %v", base)
+	}
+}
+
+func TestPushKeepsTheFunctionsOfABranchWithNoBaseUnlessForced(t *testing.T) {
+	c := newContentHarness(t, nil)
+	c.fns.put(parentRef, "send-email", "se1", 1)
+	c.fns.put(parentRef, "other", "o1", 1)
+	c.fns.put(parentRef, "same", "s1", 1)
+	b := c.create("one", nil)
+	c.forgetFunctionBase(b.Ref)
+	// On v0.3.0 the user deployed their own send-email to the branch while the parent got another one.
+	c.fns.put(b.Ref, "send-email", "se-branch", 2)
+	c.fns.put(parentRef, "send-email", "se-parent", 2)
+	c.fns.put(parentRef, "other", "o2", 2) // the parent changed it; the node cannot know the branch did not
+	c.fns.put(parentRef, "fresh", "f1", 1)
+
+	if _, err := c.svc.Push(context.Background(), b.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	got := c.wait(b.Ref)
+	c.mustState(got, registry.BranchFunctionsDeployed)
+	d, _ := c.fns.Digests(context.Background(), b.Ref)
+	if want := map[string]string{"send-email": "se-branch", "other": "o1", "same": "s1", "fresh": "f1"}; !reflect.DeepEqual(d, want) {
+		t.Fatalf("branch functions after the push = %v, want %v (a function with no base keeps the branch's copy)", d, want)
+	}
+	for _, want := range []string{"added fresh", "kept the branch's version of other, send-email", "no record of what the branch started with", "push with force takes the parent's"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail %q does not say %q", got.Detail, want)
+		}
+	}
+	if strings.Contains(got.Detail, "overwrote") || strings.Contains(got.Detail, "are gone") {
+		t.Errorf("detail = %q: nothing was overwritten", got.Detail)
+	}
+	// The functions that are kept stay unrecorded, so the next push says the same; the ones that agree
+	// (and the one it added) are recorded.
+	base, _ := registry.BranchContentOf(c.reg).GetBranchFunctionBase(context.Background(), b.Ref)
+	if want := map[string]string{"same": "s1", "fresh": "f1"}; !reflect.DeepEqual(base, want) {
+		t.Fatalf("function base after the push = %v, want %v", base, want)
+	}
+	c.svc.Push(context.Background(), b.Ref, ActionInput{})
+	if again := c.wait(b.Ref); !strings.Contains(again.Detail, "kept the branch's version of other, send-email") {
+		t.Fatalf("second push detail = %q", again.Detail)
+	}
+
+	// Forced, the parent's version wins and the run says the branch's is gone.
+	if _, err := c.svc.Push(context.Background(), b.Ref, ActionInput{Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	got = c.wait(b.Ref)
+	c.mustState(got, registry.BranchFunctionsDeployed)
+	d, _ = c.fns.Digests(context.Background(), b.Ref)
+	if want := map[string]string{"send-email": "se-parent", "other": "o2", "same": "s1", "fresh": "f1"}; !reflect.DeepEqual(d, want) {
+		t.Fatalf("branch functions after the forced push = %v, want %v", d, want)
+	}
+	if !strings.Contains(got.Detail, "send-email (the branch's version is gone") {
+		t.Fatalf("forced push detail = %q", got.Detail)
+	}
+	// Now every function is in step and recorded.
+	base, _ = registry.BranchContentOf(c.reg).GetBranchFunctionBase(context.Background(), b.Ref)
+	if want := map[string]string{"send-email": "se-parent", "other": "o2", "same": "s1", "fresh": "f1"}; !reflect.DeepEqual(base, want) {
+		t.Fatalf("function base after the forced push = %v, want %v", base, want)
+	}
+}
+
+func TestMergeStopsForAFunctionWithNoBaseAndOnlyForceDeploysIt(t *testing.T) {
+	c := newContentHarness(t, nil)
+	c.fns.put(parentRef, "send-email", "se1", 1)
+	c.fns.put(parentRef, "same", "s1", 1)
+	b := c.create("one", nil)
+	c.forgetFunctionBase(b.Ref)
+	c.fns.put(b.Ref, "send-email", "se-branch", 2)
+	c.fns.put(b.Ref, "branch-only", "bo1", 1) // the parent lacks it: no question who changed it
+	c.fns.put(parentRef, "send-email", "se-parent", 2)
+
+	if _, err := c.svc.Merge(context.Background(), b.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	got := c.wait(b.Ref)
+	c.mustState(got, registry.BranchMigrationsFailed)
+	for _, want := range []string{"send-email", "no record of what the branch started with", "push with force"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("detail %q does not say %q", got.Detail, want)
+		}
+	}
+	// A plain push does not move this function, so the message must not send the user there.
+	if strings.Contains(got.Detail, "update the branch (push)") {
+		t.Errorf("detail %q recommends a push that keeps the branch's copy", got.Detail)
+	}
+	if d, _ := c.fns.Digests(context.Background(), parentRef); d["send-email"] != "se-parent" || d["branch-only"] != "" {
+		t.Fatalf("a refused merge changed the parent: %v", d)
+	}
+
+	// Following the hint with a plain push changes nothing on the branch.
+	c.svc.Push(context.Background(), b.Ref, ActionInput{})
+	c.wait(b.Ref)
+	if d, _ := c.fns.Digests(context.Background(), b.Ref); d["send-email"] != "se-branch" {
+		t.Fatalf("a push replaced the branch's send-email: %v", d)
+	}
+
+	if _, err := c.svc.Merge(context.Background(), b.Ref, ActionInput{Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	c.mustState(c.wait(b.Ref), registry.BranchFunctionsDeployed)
+	d, _ := c.fns.Digests(context.Background(), parentRef)
+	if want := map[string]string{"send-email": "se-branch", "same": "s1", "branch-only": "bo1"}; !reflect.DeepEqual(d, want) {
+		t.Fatalf("parent functions after the forced merge = %v, want %v", d, want)
+	}
+}
+
+func TestMergeOfABranchWithNoFunctionBaseDeploysWhatNeedsNoGuess(t *testing.T) {
+	c := newContentHarness(t, nil)
+	c.fns.put(parentRef, "same", "s1", 1)
+	b := c.create("one", nil)
+	c.forgetFunctionBase(b.Ref)
+	c.fns.put(b.Ref, "branch-only", "bo1", 1)
+	if _, err := c.svc.Merge(context.Background(), b.Ref, ActionInput{}); err != nil {
+		t.Fatal(err)
+	}
+	got := c.wait(b.Ref)
+	c.mustState(got, registry.BranchFunctionsDeployed)
+	if d, _ := c.fns.Digests(context.Background(), parentRef); d["branch-only"] != "bo1" || d["same"] != "s1" {
+		t.Fatalf("parent functions = %v", d)
+	}
+	// What both sides have alike is recorded, so a later change is told apart.
+	base, _ := registry.BranchContentOf(c.reg).GetBranchFunctionBase(context.Background(), b.Ref)
+	if want := map[string]string{"same": "s1", "branch-only": "bo1"}; !reflect.DeepEqual(base, want) {
+		t.Fatalf("function base after the merge = %v, want %v", base, want)
+	}
+}
+
 // ---- settings and class -----------------------------------------------------------------------
 
 func TestBranchStartsOnTheParentsSettingsAndAReplayedClusterDoesNot(t *testing.T) {
