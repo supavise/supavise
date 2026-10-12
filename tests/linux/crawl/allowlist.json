@@ -3,7 +3,7 @@
  "stubs": [
   {
    "op": "POST /platform/auth/{ref}/validate/spam",
-   "reach": "static",
+   "reach": "crawl",
    "reason": "The node has no email spam-rule engine; the stub's empty rule list says that no rule matched, which is true here."
   },
   {
@@ -18,13 +18,13 @@
   },
   {
    "op": "GET /platform/database/{ref}/backups/downloadable-backups",
-   "reach": "static",
-   "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
+   "reach": "crawl",
+   "reason": "A node makes no downloadable backup, so the empty answer is true. Studio asks while a project restores and when a pause or a restore fails."
   },
   {
    "op": "POST /platform/database/{ref}/backups/enable-physical-backups",
    "reach": "static",
-   "reason": "The paused-project screen offers a backup download that this node does not make; the deadends lane of v0.4.0 answers with an honest refusal, and the entry goes with it."
+   "reason": "Studio posts it only from the read replica form, when physical backups are off; a node makes its base backups without this switch, so the acknowledgement stub stands."
   },
   {
    "op": "POST /platform/feedback/conversations/escalation",
@@ -103,8 +103,8 @@
   },
   {
    "op": "GET /platform/integrations/{slug}",
-   "reach": "static",
-   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+   "reach": "crawl",
+   "reason": "Studio asks for an organization's Vercel connections on its project list and on some project pages; Vercel is a hosted partner integration (integrations:vercel is in disabled_features), so a node has none and the empty list is true."
   },
   {
    "op": "* /platform/mcp",
@@ -118,13 +118,13 @@
   },
   {
    "op": "GET /platform/notifications",
-   "reach": "static",
-   "reason": "Studio's notification panel asks when it is opened; a node has no notifications, and the stub's empty answer says so."
+   "reach": "crawl",
+   "reason": "Studio's header Advisor button asks for notifications on every page; a node has no notifications, so the empty list is true."
   },
   {
    "op": "PATCH /platform/notifications",
    "reach": "static",
-   "reason": "Studio's notification panel asks on every page; a node has no notifications, and the stub's empty answer says so."
+   "reason": "Studio's Advisor panel patches the notifications it marks as seen when it opens; a node has none, so there is nothing to mark and the empty answer is true."
   },
   {
    "op": "POST /platform/organizations/cloud-marketplace",
@@ -168,7 +168,7 @@
   },
   {
    "op": "GET /platform/organizations/{slug}/apps",
-   "reach": "static",
+   "reach": "crawl",
    "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
   },
   {
@@ -178,7 +178,7 @@
   },
   {
    "op": "GET /platform/organizations/{slug}/apps/installations",
-   "reach": "static",
+   "reach": "crawl",
    "reason": "Organization creation, platform apps and subscription flows are hosted-only; a node has one organization per claim and no plans."
   },
   {
@@ -364,7 +364,7 @@
   {
    "op": "POST /platform/profile/audit-login",
    "reach": "crawl",
-   "reason": "Audit logs have no handler yet: the deadends lane of v0.4.0 records and lists them, and the entry goes with it."
+   "reason": "Studio posts the sign-in event after every sign-in; Supavise's audit log records the requests that change state and not sign-ins (auditSkip in internal/api/audit.go), so the acknowledgement stub stays."
   },
   {
    "op": "GET /platform/profile/scoped-access-tokens",
@@ -398,7 +398,7 @@
   },
   {
    "op": "GET /platform/projects/{ref}/analytics/log-drains",
-   "reach": "static",
+   "reach": "crawl",
    "reason": "Log drains need a log store, which a node does not have: profile.disabled_features holds project_settings:log_drains."
   },
   {
@@ -713,8 +713,8 @@
   },
   {
    "op": "GET /platform/stripe/invoices/overdue",
-   "reach": "static",
-   "reason": "A hosted partner integration: profile.disabled_features holds integrations:vercel and integrations:partners, and nothing on a node links to the others."
+   "reach": "crawl",
+   "reason": "Studio asks for overdue invoices on every page, before it checks billing:all; billing is off on a node, so there are none and the empty list is true."
   },
   {
    "op": "GET /platform/stripe/projects/provisioning/account_requests/{id}",
@@ -778,12 +778,12 @@
   },
   {
    "op": "GET /v1/projects/{ref}/config/auth/signing-keys",
-   "reach": "static",
+   "reach": "crawl",
    "reason": "Read-only mode, the signing key list and compute changes are answered with the empty state of a project that has none; Supavise signs with the legacy secret only (docs/reference/studio-platform-calls.md)."
   },
   {
    "op": "GET /v1/projects/{ref}/config/auth/third-party-auth",
-   "reach": "static",
+   "reach": "crawl",
    "reason": "Read-only mode, the signing key list and compute changes are answered with the empty state of a project that has none; Supavise signs with the legacy secret only (docs/reference/studio-platform-calls.md)."
   },
   {
@@ -803,7 +803,7 @@
   },
   {
    "op": "GET /v1/projects/{ref}/jit-access",
-   "reach": "static",
+   "reach": "crawl",
    "reason": "Just-in-time database access is a hosted feature; the stub answers the disabled state, and the pages that read it show it as off."
   },
   {
@@ -818,8 +818,8 @@
   },
   {
    "op": "POST /v1/projects/{ref}/network-bans/retrieve",
-   "reach": "static",
-   "reason": "Network restrictions are enforced by hosted infrastructure: profile.disabled_features holds database:network_restrictions."
+   "reach": "crawl",
+   "reason": "Studio's Advisor panel asks for the banned IPs on every project page; a node bans no IPs, so the empty list is true."
   },
   {
    "op": "GET /v1/projects/{ref}/network-restrictions",
@@ -865,6 +865,18 @@
    "status": 401,
    "reach": "crawl",
    "reason": "Studio asks for the feature flags before the session exists, on the sign-in page; the call is repeated once the session is there."
+  },
+  {
+   "op": "GET /platform/organizations/{slug}/sso",
+   "status": 404,
+   "reach": "crawl",
+   "reason": "An organization with no SSO provider answers 404 \"Failed to find an existing SSO Provider\", which Studio turns into \"no provider is set up\" and shows the page for that case."
+  },
+  {
+   "op": "GET /platform/integrations/github/authorization",
+   "status": 404,
+   "reach": "crawl",
+   "reason": "A server without a GitHub App answers 404 to everybody, and one with an App answers 404 to a user who has not authorized it. Studio's getGitHubAuthorization turns any error into \"not connected\", and patch 0007 hides the GitHub surfaces while there is no App."
   },
   {
    "op": "GET /v1/projects/{ref}/actions/{run_id}",
@@ -945,9 +957,15 @@
    "reason": "The switch is disabled, so Studio never sends the update; the refusal is for API clients."
   },
   {
+   "op": "GET /v1/projects/{ref}/custom-hostname",
+   "status": 400,
+   "reach": "crawl",
+   "reason": "A project with no custom hostname answers 400 \"Project does not have a custom hostname configuration\", as hosted does; Studio matches the message and shows the form to add a domain."
+  },
+  {
    "op": "GET /platform/storage/{ref}/archive",
    "status": 400,
-   "reach": "static",
+   "reach": "crawl",
    "reason": "The Download backups menu of a paused project asks for a Storage archive that a node does not make; the refusal ends Studio's polling and gives the reason."
   },
   {
@@ -967,25 +985,37 @@
    "status": 400,
    "reach": "static",
    "reason": "A dashboard account is identified by its email address, so Account > Preferences refuses to change it and names the commands that invite a new address and remove the old account."
+  },
+  {
+   "op": "POST /platform/pg-meta/{ref}/query",
+   "status": 503,
+   "reach": "static",
+   "reason": "SQL on a project that is not active yet answers 503 \"Project is not ready\". Studio opens the home of a branch the moment its Create branch dialog succeeds, while the branch is still coming up; only the create-branch-dialog probe reaches this, and whether Studio asks before the branch is healthy is a matter of timing, so the crawl cannot require it."
+  },
+  {
+   "op": "POST /platform/pg-meta/{ref}/query",
+   "status": 409,
+   "reach": "crawl",
+   "reason": "SQL on a project that its owner paused answers 409 \"Project is paused; restore it first\"; Studio shows its paused screen in place of the pages that query."
   }
  ],
  "dom": [
   {
    "route": "/project/[ref]/logs/*",
    "text": "Error fetching",
-   "reach": "static",
+   "reach": "crawl",
    "reason": "A node keeps no log store, so a log page shows the explicit error that points to `supavise logs`, which reads the journal; a stub that answered with an empty table would read as \"no errors\"."
   },
   {
    "route": "/project/[ref]/functions/[functionSlug]/logs",
    "text": "Error fetching",
-   "reach": "static",
+   "reach": "crawl",
    "reason": "The function's log page is a log query, which a node answers with the explicit error that points to `supavise logs`."
   },
   {
    "route": "/project/[ref]/functions/[functionSlug]/invocations",
    "text": "Error fetching",
-   "reach": "static",
+   "reach": "crawl",
    "reason": "The invocations list is a log query, which a node answers with the explicit error that points to `supavise logs`."
   },
   {
@@ -993,6 +1023,18 @@
    "text": "Error fetching",
    "reach": "static",
    "reason": "The Auth audit log page is a log query, which a node answers with the explicit error that points to `supavise logs`."
+  },
+  {
+   "route": "/project/[ref]/observability",
+   "text": "Failed to",
+   "reach": "crawl",
+   "reason": "The report cards are log queries, which a node answers with the explicit error that points to `supavise logs`; a card that drew an empty chart would read as \"no requests\"."
+  },
+  {
+   "route": "/project/[ref]/observability/storage",
+   "text": "Failed to",
+   "reach": "crawl",
+   "reason": "The report cards are log queries, which a node answers with the explicit error that points to `supavise logs`; a card that drew an empty chart would read as \"no requests\"."
   }
  ]
 }
