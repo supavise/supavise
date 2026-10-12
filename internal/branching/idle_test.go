@@ -93,6 +93,15 @@ func (ih *idleHarness) setDBIdle(ref string, d time.Duration) {
 	ih.dbIdle[ref] = d
 }
 
+// settle waits for the detached operations to end. WaitIdle returns when the branch's state is final,
+// which is before the operation's goroutine runs its last deferred call (end, which touches idle), so a
+// test that changes a field of the service that call reads waits here first. Nothing in production
+// changes those fields after New.
+func (ih *idleHarness) settle() {
+	ih.t.Helper()
+	ih.svc.wg.Wait()
+}
+
 func (ih *idleHarness) sweep() *IdleResult {
 	ih.t.Helper()
 	res, err := ih.svc.IdleSweep(context.Background())
@@ -285,6 +294,7 @@ func TestIdleSweepRespectsTheKnob(t *testing.T) {
 	// Without a view of the requests the service pauses nothing either.
 	ih = newIdleHarness(t, nil)
 	b = ih.create("a", nil)
+	ih.settle() // the create's goroutine marks the branch used as it ends, and reads the field below
 	ih.svc.activity = nil
 	ih.advance(1000 * time.Hour)
 	ih.sweep()
