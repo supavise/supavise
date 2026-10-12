@@ -580,8 +580,9 @@ func TestSoftDeleteAndRestore(t *testing.T) {
 	if err != nil || got.DeletionScheduledAt != nil {
 		t.Fatalf("restore: %+v %v", got, err)
 	}
-	if _, err := h.svc.Restore(ctx, b.Ref); !errors.Is(err, ErrConflict) {
-		t.Fatalf("restore twice: %v", err)
+	// Studio sends a second restore for the same click; it succeeds and changes nothing.
+	if again, err := h.svc.Restore(ctx, b.Ref); err != nil || again.DeletionScheduledAt != nil {
+		t.Fatalf("restore twice: %+v %v", again, err)
 	}
 	if _, err := h.svc.Delete(ctx, b.Ref, DeleteOptions{Schedule: true}); err != nil {
 		t.Fatal(err)
