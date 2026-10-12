@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 )
 
 // SizingSettings are the Postgres settings a project's compute class decides (they sit on the
@@ -53,11 +54,102 @@ func BranchExcluded(svc Service) []string {
 	return out
 }
 
+// smsProviders are the SMS providers GoTrue can send through: the settings of one are named
+// sms_<provider>_*.
+var smsProviders = []string{"messagebird", "textlocal", "twilio", "vonage"}
+
+// branchWithheld names the settings of svc that a branch never copies because they hold, or reach
+// the outside with, a credential of the parent. They are not host-bound or sizing (branchExcluded);
+// the branch's owner sets its own, as hosted keeps the secrets of each branch apart. A branch does
+// not get:
+//
+//   - every sealed secret (a setting of Secret kind): the SMTP password, the SMS providers' tokens
+//     and keys, the OAuth clients' secrets, the captcha secret, the hook secrets;
+//   - the connection a secret belongs to, so that no provider is left half set up: the SMTP host,
+//     port and user; the SMS provider choice and every sms_<provider>_* setting, identifiers
+//     included; the HTTP(S) hooks (uri and switch; a hook that runs a function in the branch's own
+//     database is kept); the switch of every external OAuth provider (the client id and the other
+//     provider settings stay); the captcha switch (the provider choice stays).
+//
+// Names that validation ties together go together: GoTrue refuses an enabled provider without its
+// secret, a captcha without its secret and an HTTP hook without its secrets, and a refused patch
+// would lose the branch's whole Auth copy.
+//
+// The names are those of the schema, whether the parent saved them or not; only the hooks look at
+// set, for the scheme of the hook's uri.
+func branchWithheld(svc Service, set Values) map[string]bool {
+	out := map[string]bool{}
+	sch, err := schemaOf(svc)
+	if err != nil {
+		return out
+	}
+	for _, f := range sch.Fields {
+		if f.Secret {
+			out[f.Name] = true
+		}
+	}
+	if svc != Auth {
+		return out
+	}
+	for _, n := range []string{"smtp_host", "smtp_port", "smtp_user", "sms_provider", "security_captcha_enabled"} {
+		out[n] = true
+	}
+	for _, f := range sch.Fields {
+		for _, p := range smsProviders {
+			if strings.HasPrefix(f.Name, "sms_"+p+"_") {
+				out[f.Name] = true
+			}
+		}
+	}
+	for _, p := range authProviders {
+		out["external_"+p.name+"_enabled"] = true
+	}
+	for _, h := range authHooks {
+		if uri, _ := set["hook_"+h+"_uri"].(string); uri != "" && !strings.HasPrefix(strings.ToLower(uri), "pg-functions:") {
+			out["hook_"+h+"_uri"], out["hook_"+h+"_enabled"] = true, true
+		}
+	}
+	return out
+}
+
+// BranchWithheld returns the names, sorted, of the settings in set that a branch does not copy from
+// its parent because they are credentials or reach the outside with one (branchWithheld).
+func BranchWithheld(svc Service, set Values) []string {
+	var out []string
+	for name := range branchWithheld(svc, set) {
+		if _, ok := set[name]; ok {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// BranchWithheldNames returns every name of svc a branch can be denied, sorted: what BranchWithheld
+// gives for a parent that has saved all of them, every hook pointing at an HTTPS URL. The docs list
+// it, and a test keeps the list in step with the schema.
+func BranchWithheldNames(svc Service) []string {
+	every := Values{}
+	for _, h := range authHooks {
+		every["hook_"+h+"_uri"] = "https://example.com/hook"
+	}
+	var out []string
+	for name := range branchWithheld(svc, every) {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // BranchSettings returns the part of a service's saved settings (plain values, secrets in the clear)
-// that a branch starts with: everything but BranchExcluded. The Pooler service is not copied at all.
+// that a branch starts with: everything but BranchExcluded and BranchWithheld. The Pooler service is
+// not copied at all.
 func BranchSettings(svc Service, set Values) map[string]any {
 	skip := map[string]bool{}
 	for _, n := range branchExcluded[svc] {
+		skip[n] = true
+	}
+	for n := range branchWithheld(svc, set) {
 		skip[n] = true
 	}
 	out := map[string]any{}
@@ -73,25 +165,51 @@ func BranchSettings(svc Service, set Values) map[string]any {
 type BranchCopy struct {
 	// Copied are the names of the settings written to the branch.
 	Copied map[Service][]string
+	// Withheld are the names of the settings the parent had saved and the branch did not get because
+	// they are credentials or reach the outside with one (BranchWithheld). The branch's owner sets its
+	// own. The values are never listed.
+	Withheld map[Service][]string
+	// Deferred are the names of the settings the branch does not get yet: PostgREST's db_schema for a
+	// branch whose database starts empty (BranchCopyOptions.Seeded false). The caller applies them once
+	// the schemas exist.
+	Deferred map[Service][]string
 	// Failed are services whose settings the branch refused (the branch keeps its defaults for them).
 	Failed map[Service]string
 }
 
+// BranchCopyOptions say what the branch being made starts from.
+type BranchCopyOptions struct {
+	// Seeded is true when the branch's database is a copy of the parent's data (a clone or a base
+	// backup): the schemas the parent exposes through PostgREST exist when PostgREST first starts. When
+	// it is false the database starts empty, PostgREST would not start on a schema that does not exist
+	// yet, and db_schema is deferred (BranchCopy.Deferred).
+	Seeded bool
+}
+
 // CopyForBranch gives the project `to` (a branch that has just been registered) the saved settings
-// of the project `from` (its parent), except the ones a branch never copies (BranchExcluded).
-// Secrets are copied too (SMTP password, OAuth client secrets, hook secrets, the captcha secret):
-// sealing does not bind a value to a project, and a branch of a project with data cannot reach the
-// outside to use them (its egress is denied). The values go through the same validation as a save, so
-// a combination GoTrue would refuse at start is not written; a service whose copy is refused keeps
-// its defaults and is named in Failed.
-func (m *Manager) CopyForBranch(ctx context.Context, from, to string) (*BranchCopy, error) {
-	res := &BranchCopy{Copied: map[Service][]string{}, Failed: map[Service]string{}}
+// of the project `from` (its parent), except the ones a branch never copies: what identifies,
+// addresses or sizes the parent (BranchExcluded) and the credentials and the connections that carry
+// them (BranchWithheld: the SMTP password, the SMS and OAuth secrets, the hook secrets, the captcha
+// secret). A branch has egress to the outside in its GoTrue even when its database has none, and a
+// sealed value binds to no project, so a copied credential would let the branch send mail or SMS or
+// call a hook as the parent. The values go through the same validation as a save, so a combination
+// GoTrue would refuse at start is not written; a service whose copy is refused keeps its defaults and
+// is named in Failed.
+func (m *Manager) CopyForBranch(ctx context.Context, from, to string, o BranchCopyOptions) (*BranchCopy, error) {
+	res := &BranchCopy{Copied: map[Service][]string{}, Withheld: map[Service][]string{}, Deferred: map[Service][]string{}, Failed: map[Service]string{}}
 	for _, svc := range branchServices {
 		st, err := m.Get(ctx, from, svc)
 		if err != nil {
 			return res, err
 		}
+		if w := BranchWithheld(svc, st.Set); len(w) > 0 {
+			res.Withheld[svc] = w
+		}
 		patch := BranchSettings(svc, st.Set)
+		if _, ok := patch[PostgRESTExposedSchemas]; svc == PostgREST && ok && !o.Seeded {
+			delete(patch, PostgRESTExposedSchemas)
+			res.Deferred[svc] = []string{PostgRESTExposedSchemas}
+		}
 		if len(patch) == 0 {
 			continue
 		}
@@ -110,3 +228,6 @@ func (m *Manager) CopyForBranch(ctx context.Context, from, to string) (*BranchCo
 	}
 	return res, nil
 }
+
+// PostgRESTExposedSchemas is the name of PostgREST's setting for the schemas the Data API exposes.
+const PostgRESTExposedSchemas = "db_schema"

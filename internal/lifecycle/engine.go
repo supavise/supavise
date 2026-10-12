@@ -132,6 +132,9 @@ type Engine struct {
 	// recordBudget is how long what a replica's restart left to record may take to write (zero: the
 	// budget of a cleanup); tests shorten it.
 	recordBudget time.Duration
+	// schemaProbe answers which of names are not schemas of ref's database; nil asks the database
+	// (probeSchemas). Tests replace it.
+	schemaProbe func(ctx context.Context, ref string, names []string) ([]string, error)
 }
 
 var _ Manager = (*Engine)(nil)

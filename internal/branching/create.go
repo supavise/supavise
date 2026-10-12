@@ -302,12 +302,22 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		}
 	}
 	started := s.now()
+	// A branch that starts with an empty database cannot start PostgREST on the schemas the parent
+	// exposes: they exist after the build. Its list is held back until then (schemas.go).
+	var held *schemaHold
+	if method == MethodSchema {
+		held = s.holdSchemas(ctx, j)
+		defer func() { s.keepHeld(ctx, j, held) }()
+	}
 	s.phase(ctx, StepHealth)
 	switch method {
 	case MethodSchema:
 		req.Keys = j.keys
 		if _, err := s.eng.Create(ctx, req); err != nil {
 			return "", err
+		}
+		if held != nil {
+			held.created = true
 		}
 	case MethodBackup:
 		if err := s.createFromBackup(ctx, j); err != nil {
@@ -365,6 +375,11 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 		detail = fmt.Sprintf("data cloned by %s in %d ms (%d files, %s apparent, %s of new disk, %d WAL segments)",
 			method, stats.TotalMillis, stats.Files, lifecycle.HumanBytes(stats.Bytes), lifecycle.HumanBytes(stats.ExtraDiskByte), stats.WALSegments)
 	}
+	if method == MethodSchema {
+		if err := s.exposeHeld(ctx, j, held); err != nil {
+			return "", err
+		}
+	}
 	if (!j.recreate || j.in.WithData) && j.in.SchemaSource == nil {
 		// What the branch and its parent agree on now: the diff later shows what the branch changed
 		// from here. A reset of a schema-only branch keeps the base it has; one that copies data again
@@ -410,6 +425,12 @@ func (s *Service) doCreate(ctx context.Context, j *createJob) (string, error) {
 	}
 	if egress != "" {
 		payload["egress"] = egress
+	}
+	if held != nil && len(held.exposed) > 0 {
+		payload["exposed_schemas"] = held.exposed
+	}
+	if held != nil && len(held.missing) > 0 {
+		payload["unexposed_schemas"] = held.missing
 	}
 	s.event(ctx, j.parent.Ref, "branch.created", payload)
 	s.event(ctx, j.ref, "branch.created", payload)

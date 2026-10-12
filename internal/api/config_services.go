@@ -129,22 +129,9 @@ func (s *Server) checkExposedSchemas(ctx context.Context, p *registry.Project, p
 	}
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	conn, err := pgx.Connect(cctx, dsn)
+	missing, err := lifecycle.MissingSchemas(cctx, dsn, want)
 	if err != nil {
 		return nil
-	}
-	defer conn.Close(context.WithoutCancel(ctx))
-	rows, err := conn.Query(cctx, `select n from unnest($1::text[]) as n where not exists (select 1 from pg_namespace where nspname = n)`, want)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var missing []string
-	for rows.Next() {
-		var n string
-		if rows.Scan(&n) == nil {
-			missing = append(missing, n)
-		}
 	}
 	if len(missing) > 0 {
 		return errf(http.StatusBadRequest, "db_schema names a schema that does not exist in the database: %s", strings.Join(missing, ", "))

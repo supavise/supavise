@@ -25,7 +25,9 @@
 #   - Edge Functions are copied at create with their digest, version, update time and verify_jwt; secrets are the
 #     create body's alone; a push overwrites the branch's copy; a merge deploys the branch's new and changed
 #     functions, deletes nothing, and fails with a reason when both sides changed one;
-#   - saved settings (a provider, MFA, sign-up, a Postgres setting) reach the branch while site_url stays its own;
+#   - saved settings (a provider's client id, MFA, sign-up, a Postgres setting) reach the branch while site_url stays its own, and
+#     the credentials do not (the OAuth secret and its switch, the SMTP server, user and password); a schema the parent exposes is
+#     exposed by an empty branch after its replay made the schema;
 #   - a branch with data does not inherit the parent's sizing lines from postgresql.auto.conf.
 #
 # The stack has no Storage service, so the policy on a managed table is one on auth.users; settings-smoke.sh
@@ -382,18 +384,35 @@ if fb:
 
 # ==== 6. settings =====================================================================================================
 code, out = call("PATCH", f"/v1/projects/{PARENT}/config/auth", {"site_url": "https://parent.example.com", "external_github_enabled": True,
-                 "external_github_client_id": "gh-id", "external_github_secret": "gh-secret", "mfa_max_enrolled_factors": 7, "disable_signup": True})
+                 "external_github_client_id": "gh-id", "external_github_secret": "gh-secret", "mfa_max_enrolled_factors": 7, "disable_signup": True,
+                 "smtp_host": "127.0.0.1", "smtp_port": "2525", "smtp_user": "mailer", "smtp_pass": "smtp-secret",
+                 "smtp_admin_email": "ops@example.com", "smtp_sender_name": "Parent"})
 check(code == 200, f"auth settings save on the parent ({code})")
 call("PUT", f"/v1/projects/{PARENT}/config/database/postgres", {"statement_timeout": "7s"})
+# The parent exposes a schema one of its migrations made. An empty branch cannot start PostgREST on it, so it
+# starts on the default schemas and exposes the list once the replay has made the schema.
+code, _ = call("POST", f"/v1/projects/{PARENT}/database/migrations", {"name": "exposed_schema",
+               "query": "create schema if not exists exposed_x authorization postgres; grant usage on schema exposed_x to anon, authenticated, service_role"})
+check(code == 200, f"a migration that makes a schema applies on the parent ({code})")
+code, out = call("PATCH", f"/v1/projects/{PARENT}/postgrest", {"db_schema": "public,graphql_public,exposed_x"})
+check(code == 200, f"the parent exposes the schema ({code} {out})")
 sb = new_branch(f"cfg-{tag}")
 if sb:
     code, cfg = call("GET", f"/v1/projects/{sb['project_ref']}/config/auth")
-    check(code == 200 and cfg["external_github_enabled"] is True and cfg["external_github_client_id"] == "gh-id" and cfg["mfa_max_enrolled_factors"] == 7 and cfg["disable_signup"] is True,
-          "the branch starts with the parent's provider, MFA and sign-up settings")
+    check(code == 200 and cfg["external_github_client_id"] == "gh-id" and cfg["mfa_max_enrolled_factors"] == 7 and cfg["disable_signup"] is True,
+          "the branch starts with the parent's provider id, MFA and sign-up settings")
     check(cfg["site_url"] != "https://parent.example.com", f"site_url stays the branch's default ({cfg['site_url']})")
-    check(not cfg.get("external_github_secret") or cfg["external_github_secret"] != "gh-secret", "the secret is not shown")
+    # No credential comes along, and no provider is left half set up: the branch sends no mail and the provider is off.
+    pcode, pcfg = call("GET", f"/v1/projects/{PARENT}/config/auth")
+    check(cfg.get("external_github_enabled") is not True, f"the OAuth provider stays off without its secret ({cfg.get('external_github_enabled')})")
+    check(cfg.get("external_github_secret") != "gh-secret" and cfg.get("external_github_secret") != pcfg.get("external_github_secret"), "the parent's OAuth secret is not on the branch")
+    check(not cfg.get("smtp_host") and not cfg.get("smtp_user") and not cfg.get("smtp_pass"), "the branch has no SMTP server, user or password of the parent's")
+    check(cfg.get("smtp_admin_email") == "ops@example.com" and cfg.get("smtp_sender_name") == "Parent", "and keeps the sender's address and name")
     code, pg = call("GET", f"/v1/projects/{sb['project_ref']}/config/database/postgres")
     check(code == 200 and pg.get("statement_timeout") == "7s", f"a non-sizing Postgres setting was copied ({pg.get('statement_timeout')})")
+    code, rest = call("GET", f"/v1/projects/{sb['project_ref']}/postgrest")
+    check(code == 200 and rest.get("db_schema") == "public,graphql_public,exposed_x", f"the branch exposes the parent's schemas once they exist ({rest})")
+    check(int(sql(sb["project_ref"], "select count(*) n from pg_namespace where nspname = 'exposed_x'")[0]["n"]) == 1, "and the schema is there")
 
 # ==== 7. a branch with data ===================================================================================================
 for q in ("alter system set work_mem = '97MB'", "alter system set statement_timeout = '13s'", "select pg_reload_conf()"):
