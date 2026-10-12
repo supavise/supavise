@@ -221,7 +221,16 @@ func (s *Service) Configured(ctx context.Context) bool {
 	}
 	_, err := s.App(ctx)
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
-		s.log.Warn("the GitHub App is configured but cannot be used", "err", err)
+		// The profile asks on every page: say it once a minute.
+		s.filesMu.Lock()
+		due := s.now().Sub(s.warned) >= time.Minute
+		if due {
+			s.warned = s.now()
+		}
+		s.filesMu.Unlock()
+		if due {
+			s.log.Warn("the GitHub App is configured but cannot be used", "err", err)
+		}
 	}
 	return err == nil
 }

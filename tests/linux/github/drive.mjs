@@ -183,6 +183,7 @@ async function main() {
   let c1 = st.checks.find((c) => c.head_sha === 'sha-1' && c.name === 'Supabase Preview')
   check(c1 && c1.status === 'completed' && c1.conclusion === 'success', 'the check run "Supabase Preview" completed with success')
   check(c1 && /\| migrate \| Success \|/.test(c1.output.summary || ''), 'the check run carries the step table')
+  check(c1 && detail.check_run_id === c1.id, `the action run carries the id of the check run (${detail.check_run_id} and ${c1?.id})`)
   let cm = st.comments.filter((c) => c.pr === 12)
   check(cm.length === 1 && cm[0].body.includes('supavise-preview'), 'one comment is on the pull request')
 

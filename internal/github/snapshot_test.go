@@ -219,3 +219,16 @@ func TestMatchGlobsOfConfigToml(t *testing.T) {
 		}
 	}
 }
+
+func TestPathsThatCouldEscapeASandboxAreNotRead(t *testing.T) {
+	for p, ok := range map[string]bool{"functions/a/index.ts": true, "a": true, "": false, "/etc/passwd": false, "../x": false, "a/../b": false, "a/./b": false, "a//b": false, "a\\b": false, "a\x00b": false} {
+		if safeRel(p) != ok {
+			t.Errorf("safeRel(%q) = %v", p, !ok)
+		}
+	}
+	h := newHarness(t)
+	sn := snapshotOf(t, h, "s1", map[string]string{"supabase/ok.sql": "x", "supabase/a/../b.sql": "y", "supabase/c\\d.sql": "z"})
+	if !sn.Has("ok.sql") || sn.Has("a/../b.sql") || sn.Has("c\\d.sql") {
+		t.Fatalf("entries = %v", sn.Files(""))
+	}
+}

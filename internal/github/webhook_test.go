@@ -98,6 +98,24 @@ func TestWebhookIsRateLimited(t *testing.T) {
 	}
 }
 
+func TestAFloodOfForgeriesDoesNotUseUpTheAllowanceOfRealDeliveries(t *testing.T) {
+	h := newHarness(t)
+	body := []byte(`{}`)
+	refused := 0
+	for i := 0; i < 600; i++ {
+		res := h.svc.HandleWebhook(context.Background(), Delivery{Event: "ping", ID: "f", Signature: "sha256=00", Body: body})
+		if res.Status == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Fatal("600 forgeries in a burst were all answered")
+	}
+	if res := h.svc.HandleWebhook(context.Background(), Delivery{Event: "ping", ID: "real", Signature: h.sign(body), Body: body}); res.Status != http.StatusOK {
+		t.Fatalf("a real delivery after the flood: %+v", res)
+	}
+}
+
 func TestPullRequestOpenedCreatesAPreviewBranchBuiltFromTheRepository(t *testing.T) {
 	h := newHarness(t)
 	h.gh.setCommit("sha-1", repoFiles(nil))

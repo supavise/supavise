@@ -94,6 +94,9 @@ func (s *Service) loadSnapshot(ctx context.Context, repo string, installationID 
 			}
 			e.Path = strings.TrimPrefix(e.Path, prefix)
 		}
+		if !safeRel(e.Path) {
+			continue // git does not allow such a name; a file that claims one is not read
+		}
 		sn.entries[e.Path] = e
 	}
 	if len(sn.entries) == 0 {
@@ -130,6 +133,20 @@ func (s *Service) subtree(ctx context.Context, tok, repo, sha, dir string) (tree
 		return ta, fmt.Errorf("github: the supabase directory of %s is too large to list", repo)
 	}
 	return ta, nil
+}
+
+// safeRel reports whether a path from a tree is a plain relative path: no "..", no leading slash, no
+// backslash or control character. The paths become file names in a bundler's sandbox.
+func safeRel(p string) bool {
+	if p == "" || strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\\x00\r\n") {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." || seg == "." || seg == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func short(sha string) string {
