@@ -166,10 +166,11 @@ func TestServeLifecycle(t *testing.T) {
 	if _, err := c.Exec(ctx, `
 		create table public.items (id int primary key, name text);
 		insert into public.items select g, 'row ' || g from generate_series(1, 50) g;
+		grant select on public.items to anon; -- new tables need a grant for the Data API (v0.3.0 defaults, as hosted)
 		create schema supabase_migrations;
 		create table supabase_migrations.schema_migrations (version text not null primary key, statements text[], name text);
 		insert into supabase_migrations.schema_migrations values
-		  ('20260101000000', array['create table if not exists public.items (id int primary key, name text)'], 'items')`); err != nil {
+		  ('20260101000000', array['create table if not exists public.items (id int primary key, name text)', 'grant select on public.items to anon'], 'items')`); err != nil {
 		t.Fatal(err)
 	}
 	c.Close(ctx)
