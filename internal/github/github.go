@@ -133,6 +133,9 @@ type Service struct {
 	// files caches the operator's App files by modification time (app.go).
 	filesMu sync.Mutex
 	files   map[string]cachedFile
+	// app is the parsed App, kept while appSig (what it was made from) stays the same.
+	app    *App
+	appSig string
 
 	// tokens caches installation tokens (client_app.go).
 	tokMu  sync.Mutex

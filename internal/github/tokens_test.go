@@ -100,12 +100,33 @@ func TestATokenGitHubRefusesEndsTheAuthorization(t *testing.T) {
 	_, _ = h.svc.Authorize(ctx, "u1", "good-code")
 	h.gh.mu.Lock()
 	h.gh.userToken = "ghu_revoked_on_github"
+	h.gh.refreshToken = "revoked-too"
 	h.gh.mu.Unlock()
 	if _, _, err := h.svc.Repositories(ctx, "u1"); !errors.Is(err, ErrNotAuthorized) {
 		t.Fatalf("a revoked token: %v", err)
 	}
 	if _, err := h.svc.Authorization(ctx, "u1"); !errors.Is(err, ErrNotAuthorized) {
 		t.Fatal("the authorization survived a 401")
+	}
+}
+
+func TestATokenThatExpiredEarlyIsRefreshedAndTheCallRepeated(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	_, _ = h.svc.Authorize(ctx, "u1", "good-code")
+	// GitHub forgets the access token before our clock says it expires (a revoked or early-expired token).
+	h.gh.mu.Lock()
+	h.gh.userToken = "ghu_expired_early"
+	h.gh.mu.Unlock()
+	repos, _, err := h.svc.Repositories(ctx, "u1")
+	if err != nil {
+		t.Fatalf("repositories after an early expiry: %v", err)
+	}
+	if len(repos) != 1 || h.gh.refreshed != 1 {
+		t.Fatalf("repos %v, refreshed %d", repos, h.gh.refreshed)
+	}
+	if _, err := h.svc.Authorization(ctx, "u1"); err != nil {
+		t.Fatalf("the authorization was lost: %v", err)
 	}
 }
 
