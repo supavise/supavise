@@ -18,6 +18,16 @@ func missingTable(err error) bool {
 	return errors.As(err, &pe) && pe.Code == "42P01"
 }
 
+// missingColumn reports whether err says a column is not there (SQLSTATE 42703): the registry has not run
+// the migration that adds it. Migration 1550 (organizations.opt_in_tags) is the one column v0.4.0 adds to a
+// table that older reads select from, and withOrgCols (postgres.go) falls back without it. The tables of
+// the lanes are guarded with missingTable, and the columns they add to tables of their own
+// (github_branch_links.seeded_at) come with the table's reads in github_store.go.
+func missingColumn(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "42703"
+}
+
 func (r *Postgres) SetPause(ctx context.Context, ref, reason string, at time.Time) error {
 	return affected(r.pool.Exec(ctx, `
 		insert into supavise.project_pause (ref, reason, paused_at)
