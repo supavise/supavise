@@ -164,6 +164,25 @@ func affected(tag pgconn.CommandTag, err error) error {
 
 const orgCols = `id, slug, name, created_at, opt_in_tags`
 
+// orgColsBase is orgCols for a registry that has not run migration 1550 (no opt_in_tags column): the
+// organization has no saved tags. See withOrgCols.
+const orgColsBase = `id, slug, name, created_at, '{}'::text[]`
+
+// withOrgCols runs fn with the organization column list, and again with orgColsBase when the registry
+// has no opt_in_tags column (SQLSTATE 42703). Reading an organization is on the way of a base backup
+// (backup.projectMeta), of a follower's proxy and of `supavise orgs list`, and a registry can be a
+// release behind the binary that reads it: a daemon that reads before its migrations ran, a follower
+// whose leader has not upgraded yet (the version window allows a minor of difference), a rollback to
+// the release before 1550. fn runs whole each time, so the retry also covers an error that comes up
+// only when the rows are read.
+func withOrgCols[T any](fn func(cols string) (T, error)) (T, error) {
+	v, err := fn(orgCols)
+	if missingColumn(err) {
+		return fn(orgColsBase)
+	}
+	return v, err
+}
+
 func scanOrg(row pgx.Row) (*Organization, error) {
 	var o Organization
 	if err := row.Scan(&o.ID, &o.Slug, &o.Name, &o.CreatedAt, &o.OptInTags); err != nil {
@@ -176,35 +195,47 @@ func scanOrg(row pgx.Row) (*Organization, error) {
 }
 
 func (r *Postgres) CreateOrganization(ctx context.Context, slug, name string) (*Organization, error) {
-	return scanOrg(r.pool.QueryRow(ctx,
-		`insert into supavise.organizations (slug, name) values ($1, $2) returning `+orgCols, slug, name))
+	return withOrgCols(func(cols string) (*Organization, error) {
+		return scanOrg(r.pool.QueryRow(ctx,
+			`insert into supavise.organizations (slug, name) values ($1, $2) returning `+cols, slug, name))
+	})
 }
 
 func (r *Postgres) GetOrganization(ctx context.Context, slug string) (*Organization, error) {
-	return scanOrg(r.pool.QueryRow(ctx, `select `+orgCols+` from supavise.organizations where slug = $1`, slug))
+	return withOrgCols(func(cols string) (*Organization, error) {
+		return scanOrg(r.pool.QueryRow(ctx, `select `+cols+` from supavise.organizations where slug = $1`, slug))
+	})
 }
 
 func (r *Postgres) GetOrganizationByID(ctx context.Context, id int64) (*Organization, error) {
-	return scanOrg(r.pool.QueryRow(ctx, `select `+orgCols+` from supavise.organizations where id = $1`, id))
+	return withOrgCols(func(cols string) (*Organization, error) {
+		return scanOrg(r.pool.QueryRow(ctx, `select `+cols+` from supavise.organizations where id = $1`, id))
+	})
 }
 
 func (r *Postgres) ListOrganizations(ctx context.Context) ([]Organization, error) {
-	rows, err := r.pool.Query(ctx, `select `+orgCols+` from supavise.organizations order by id`)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Organization, error) {
-		o, err := scanOrg(row)
+	return withOrgCols(func(cols string) ([]Organization, error) {
+		rows, err := r.pool.Query(ctx, `select `+cols+` from supavise.organizations order by id`)
 		if err != nil {
-			return Organization{}, err
+			return nil, err
 		}
-		return *o, nil
+		return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Organization, error) {
+			o, err := scanOrg(row)
+			if err != nil {
+				return Organization{}, err
+			}
+			return *o, nil
+		})
 	})
 }
 
 func (r *Postgres) UpdateOrganization(ctx context.Context, o *Organization) error {
-	// A nil OptInTags is NULL here and leaves the saved tags alone.
-	return affected(r.pool.Exec(ctx, `update supavise.organizations set slug = $2, name = $3, opt_in_tags = coalesce($4::text[], opt_in_tags) where id = $1`,
+	if o.OptInTags == nil {
+		// A rename leaves the saved tags alone and does not name the column, so it also works on a
+		// registry that has not run migration 1550.
+		return affected(r.pool.Exec(ctx, `update supavise.organizations set slug = $2, name = $3 where id = $1`, o.ID, o.Slug, o.Name))
+	}
+	return affected(r.pool.Exec(ctx, `update supavise.organizations set slug = $2, name = $3, opt_in_tags = $4::text[] where id = $1`,
 		o.ID, o.Slug, o.Name, o.OptInTags))
 }
 
