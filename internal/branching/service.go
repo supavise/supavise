@@ -132,9 +132,9 @@ type Service struct {
 	// restoreMu serializes Restore: Studio sends a restore twice per click (its menu item calls the
 	// mutation from both onSelect and onClick), and the second must find the first's result.
 	restoreMu sync.Mutex
-	wg       sync.WaitGroup
-	base     context.Context
-	stop     context.CancelFunc
+	wg        sync.WaitGroup
+	base      context.Context
+	stop      context.CancelFunc
 }
 
 // New builds the service. It connects to nothing.
