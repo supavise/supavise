@@ -9,15 +9,24 @@ that serves the platform build itself may have no route to cdnjs, and
 its code editors then stay on a spinner. The assets are in
 public/monaco-editor of every build, which is where the self-hosted
 build already loads them from.
+
+The path is absolute (the origin of the page, then the base path).
+Monaco starts its editor worker from a blob: URL and hands it the base
+of vs, from which the worker fetches the language services; a blob: URL
+is no base for a relative URL, so with a relative path the HTML and
+TypeScript workers failed with "Failed to parse URL from
+/monaco-editor/vs/language/html/htmlWorker.js" and the Auth email
+template, Edge Function and Database function editors lost validation
+and completion.
 ---
- apps/studio/lib/configure-monaco-loader.ts | 11 +++++++----
- 1 file changed, 7 insertions(+), 4 deletions(-)
+ apps/studio/lib/configure-monaco-loader.ts | 17 ++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
 
 diff --git a/apps/studio/lib/configure-monaco-loader.ts b/apps/studio/lib/configure-monaco-loader.ts
-index fefbd0f3..5fae89ec 100644
+index fefbd0f3..33246ee1 100644
 --- a/apps/studio/lib/configure-monaco-loader.ts
 +++ b/apps/studio/lib/configure-monaco-loader.ts
-@@ -1,19 +1,22 @@
+@@ -1,19 +1,28 @@
  import { loader } from '@monaco-editor/react'
  
 -import { BASE_PATH, IS_PLATFORM } from '@/lib/constants'
@@ -31,6 +40,12 @@ index fefbd0f3..5fae89ec 100644
 +// serving scripts to the dashboard): the editors of the Auth email templates, the Logs explorer and the SQL and
 +// function editors stayed on a spinner. So the platform build serves them from the public folder too.
 +//
++// [Supavise] The path is absolute. Monaco starts its editor worker from a blob: URL and passes it the base of
++// `vs`, from which the worker loads the language services (htmlWorker.js, tsWorker.js, cssWorker.js,
++// jsonWorker.js). A blob: URL is no base for a relative URL, so a relative path ended in "Failed to parse URL
++// from /monaco-editor/vs/language/html/htmlWorker.js" and the HTML and TypeScript editors lost their validation
++// and completion.
++//
  // Shared by both runtime entry points — `pages/_app.tsx` (Next) and
  // `routes/__root.tsx` (TanStack) — so the asset path can't drift between them.
  export function configureMonacoLoader() {
@@ -40,7 +55,7 @@ index fefbd0f3..5fae89ec 100644
 -        vs: IS_PLATFORM
 -          ? 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs'
 -          : `${BASE_PATH}/monaco-editor/vs`,
-+        vs: `${BASE_PATH}/monaco-editor/vs`,
++        vs: `${window.location.origin}${BASE_PATH}/monaco-editor/vs`,
        },
      })
    }
