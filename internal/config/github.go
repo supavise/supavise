@@ -35,6 +35,25 @@ type GitHub struct {
 	// default: the author of a pull request chooses the SQL and the function code that runs on the
 	// branch, and anyone can open a pull request from a fork of a public repository.
 	AllowForks bool `toml:"allow_forks"`
+
+	// MaxConcurrentBuilds is how many preview branches the node builds at once: each build reads
+	// the repository and creates or migrates a Postgres cluster. Further builds wait their turn,
+	// and a newer commit of a pull request replaces the one that waits. 0 means 3.
+	MaxConcurrentBuilds int `toml:"max_concurrent_builds"`
+}
+
+// DefaultGitHubBuilds is MaxConcurrentBuilds when the section leaves it out.
+const DefaultGitHubBuilds = 3
+
+// MaxGitHubBuilds is the most MaxConcurrentBuilds may be.
+const MaxGitHubBuilds = 32
+
+// Builds returns how many preview branches the node builds at once.
+func (g GitHub) Builds() int {
+	if g.MaxConcurrentBuilds <= 0 {
+		return DefaultGitHubBuilds
+	}
+	return g.MaxConcurrentBuilds
 }
 
 // Default origins of GitHub.
@@ -63,6 +82,9 @@ func (g GitHub) Web() string {
 }
 
 func (g GitHub) validate() error {
+	if g.MaxConcurrentBuilds < 0 || g.MaxConcurrentBuilds > MaxGitHubBuilds {
+		return fmt.Errorf("config: github.max_concurrent_builds %d: want 0 (the default, %d) to %d", g.MaxConcurrentBuilds, DefaultGitHubBuilds, MaxGitHubBuilds)
+	}
 	for name, v := range map[string]string{"api_url": g.APIURL, "web_url": g.WebURL} {
 		if v == "" {
 			continue
