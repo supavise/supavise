@@ -130,7 +130,7 @@ func (s *Service) DeployProduction(ctx context.Context, projectRef string) (stri
 	}, func() {
 		// A newer deployment replaced this one before it started (or the service is stopping): the run
 		// made for it ends here and does not stay open.
-		run.Finish(errors.New("replaced by a newer deployment before it started"))
+		run.Finish(branching.ErrRunSuperseded)
 	})
 	return run.ID(), nil
 }

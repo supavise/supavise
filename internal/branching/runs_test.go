@@ -737,6 +737,64 @@ func TestDefaultBranchFailureEndsWithTheBranch(t *testing.T) {
 	}
 }
 
+// The deployments of the production Git branch (internal/github) are runs listed under the project
+// itself, so the default branch reads them like merges: a deployment in progress is running, a failed
+// one is failed until a newer run supersedes it, and one that never began (a newer deployment replaced
+// it while it waited) is not a failure.
+func TestDefaultBranchFollowsTheDeploymentsOfItsGitBranch(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	def := func() *Branch {
+		t.Helper()
+		b, err := h.svc.Resolve(ctx, parentRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	start := func() *Run {
+		t.Helper()
+		r, err := h.svc.StartRun(ctx, "deploy", parentRef, parentRef, parentRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if got := def().State; got != registry.BranchMigrationsPassed {
+		t.Fatalf("before any run = %s", got)
+	}
+	r1 := start()
+	if b := def(); b.State != registry.BranchRunningMigration || !strings.HasPrefix(b.Detail, "deploying") || strings.Contains(b.Detail, "merging") {
+		t.Fatalf("a deployment in progress = %s %q", b.State, b.Detail)
+	}
+	r1.Step(StepMigrate).Fail(errors.New("syntax error"))
+	if b := def(); b.State != registry.BranchMigrationsFailed || b.Detail != "migrate: syntax error" {
+		t.Fatalf("a failed deployment = %s %q (the run is failed and the check run is red)", b.State, b.Detail)
+	}
+	r2 := start()
+	r2.Step(StepDeploy).Fail(errors.New("bundle failed"))
+	if b := def(); b.State != registry.BranchFunctionsFailed || !strings.Contains(b.Detail, "bundle failed") {
+		t.Fatalf("a deployment that failed in its deploy step = %s %q", b.State, b.Detail)
+	}
+	r3 := start()
+	r3.Finish(nil)
+	if got := def().State; got != registry.BranchFunctionsDeployed {
+		t.Fatalf("after a deployment that worked = %s", got)
+	}
+	// A deployment that was replaced before it began says nothing about production.
+	start().Finish(ErrRunSuperseded)
+	if got := def().State; got != registry.BranchFunctionsDeployed {
+		t.Fatalf("after a superseded deployment = %s", got)
+	}
+	// A failure under a deployment that was replaced is still the failure.
+	r5 := start()
+	r5.Step(StepMigrate).Fail(errors.New("lock timeout"))
+	start().Finish(ErrRunSuperseded)
+	if b := def(); b.State != registry.BranchMigrationsFailed || b.Detail != "migrate: lock timeout" {
+		t.Fatalf("a superseded run hid the failure below it: %s %q", b.State, b.Detail)
+	}
+}
+
 // While a run deploys the functions the branch reads MIGRATIONS_PASSED, which alone is also how a
 // branch at rest looks: another process (the CLI, the sweeper of a second daemon) sees the run.
 func TestADeployingBranchIsBusyForOtherProcesses(t *testing.T) {

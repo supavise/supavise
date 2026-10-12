@@ -122,6 +122,10 @@ func (s *Service) beginRun(ctx context.Context, ref, op, ownerRef, parentRef str
 	return r, nil
 }
 
+// ErrRunSuperseded is the error a caller ends a run with when newer work replaced it before it began:
+// the run is closed, and the default branch does not read it as a failure.
+var ErrRunSuperseded = errors.New("replaced by a newer deployment before it started")
+
 // StartRun records a run that the caller drives itself, step by step with Run.Step and Run.Phase,
 // and ends with Run.Finish: the Git flow of a pull request, which starts clone and configure too.
 // All seven steps start CREATED. The service does not touch the branch's status or tell its
