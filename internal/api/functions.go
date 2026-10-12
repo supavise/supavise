@@ -313,36 +313,9 @@ func (s *Server) deployFunction(w http.ResponseWriter, r *http.Request) error {
 	if !slugRe.MatchString(slug) {
 		return errf(http.StatusBadRequest, "Invalid function slug")
 	}
-	entry, _ := cleanFilePath(meta.EntrypointPath)
-	f := &Function{Ref: p.Ref, Slug: slug, Name: cmp.Or(meta.Name, slug), Status: "ACTIVE",
-		VerifyJWT: meta.VerifyJWT == nil || *meta.VerifyJWT, EntrypointPath: entry}
-	if meta.ImportMapPath != "" {
-		f.ImportMapPath, _ = cleanFilePath(meta.ImportMapPath)
-	}
-	if s.fnHook != nil {
-		// A node that runs Edge Functions serves bundles only (see internal/functions: a
-		// function run from source files could import other projects' files), so the sources
-		// are bundled in a sandbox first and stored together with the bundle.
-		if !hasFile(files, entry) {
-			return errf(http.StatusBadRequest, "The entrypoint %q is not among the uploaded files", entry)
-		}
-		var static []string
-		for _, sp := range meta.StaticPatterns {
-			if clean, ok := cleanFilePath(sp); ok {
-				static = append(static, clean)
-			}
-		}
-		bundled, err := s.bundleSources(r.Context(), SourceBundle{Ref: p.Ref, Slug: slug, Files: files,
-			Entrypoint: entry, ImportMap: f.ImportMapPath, StaticPatterns: static})
-		if err != nil {
-			return err
-		}
-		files = bundleStoredFiles(files, bundled)
-	}
-	if err := s.store.UpsertFunction(r.Context(), f, files); err != nil {
-		return err
-	}
-	if err := s.functionsChanged(r.Context(), p.Ref); err != nil {
+	f, err := s.storeSources(r.Context(), p.Ref, sourceUpload{Slug: slug, Name: meta.Name, VerifyJWT: meta.VerifyJWT == nil || *meta.VerifyJWT,
+		Entrypoint: meta.EntrypointPath, ImportMap: meta.ImportMapPath, Static: meta.StaticPatterns, Files: files})
+	if err != nil {
 		return err
 	}
 	out, err := s.fnResponse(r.Context(), f)
@@ -351,6 +324,53 @@ func (s *Server) deployFunction(w http.ResponseWriter, r *http.Request) error {
 	}
 	writeJSON(w, http.StatusCreated, out)
 	return nil
+}
+
+// sourceUpload is a function's sources as an upload or a repository gives them.
+type sourceUpload struct {
+	Slug, Name string
+	VerifyJWT  bool
+	// Entrypoint and ImportMap are paths among Files (the import map may be empty).
+	Entrypoint, ImportMap string
+	Static                []string
+	Files                 []FunctionFile
+}
+
+// storeSources stores the sources of a function. A node that runs Edge Functions serves bundles
+// only (see internal/functions: a function run from source files could import other projects'
+// files), so the sources are bundled in a sandbox first and stored together with the bundle. It
+// tells the runtime afterwards.
+func (s *Server) storeSources(ctx context.Context, ref string, u sourceUpload) (*Function, error) {
+	entry, _ := cleanFilePath(u.Entrypoint)
+	f := &Function{Ref: ref, Slug: u.Slug, Name: cmp.Or(u.Name, u.Slug), Status: "ACTIVE", VerifyJWT: u.VerifyJWT, EntrypointPath: entry}
+	if u.ImportMap != "" {
+		f.ImportMapPath, _ = cleanFilePath(u.ImportMap)
+	}
+	files := u.Files
+	if s.fnHook != nil {
+		if !hasFile(files, entry) {
+			return nil, errf(http.StatusBadRequest, "The entrypoint %q is not among the uploaded files", entry)
+		}
+		var static []string
+		for _, sp := range u.Static {
+			if clean, ok := cleanFilePath(sp); ok {
+				static = append(static, clean)
+			}
+		}
+		bundled, err := s.bundleSources(ctx, SourceBundle{Ref: ref, Slug: u.Slug, Files: files,
+			Entrypoint: entry, ImportMap: f.ImportMapPath, StaticPatterns: static})
+		if err != nil {
+			return nil, err
+		}
+		files = bundleStoredFiles(files, bundled)
+	}
+	if err := s.store.UpsertFunction(ctx, f, files); err != nil {
+		return nil, err
+	}
+	if err := s.functionsChanged(ctx, ref); err != nil {
+		return nil, err
+	}
+	return f, nil
 }
 
 func hasFile(files []FunctionFile, p string) bool {

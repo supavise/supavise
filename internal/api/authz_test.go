@@ -395,7 +395,7 @@ func TestRouteTableCoversTheSpecs(t *testing.T) {
 
 // userWritePaths are the writes open to every signed-in user: their own profile, tokens,
 // telemetry and feedback, and the invitation they hold the token of.
-var userWritePaths = regexp.MustCompile(`^/(platform/(profile|cli/login|notifications|telemetry|feedback|support|reset-password|update-email|signup|organizations/(preview-creation|onboarding-survey|\{slug\}/members/invitations/\{token\}))|v1/oauth)`)
+var userWritePaths = regexp.MustCompile(`^/(platform/(profile|cli/login|notifications|telemetry|feedback|support|reset-password|update-email|signup|integrations/github/authorization|organizations/(preview-creation|onboarding-survey|\{slug\}/members/invitations/\{token\}))|v1/oauth|hooks/github)`)
 
 func allowedUserWrite(path string) bool { return userWritePaths.MatchString(path) }
 
@@ -476,8 +476,9 @@ func TestImplementedRoutesOpenToEveryUserAreAllowlisted(t *testing.T) {
 	// feedback form answers every user with the same refusal (unsupported.go).
 	// The resource warnings are a list too: they name only the projects the caller can see. Updating the
 	// address of the caller's own account is refused with a reason (unsupported.go), and the ConfigCat flag
-	// document is the same for everyone and needs no sign-in (configcat.go).
-	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/platform/feedback/send$|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/platform/telemetry/feature-flags$|/v1/oauth/|/platform/update-email$|/configuration-files/)`)
+	// document is the same for everyone and needs no sign-in (configcat.go). The GitHub App's manifest page
+	// and its callback carry a one-time state and the webhook a signature (github_integration.go).
+	open := regexp.MustCompile(`^(/platform/(profile|cli/login)(/|$)|/platform/feedback/send$|/v1/profile$|/(platform|v1)/(organizations|projects)$|/(platform|v1)/projects/available-regions$|/platform/projects-resource-warnings$|/platform/organizations/\{slug\}/members/invitations/\{token\}$|/platform/telemetry/feature-flags$|/v1/oauth/|/platform/update-email$|/configuration-files/|/platform/integrations/github/(authorization|repositories)|/supavise/v1/github/app/|/hooks/github$)`)
 	for key := range newFixture(t).srv.implemented() {
 		m, p, _ := strings.Cut(key, " ")
 		if n := routeNeed(m, p); n.kind == needAny && !open.MatchString(p) {

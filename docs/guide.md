@@ -7,6 +7,7 @@ This guide picks up after the install in the [README](../README.md#get-started).
   - [New tables need a grant](#new-tables-need-a-grant)
 - [Use the Supabase CLI](#use-the-supabase-cli)
 - [Give an agent or a preview its own branch](#give-an-agent-or-a-preview-its-own-branch)
+- [Build a preview branch from every pull request](#build-a-preview-branch-from-every-pull-request)
 - [Connect an AI tool to a project](#connect-an-ai-tool-to-a-project)
 - [Use the AI Assistant](#use-the-ai-assistant)
 - [Check a project with the advisors](#check-a-project-with-the-advisors)
@@ -151,6 +152,21 @@ Creating a branch, updating it from its parent, merging it into the parent and r
 - **On the node.** `supavise branches runs <branch>` lists the runs, `supavise branches logs <branch> [run-id]` prints a log, and `supavise branches get <branch>` prints why the last operation failed. Through the API the same data is `GET /v1/projects/<ref>/actions`, `.../actions/<run-id>` and `.../actions/<run-id>/logs`.
 - **A notification.** `supabase branches update <branch> --notify-url https://example.com/hook --project-ref <ref>` makes the node `POST` to that URL when a run ends. The body is the one Supabase documents (`type: "run.completed"`, `data.action_run` with the steps in lowercase and, after a failure, `failure`), plus a `supavise` object with the branch and the outcome. The call carries the [Standard Webhooks](https://www.standardwebhooks.com) headers `webhook-id`, `webhook-timestamp` and `webhook-signature`; verify them with the secret `supavise branches notify-secret` prints (`--rotate` replaces it). The node refuses to call private addresses unless `allow_private_notify_urls` is set in `[branching]`.
 - **Merge requests.** **Close merge request** in Studio clears the branch's review mark, and a successful merge clears it too, whether it came from Studio, the CLI or the MCP server.
+
+## Build a preview branch from every pull request
+
+A connected GitHub repository gets a preview branch for each pull request, built from the repository's `supabase` directory (migrations, seed, `config.toml`, Edge Functions) and deleted when the pull request closes. Until the server has a GitHub App of its own, the dashboard shows no GitHub buttons: Supabase's App cannot send webhooks to your server.
+
+1. Create the App once, on the leader, and open the link it prints in a browser that is signed in to GitHub:
+
+   ```bash
+   sudo -u supavise supavise github app create --owner my-org   # leave --owner out for your own account
+   ```
+
+2. Install the App on your repositories (the page that confirms the App has the link).
+3. In Studio, open the project's **Settings**, **Integrations**, **GitHub**, authorize, choose the repository and the working directory, and turn on **Automatic branching**. **Deploy to production** with a production branch makes a push to that branch apply the repository's migrations and Edge Functions to the project.
+
+`https://api.<domain>/hooks/github` must be reachable from GitHub. Open a pull request: the branch appears on the Branches page with its pull request number, the pull request gets a check named `Supabase Preview` and one comment that the server keeps up to date, and each new commit applies only the migrations the branch lacks (the seed runs once, in the first run that gets past the migrations; a branch that paused while the pull request sat idle is resumed first). `[github] max_concurrent_builds` bounds how many branches the node builds at once, and a branch inherits the project's SMTP and OAuth secrets, except where the pull request's `config.toml` points them at another host. [github-integration.md](github-integration.md) has the options, what `config.toml` sections apply (and the `[remotes]` block that configures a persistent branch), the fork policy and an Actions workflow for a server GitHub cannot reach.
 
 ## Connect an AI tool to a project
 
@@ -521,6 +537,7 @@ Studio is the real hosted dashboard. Where a page depends on something a server 
 - **Audit logs.** **Organization settings > Audit Logs** lists the requests that changed something in the organization: when, who (email, and whether it was a dashboard session, a personal access token or an OAuth app), from which address, the route and the status. **Account > Audit Logs** lists your own. Reads, the SQL editor, saved snippets, log queries and other calls that only read are not recorded, and neither are request bodies, so a password or a key never lands in the log. A refused request is recorded too; it is in the organization's log when the person who made it is a member, and in their own Account page otherwise. On a cluster, the address of a request that went through a follower can read `127.0.0.1` when Edge Functions are enabled. The server keeps 90 days (`audit_retention_days` under `[api]` in `/etc/supavise/config.toml`); a page covers at most 62 days and shows the newest 5000 events. A member who is scoped to one project cannot open the organization's page.
 - **Image transformation.** Storage's **Enable image transformation** switch is refused with a message, because the server does not run the image service (imgproxy) that resizes images. Leave `[storage.image_transformation] enabled` at `false` in the CLI's `config.toml`: the default file says `true`, and `supabase config push` then stops at that setting with the message.
 - **Settings the server cannot honor.** **Auth > Multi-factor > Allow low AAL** and similar switches that have no equivalent in a node's GoTrue are refused with a message when you change them, where they used to save and snap back. **Auth > Audit Logs > Disable Postgres writes** is kept and applied to GoTrue. **Auth > Emails > Reset to default** restores the default template and keeps the rest of the settings. **Auth > Users > Remove MFA factors** removes the user's factors. Changing the email address of a dashboard account, deleting an account, the organization's legal documents, the transfer of a project and the storage archive and backup download of a paused project are hidden or refused with a message; **Organization settings > SSO** is shown.
+- **GitHub.** The GitHub card, the Connections row of your account preferences and "Sync with a GitHub branch" appear only when the server has a GitHub App (see [Build a preview branch from every pull request](#build-a-preview-branch-from-every-pull-request)).
 - **Features a server cannot offer.** Iceberg and vector buckets in Storage are hidden. SSL enforcement shows as unavailable. Adding a Third-party Auth provider, creating JWT signing keys and sending feedback are refused with a message. A project signs its tokens with the legacy JWT secret: change it under **Project settings**, **JWT keys**, **Legacy JWT secret**, or rotate it together with the API keys with `sudo -u supavise supavise projects rotate-keys <ref>`. The read replicas of the project take the new secret too (see "Do read replicas follow a change of the JWT secret?").
 
 ## Read replicas and failover

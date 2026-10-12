@@ -450,6 +450,8 @@ func TestStudioEnvCoversPlaceholders(t *testing.T) {
 	env := studioEnv(cfg, false)
 	// Placeholders a node sets only when it differs from the build's default.
 	optional := map[string]bool{"NEXT_PUBLIC_HCAPTCHA_SITE_KEY": true, "NEXT_PUBLIC_DISABLED_FEATURES": true}
+	// The GitHub App's name and client id come with the App (githubStudioEnv); the build's default is a name that belongs to nobody.
+	optional["NEXT_PUBLIC_GITHUB_INTEGRATION_APP_NAME"], optional["NEXT_PUBLIC_GITHUB_INTEGRATION_CLIENT_ID"] = true, true
 	seen := map[string]bool{}
 	for _, v := range doc.Values {
 		seen[v.Env] = true

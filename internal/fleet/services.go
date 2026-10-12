@@ -106,6 +106,7 @@ func (m *Manager) spec(svc string, c *creds, follower bool) (units.Spec, error) 
 			m.log.Warn("Studio starts without its AI provider", "error", err)
 		}
 		maps.Copy(s.Env, ai)
+		maps.Copy(s.Env, githubStudioEnv(c.githubApp))
 	case config.SvcEdgeRuntime:
 		return edgeRuntimeSpec(cfg, s)
 	default:
