@@ -99,11 +99,13 @@ function normalizeUrl(env, raw, kind) {
  */
 export function resolveValues(spec, env) {
   const errors = []
-  // A node that serves its API over http (tls.mode=off) has project hosts over http and ws too, and a
-  // CSP source for https:// does not allow them, so the browser blocked every call to a project API
+  // A node whose project APIs are served over http (tls.mode=off) has project hosts over http and ws,
+  // and a CSP source for https:// does not allow them, so the browser blocked every call to a project API
   // (custom providers, OAuth apps, the Realtime inspector, the function tester). The scheme of the
-  // API URL is the scheme of the node's public listeners.
-  const plainHTTP = /^http:\/\//i.test(String(env.NEXT_PUBLIC_API_URL ?? '').trim())
+  // project URLs is the one NIMBUS_PROD_PROJECTS_URL names (the unit sets it from the node's TLS mode),
+  // and the scheme of the API URL when it is not set.
+  const projectsUrl = String(env.NIMBUS_PROD_PROJECTS_URL ?? '').trim() || String(env.NEXT_PUBLIC_API_URL ?? '').trim()
+  const plainHTTP = /^http:\/\//i.test(projectsUrl)
   const rules = [] // { from, to } or { from, hosts } for csp-hosts
   const resolved = {} // env name -> value actually used (for the child process env)
 
