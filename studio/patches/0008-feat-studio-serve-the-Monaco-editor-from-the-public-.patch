@@ -1,0 +1,49 @@
+From 9fb7032a339baa90f78418b217fe8669fe446dd4 Mon Sep 17 00:00:00 2001
+From: supavise <supavise@users.noreply.invalid>
+Date: Sun, 11 Oct 2026 12:08:00 -0700
+Subject: [PATCH 08/11] feat(studio): serve the Monaco editor from the
+ public folder in the platform build
+
+Upstream loads Monaco from cdnjs when IS_PLATFORM is true. A deployment
+that serves the platform build itself may have no route to cdnjs, and
+its code editors then stay on a spinner. The assets are in
+public/monaco-editor of every build, which is where the self-hosted
+build already loads them from.
+---
+ apps/studio/lib/configure-monaco-loader.ts | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/apps/studio/lib/configure-monaco-loader.ts b/apps/studio/lib/configure-monaco-loader.ts
+index fefbd0f3..5fae89ec 100644
+--- a/apps/studio/lib/configure-monaco-loader.ts
++++ b/apps/studio/lib/configure-monaco-loader.ts
+@@ -1,19 +1,22 @@
+ import { loader } from '@monaco-editor/react'
+ 
+-import { BASE_PATH, IS_PLATFORM } from '@/lib/constants'
++import { BASE_PATH } from '@/lib/constants'
+ 
+ // [Ivan] Serve the Monaco assets locally from the public folder for self-hosted deployments, but use the CDN for
+ // the platform deployment to reduce bundle size and improve caching.
+ //
++// [Supavise] Every build ships the assets in its public folder, and a platform build that a deployment serves
++// itself runs where cdnjs may be unreachable (a network without internet access) or unwelcome (a third party
++// serving scripts to the dashboard): the editors of the Auth email templates, the Logs explorer and the SQL and
++// function editors stayed on a spinner. So the platform build serves them from the public folder too.
++//
+ // Shared by both runtime entry points — `pages/_app.tsx` (Next) and
+ // `routes/__root.tsx` (TanStack) — so the asset path can't drift between them.
+ export function configureMonacoLoader() {
+   if (typeof window !== 'undefined') {
+     loader.config({
+       paths: {
+-        vs: IS_PLATFORM
+-          ? 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs'
+-          : `${BASE_PATH}/monaco-editor/vs`,
++        vs: `${BASE_PATH}/monaco-editor/vs`,
+       },
+     })
+   }
+-- 
+2.50.1 (Apple Git-155)
+

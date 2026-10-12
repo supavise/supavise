@@ -99,6 +99,13 @@ function normalizeUrl(env, raw, kind) {
  */
 export function resolveValues(spec, env) {
   const errors = []
+  // A node whose project APIs are served over http (tls.mode=off) has project hosts over http and ws,
+  // and a CSP source for https:// does not allow them, so the browser blocked every call to a project API
+  // (custom providers, OAuth apps, the Realtime inspector, the function tester). The scheme of the
+  // project URLs is the one NIMBUS_PROD_PROJECTS_URL names (the unit sets it from the node's TLS mode),
+  // and the scheme of the API URL when it is not set.
+  const projectsUrl = String(env.NIMBUS_PROD_PROJECTS_URL ?? '').trim() || String(env.NEXT_PUBLIC_API_URL ?? '').trim()
+  const plainHTTP = /^http:\/\//i.test(projectsUrl)
   const rules = [] // { from, to } or { from, hosts } for csp-hosts
   const resolved = {} // env name -> value actually used (for the child process env)
 
@@ -125,7 +132,7 @@ export function resolveValues(spec, env) {
         for (const h of hosts) {
           if (!HOST_SOURCE.test(h)) throw new Error(`${v.env}: not a host source: ${JSON.stringify(h)}`)
         }
-        rules.push({ from: v.placeholder, hosts, scheme: true })
+        rules.push({ from: v.placeholder, hosts, plainHTTP })
         resolved[v.env] = hosts.join(',')
       } else {
         if (!SAFE_VALUE.test(raw)) throw new Error(`${v.env}: contains characters that are not allowed`)
@@ -153,7 +160,8 @@ export function makeRewriter(rules) {
     else plain.set(r.from, r.to)
   }
   const parts = []
-  // csp-hosts placeholders only ever appear behind a scheme (https:// or wss://).
+  // csp-hosts placeholders only ever appear behind a scheme (https:// or wss://). On a plain-http node
+  // each host is also allowed over http:// and ws://.
   for (const r of csp) parts.push(`(?:https|wss)://${escapeRegExp(r.from)}`)
   for (const from of [...plain.keys()].sort((a, b) => b.length - a.length)) {
     parts.push(escapeRegExp(from))
@@ -165,7 +173,8 @@ export function makeRewriter(rules) {
       if (plain.has(match)) return plain.get(match)
       const scheme = match.slice(0, match.indexOf('://'))
       const rule = csp.find((r) => match.endsWith(`://${r.from}`))
-      return rule.hosts.map((h) => `${scheme}://${h}`).join(' ')
+      const schemes = rule.plainHTTP ? [scheme, scheme === 'wss' ? 'ws' : 'http'] : [scheme]
+      return rule.hosts.flatMap((h) => schemes.map((sc) => `${sc}://${h}`)).join(' ')
     })
 }
 

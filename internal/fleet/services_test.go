@@ -305,6 +305,11 @@ func TestStudioEnv(t *testing.T) {
 	if env["NEXT_PUBLIC_MCP_URL"] != "http://api.example.com/mcp" || env["SUPAVISE_PROJECT_URL_TEMPLATE"] != "http://{ref}.api.example.com" {
 		t.Errorf("without TLS the MCP URL and the project URL template must be http: %v", env)
 	}
+	// The Edge Function tester (patch 0010) takes the scheme from these, and the project URLs of a node
+	// without TLS are http.
+	if env["NIMBUS_PROD_PROJECTS_URL"] != "http://*.api.example.com" || env["NIMBUS_PROD_PROJECTS_URL_WS"] != "ws://*.api.example.com" {
+		t.Errorf("without TLS the hosts of project APIs must be http and ws: %v", env)
+	}
 	// The runtime substitution only accepts this alphabet (studio/README.md).
 	safe := regexp.MustCompile(`^[A-Za-z0-9._~:/@%+,*=-]*$`)
 	for k, v := range env {
