@@ -165,6 +165,23 @@ test('a plain-http node also allows its project hosts over http and ws', () => {
   }
 })
 
+test('the scheme of the project hosts decides, when the unit names it', () => {
+  const csp = (env) => {
+    const { root, app } = packaged()
+    try {
+      applyRuntimeConfig(root, { ...goodEnv, CSP_EXTRA_PROJECT_HOSTS: '*.api.example.com', ...env })
+      return JSON.parse(readFileSync(join(app, 'apps/studio/.next/routes-manifest.json'), 'utf8')).headers[0].value
+    } finally {
+      rmSync(root, { recursive: true })
+    }
+  }
+  // An https API URL in front of http project hosts (tls.mode=off behind a terminator).
+  assert.ok(csp({ NIMBUS_PROD_PROJECTS_URL: 'http://*.api.example.com' }).includes('http://*.api.example.com'))
+  // And the other way round.
+  const strict = csp({ NEXT_PUBLIC_API_URL: 'http://api.example.com', NIMBUS_PROD_PROJECTS_URL: 'https://*.api.example.com' })
+  assert.ok(!strict.includes('http://*.api.example.com') && !strict.includes('ws://*.api.example.com'), strict)
+})
+
 test('an https node does not allow its project hosts over http or ws', () => {
   const { root, app } = packaged()
   try {
