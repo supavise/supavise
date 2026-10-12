@@ -651,7 +651,8 @@ func TestBackupListInTheSecondAfterTheFirstBackup(t *testing.T) {
 		t.Fatalf("%v", m)
 	}
 	rec = b.post("/v1/projects/"+testRef+"/database/backups/restore-pitr", map[string]any{"recovery_time_target_unix": base.Unix()})
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "no backup") {
+	// The backup is listed, so the answer must not say there is none.
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "ended less than a second ago") || strings.Contains(rec.Body.String(), "no backup") {
 		t.Fatalf("pitr in that second: %d %s", rec.Code, rec.Body)
 	}
 }
