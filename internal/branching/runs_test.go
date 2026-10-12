@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/supavise/supavise/internal/lifecycle"
 	"github.com/supavise/supavise/internal/registry"
 	"github.com/supavise/supavise/internal/secrets"
 )
@@ -795,8 +796,9 @@ func TestWakeForDriveResumesAPausedBranchAndLeavesARunningOneAlone(t *testing.T)
 	if got, err := h.svc.WakeForDrive(ctx, b.Ref); err != nil || got.Ref != b.Ref || len(h.eng.resumed) != 0 {
 		t.Fatalf("wake of a running branch = %+v, %v, resumes %v", got, err, h.eng.resumed)
 	}
-	// Drive refuses a paused branch; WakeForDrive brings it back and Drive then takes it.
-	if err := h.reg.SetProjectStatus(ctx, b.Ref, registry.StatusInactive); err != nil {
+	// Drive refuses a paused branch; WakeForDrive brings back one the node paused for idleness and Drive
+	// then takes it (a branch its owner paused stays paused: wake_test.go).
+	if err := h.eng.PauseWith(ctx, b.Ref, lifecycle.PauseOptions{Reason: registry.PauseIdle}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.svc.Drive(ctx, b.Ref, "push", func(context.Context, *Run) (string, error) { return "", nil }); !errors.Is(err, ErrConflict) {

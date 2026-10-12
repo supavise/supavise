@@ -52,6 +52,9 @@ func (s *Service) end(ref string, r *run) {
 		delete(s.runs, ref)
 	}
 	s.mu.Unlock()
+	// The end of an operation is use: a branch that was busy for longer than the idle period is not paused
+	// the moment it is free.
+	s.touchIdle(ref)
 	r.once.Do(func() { close(r.done) })
 }
 

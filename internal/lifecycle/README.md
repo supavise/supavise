@@ -128,10 +128,12 @@ new function stays callable through `rpc`, on hosted too. Objects that exist kee
   was saved while paused and no unit renders: Postgres settings (`ALTER SYSTEM`) and Storage and
   Realtime tenant settings. A failure there is recorded as `project.config_apply_failed` and does not
   undo the resume. `PauseWith(ctx, ref, PauseOptions{Reason})` is `Pause` with a reason: `Pause` is the
-  owner's (reason empty), and the branching service pauses a branch nobody uses with `registry.PauseIdle`.
-  The reason is written to `supavise.project_pause` (`registry.LifecycleStore`, migration 1520) **before** the
-  status leaves `ACTIVE_*`, so whoever sees `INACTIVE` finds it; an idle pause is refused when the registry
-  cannot record it (the branch would never wake), an owner's pause goes ahead and only logs. `Resume` removes
+  owner's (reason empty), and the branching service pauses a branch nobody uses with `registry.PauseIdle` and
+  stops a branch that still carries its parent's credentials with `registry.PauseQuarantine`; only an idle pause
+  is ever started by the node (`registry.WakesByItself`). The reason is written to `supavise.project_pause` (`registry.LifecycleStore`, migration 1520) **before** the
+  status leaves `ACTIVE_*`, so whoever sees `INACTIVE` finds it; a pause with a reason is refused when the registry
+  cannot record it (an idle pause would never wake; the branching service then stops a quarantined branch as an
+  owner's pause), an owner's pause goes ahead and only logs. `Resume` removes
   the record once the project runs again (a failed resume keeps it, so the next request tries again), and a
   `KeepRecord` delete removes it. Before `Resume` starts Postgres it waits at most three seconds for nothing to
   listen on the project's database port (`awaitDatabasePort`): a branch asleep for idleness has the branching

@@ -49,6 +49,9 @@ func (s *Service) DiffWith(ctx context.Context, idOrRef string, o DiffOptions) (
 	if err != nil {
 		return "", err
 	}
+	if b, err = s.wakeIfIdle(ctx, b, "diff"); err != nil {
+		return "", err
+	}
 	if err := s.activeBranch(ctx, b); err != nil {
 		return "", err
 	}

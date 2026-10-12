@@ -13,8 +13,9 @@ import (
 // PauseOptions tune Engine.PauseWith.
 type PauseOptions struct {
 	// Reason is why the project is paused: "" for the owner's pause (the dashboard, the API, the
-	// CLI), registry.PauseIdle for one the node makes because a branch is not used. Only an idle
-	// pause wakes by itself, on the first request or database connection.
+	// CLI), registry.PauseIdle for one the node makes because a branch is not used, and
+	// registry.PauseQuarantine for a stop of a branch that still carries its parent's credentials. Only
+	// an idle pause wakes by itself, on the first request or database connection.
 	Reason string
 }
 

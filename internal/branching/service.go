@@ -387,9 +387,26 @@ func (s *Service) activeParent(ctx context.Context, b *Branch) (*registry.Projec
 
 func (s *Service) activeBranch(ctx context.Context, b *Branch) error {
 	if b.ProjectStatus != registry.StatusActiveHealthy && b.ProjectStatus != registry.StatusActiveUnhealthy {
-		return conflict("branch %s is %s; it must be running", b.Name, b.ProjectStatus)
+		return s.notRunning(ctx, b)
 	}
 	return nil
+}
+
+// notRunning is the refusal for a branch that does not run, with what to do about it when it is paused:
+// a pause by the owner and a quarantine are not undone by an operation, a request or a commit of a repository.
+func (s *Service) notRunning(ctx context.Context, b *Branch) error {
+	if b.ProjectStatus == registry.StatusInactive {
+		switch s.pauseRecord(ctx, b.Ref) {
+		case registry.PauseQuarantine:
+			return conflict("branch %s was stopped because it still carries the parent's credentials or integrations; reset or delete it", b.Name)
+		case registry.PauseIdle:
+			// The node paused it for idleness and did not start it for this operation (it is scheduled for
+			// deletion, or the start was not tried): a resume is still the way.
+		default:
+			return conflict("branch %s is %s; it was paused by its owner, and only a resume starts it. Resume it first (the dashboard's Resume, or `supavise projects resume %s`)", b.Name, b.ProjectStatus, b.Ref)
+		}
+	}
+	return conflict("branch %s is %s; it must be running", b.Name, b.ProjectStatus)
 }
 
 // classFor is the compute size of a new branch: the one asked for (hosted's names, Studio's

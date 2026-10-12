@@ -26,6 +26,9 @@ func (s *Service) Push(ctx context.Context, idOrRef string, in ActionInput) (str
 	if err := s.checkIdle(ctx, b); err != nil {
 		return "", err
 	}
+	if b, err = s.wakeIfIdle(ctx, b, "push"); err != nil {
+		return "", err
+	}
 	if err := s.activeBranch(ctx, b); err != nil {
 		return "", err
 	}

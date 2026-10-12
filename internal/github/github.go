@@ -62,7 +62,8 @@ type Branches interface {
 	List(ctx context.Context, ref string) ([]branching.Branch, error)
 	WaitIdle(ctx context.Context, ref string) (*branching.Branch, error)
 	Drive(ctx context.Context, idOrRef, op string, fn branching.Driver) (string, error)
-	// WakeForDrive resumes a branch that was paused and returns once it runs; Drive refuses one that does not.
+	// WakeForDrive starts a branch the node paused for idleness and returns once it runs; Drive refuses one
+	// that does not. A branch its owner paused, a quarantined one and one scheduled for deletion are refused.
 	WakeForDrive(ctx context.Context, idOrRef string) (*branching.Branch, error)
 	StartRun(ctx context.Context, op, branchRef, ownerRef, parentRef string) (*branching.Run, error)
 	GetRun(ctx context.Context, ownerRef, id string) (*registry.BranchRun, error)
