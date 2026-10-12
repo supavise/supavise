@@ -26,10 +26,13 @@ import (
 
 // fakeDB stands in for the branches' databases.
 type fakeDB struct {
-	mu        sync.Mutex
-	history   map[string][]branching.Migration
-	scripts   map[string][]string
-	applyLog  []string // ref/version, in order
+	mu       sync.Mutex
+	history  map[string][]branching.Migration
+	scripts  map[string][]string
+	applyLog []string // ref/version, in order
+	// timeline interleaves what the branch's database and the host were asked to do ("migrate ref/version",
+	// "save service@ref"), to test the order of the steps.
+	timeline  []string
 	unlocked  []string // ref/version of migrations applied without the project's apply lock
 	failAt    string   // a version whose migration fails
 	failSeed  bool
@@ -76,6 +79,7 @@ func (d *fakeDB) Apply(ctx context.Context, ref string, ms []branching.Migration
 		}
 		d.history[ref] = append(d.history[ref], m)
 		d.applyLog = append(d.applyLog, ref+"/"+m.Version)
+		d.timeline = append(d.timeline, "migrate "+ref+"/"+m.Version)
 	}
 	return branching.ApplyResult{Applied: len(ms)}, nil
 }
@@ -317,6 +321,10 @@ type fakeHost struct {
 	files    map[string][]string
 	patches  map[string]map[string]any // service@ref -> merged settings
 	secrets  map[string]string
+	// db, when set, gets a line of its timeline for every save.
+	db *fakeDB
+	// saveErr fails the save of a service's settings.
+	saveErr map[projectconfig.Service]error
 }
 
 func newFakeHost() *fakeHost {
@@ -346,6 +354,14 @@ func (h *fakeHost) SaveSettings(_ context.Context, ref string, svc projectconfig
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	k := string(svc) + "@" + ref
+	if h.db != nil {
+		h.db.mu.Lock()
+		h.db.timeline = append(h.db.timeline, "save "+k)
+		h.db.mu.Unlock()
+	}
+	if err := h.saveErr[svc]; err != nil {
+		return nil, err
+	}
 	if h.patches[k] == nil {
 		h.patches[k] = map[string]any{}
 	}
@@ -403,6 +419,7 @@ func newHarness(t *testing.T, mutate ...func(*config.Config)) *harness {
 	db := newFakeDB()
 	br := newFakeBranches(db)
 	host := newFakeHost()
+	host.db = db
 	svc, err := New(Options{Cfg: cfg, Registry: reg, Secrets: sec, Branches: br, Host: host})
 	if err != nil {
 		t.Fatal(err)
