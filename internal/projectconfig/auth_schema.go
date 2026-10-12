@@ -281,6 +281,9 @@ func buildAuthSchema() *Schema {
 		fBool("oauth_server_allow_dynamic_registration", "GOTRUE_OAUTH_SERVER_ALLOW_DYNAMIC_REGISTRATION", false),
 		fStr("oauth_server_authorization_path", "GOTRUE_OAUTH_SERVER_AUTHORIZATION_PATH"),
 		fBool("custom_oauth_enabled", "GOTRUE_CUSTOM_OAUTH_ENABLED", true),
+		// Auth > Audit Logs > "Disable Postgres writes" (Studio's twin lists it, the public API does not): GoTrue
+		// then writes no row to auth.audit_log_entries and logs the event instead.
+		fBool("audit_log_disable_postgres", "GOTRUE_AUDIT_LOG_DISABLE_POSTGRES", false),
 		// Hosted-only settings of the specs, kept so a client can save and read them back.
 		fStr("nimbus_oauth_client_id", ""), fSecret("nimbus_oauth_client_secret", ""),
 	)

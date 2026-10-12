@@ -13,7 +13,10 @@
 # secret key and the disabled legacy keys are refused at once, on Storage too), the database
 # password reset (new works directly and through the pooler, the old one fails), and
 # persistence: a pause and resume keeps every saved setting and applies the Postgres and
-# Storage settings saved while paused.
+# Storage settings saved while paused. Before that, the dashboard routes that used to be stubs: the
+# refusal of image transformation, a template reset that keeps the Site URL, Remove MFA factors on a
+# seeded TOTP factor, the audit-log switch reaching GoTrue, the OpenAPI document and GraphQL of the Data API,
+# the audit log of the organization, and Restore to new project from a base backup.
 #
 # Without SUPAVISE_BIN the script builds supavise with the go toolchain. It needs network access
 # for the artifact downloads. Not run in development (root, systemd and Linux required); CI
@@ -481,6 +484,99 @@ if pooler_login "$DBPW"; then fail "the old password still works through the poo
 [[ $(pcode GET /rest/v1/ -H "apikey: $SEC") == 200 ]] || fail "PostgREST after the password change"
 [[ $(pcode GET /auth/v1/settings -H "apikey: $PUB") == 200 ]] || fail "GoTrue after the password change"
 must 201 POST "$CFG/database/query" '{"query":"select 1"}' # the API connects with the new password
+
+# ---- the dashboard's dead ends: answers that used to be stubs ---------------------------------------------
+# /platform routes take the dashboard session, not a personal access token. The session is renewed here
+# because the blocks above can have run for a while.
+JWT=$(dash POST '/auth/v1/token?grant_type=password' -H 'Content-Type: application/json' -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" | json_get 'd["access_token"]') || fail "sign-in for the dashboard routes"
+# plat METHOD PATH [curl args]: a /platform route of the daemon with the dashboard session. platcode: its status.
+plat() { local m=$1 p=$2; shift 2; curl -sS -m 300 -X "$m" -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' "$@" "$ADMIN$p"; }
+platcode() { local m=$1 p=$2; shift 2; plat "$m" "$p" -o /dev/null -w '%{http_code}' "$@"; }
+wait_auth() { local i; for ((i = 0; i < 90; i++)); do [[ $(pcode GET /auth/v1/settings -H "apikey: $PUB") == 200 ]] && return 0; sleep 1; done; fail "GoTrue did not come back"; }
+
+log "storage: switching image transformation on is refused with the reason and not saved"
+[[ $(code PATCH "$CFG/config/storage" '{"features":{"imageTransformation":{"enabled":true}}}') == 400 ]] || fail "image transformation on was not refused"
+api PATCH "$CFG/config/storage" -d '{"features":{"imageTransformation":{"enabled":true}}}' | grep -q imgproxy || fail "the refusal does not name imgproxy"
+[[ $(api GET "$CFG/config/storage" | json_get 'd["features"]["imageTransformation"]["enabled"]') == False ]] || fail "a refused save changed the setting"
+
+log "auth: Reset to default clears the template, answers the config and keeps the Site URL"
+must 200 PATCH "$CFG/config/auth" '{"site_url":"https://reset.example.com","mailer_subjects_confirmation":"Welcome to the reset test","mailer_templates_confirmation_content":"<h2>reset test</h2>"}'
+RESET=$(plat POST "/platform/auth/$REF/templates/confirmation/reset") || fail "template reset"
+[[ $(json_get 'd["SITE_URL"]' <<<"$RESET") == https://reset.example.com ]] || fail "the reset answered a config without the real Site URL: $(head -c 300 <<<"$RESET")"
+[[ $(json_get 'repr(d["MAILER_SUBJECTS_CONFIRMATION"] + d["MAILER_TEMPLATES_CONFIRMATION_CONTENT"])' <<<"$RESET") == "''" ]] || fail "the reset answered the old template"
+GOT=$(api GET "$CFG/config/auth")
+[[ $(json_get 'd["site_url"]' <<<"$GOT") == https://reset.example.com && $(json_get 'd["mailer_subjects_confirmation"]' <<<"$GOT") == None && $(json_get 'd["mailer_templates_confirmation_content"]' <<<"$GOT") == None ]] || fail "the reset did not clear the template, or touched the Site URL"
+[[ $(json_get 'd["uri_allow_list"]' <<<"$GOT") == "https://new.example.com/**" ]] || fail "the reset touched the redirect allow list"
+must 200 PATCH "$CFG/config/auth" '{"site_url":"https://site.example.com"}'
+[[ $(platcode POST "/platform/auth/$REF/templates/not-a-template/reset") == 400 ]] || fail "an unknown template was not refused"
+
+log "auth: Remove MFA factors deletes the user's factors through GoTrue"
+MFA_EMAIL=mfa-smoke@example.com MFA_PW=correct-horse-battery
+MFA_UID=$(plat POST "/platform/auth/$REF/users" -d "{\"email\":\"$MFA_EMAIL\",\"password\":\"$MFA_PW\",\"email_confirm\":true}" | json_get 'd["id"]') || fail "create the user"
+UTOK=$(proj POST '/auth/v1/token?grant_type=password' -H "apikey: $PUB" -H 'Content-Type: application/json' -d "{\"email\":\"$MFA_EMAIL\",\"password\":\"$MFA_PW\"}" | json_get 'd["access_token"]') || fail "the user cannot sign in"
+proj POST /auth/v1/factors -H "apikey: $PUB" -H "Authorization: Bearer $UTOK" -H 'Content-Type: application/json' -d '{"factor_type":"totp","friendly_name":"smoke"}' -o /dev/null || fail "enroll a TOTP factor"
+factors() { proj GET "/auth/v1/admin/users/$MFA_UID/factors" -H "apikey: $SVC" -H "Authorization: Bearer $SVC" | json_get 'len(d)'; }
+[[ $(factors) == 1 ]] || fail "the seeded TOTP factor is not listed (got $(factors))"
+[[ $(platcode DELETE "/platform/auth/$REF/users/$MFA_UID/factors") == 200 ]] || fail "Remove MFA factors did not answer 200"
+[[ $(factors) == 0 ]] || fail "Remove MFA factors left $(factors) factor(s)"
+
+log "auth: Audit Logs 'disable Postgres writes' reaches GoTrue, is kept, and stops the rows"
+audit_rows() { sql "select count(*) from auth.audit_log_entries"; }
+mfa_login() { proj POST '/auth/v1/token?grant_type=password' -H "apikey: $PUB" -H 'Content-Type: application/json' -d "{\"email\":\"$MFA_EMAIL\",\"password\":\"$MFA_PW\"}" -o /dev/null -w '%{http_code}'; }
+before=$(audit_rows); [[ $(mfa_login) == 200 ]] || fail "sign-in"
+(( $(audit_rows) > before )) || fail "a sign-in wrote no audit row with the default setting"
+[[ $(platcode PATCH "/platform/auth/$REF/config" -d '{"AUDIT_LOG_DISABLE_POSTGRES":true}') == 200 ]] || fail "AUDIT_LOG_DISABLE_POSTGRES was not accepted"
+wait_auth
+[[ $(plat GET "/platform/auth/$REF/config" | json_get 'd["AUDIT_LOG_DISABLE_POSTGRES"]') == True ]] || fail "the switch snapped back after a reload"
+grep -q 'GOTRUE_AUDIT_LOG_DISABLE_POSTGRES=.*true' "$SUPAVISE_STATE/projects/$REF/gotrue.env" || fail "GoTrue's environment does not carry the setting"
+before=$(audit_rows); [[ $(mfa_login) == 200 ]] || fail "sign-in with the setting on"
+[[ $(audit_rows) == "$before" ]] || fail "GoTrue still wrote audit rows to Postgres with the setting on"
+[[ $(platcode PATCH "/platform/auth/$REF/config" -d '{"AUDIT_LOG_DISABLE_POSTGRES":false}') == 200 ]] || fail "AUDIT_LOG_DISABLE_POSTGRES false was not accepted"
+wait_auth
+[[ $(platcode PATCH "/platform/auth/$REF/config" -d '{"MFA_ALLOW_LOW_AAL":true}') == 400 ]] || fail "MFA_ALLOW_LOW_AAL true was not refused"
+
+log "studio flags: the ConfigCat document is served by the API origin without a session, with CORS for the dashboard"
+CC_URL=/configuration-files/configcat-proxy/frontend-v2/config_v6.json
+CC_HEAD=$(curl -s -o "$WORK/cc.json" -D - -m 30 -H "Host: api.$SUPAVISE_DOMAIN" -H "Origin: http://studio.$SUPAVISE_DOMAIN" "http://127.0.0.1$CC_URL?sdk=smoke" | tr -d '\r')
+grep -q '^HTTP/[0-9.]* 200' <<<"$CC_HEAD" || fail "the flag document did not answer 200: $CC_HEAD"
+grep -qi "^access-control-allow-origin: http://studio.$SUPAVISE_DOMAIN" <<<"$CC_HEAD" || fail "the flag document has no CORS header for the dashboard"
+[[ $(json_get 'd["f"]["allowDataBranching"]["v"]["b"]' <"$WORK/cc.json") == True && $(json_get 'd["f"]["supaviseBranchClones"]["v"]["b"]' <"$WORK/cc.json") == True ]] || fail "the flag document does not enable Include data"
+
+log "data api: the dashboard's OpenAPI document, its readiness ping and GraphQL"
+sql "create extension if not exists pg_graphql" >/dev/null 2>&1 || true
+[[ $(plat GET "/platform/projects/$REF/api/rest" | json_get '"paths" in d') == True ]] || fail "api/rest did not return PostgREST's document"
+[[ $(curl -s -o /dev/null -w '%{http_code}' -m 60 -I -H "Authorization: Bearer $JWT" "$ADMIN/platform/projects/$REF/api/rest") == 200 ]] || fail "the HEAD ping of api/rest"
+GQL=$(plat POST "/platform/projects/$REF/api/graphql" -d '{"query":"{ __typename }"}') || fail "api/graphql"
+[[ $(json_get '("data" in d) or ("errors" in d)' <<<"$GQL") == True ]] || fail "api/graphql did not return a GraphQL answer: $(head -c 300 <<<"$GQL")"
+
+log "audit logs: the requests above are listed for the organization and for the account"
+ORG_SLUG=$(plat GET /platform/organizations | json_get 'd[0]["slug"]')
+FROM=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ) TO=$(date -u -d '+5 minutes' +%Y-%m-%dT%H:%M:%SZ)
+AUDIT=$(plat GET "/platform/organizations/$ORG_SLUG/audit?iso_timestamp_start=$FROM&iso_timestamp_end=$TO") || fail "org audit"
+[[ $(json_get 'any(r["action"]["method"] == "PATCH" and r["action"]["route"] == "/v1/projects/{ref}/config/auth" and r["project_ref"] == "'"$REF"'" for r in d["result"])' <<<"$AUDIT") == True ]] || fail "the Auth settings change is not in the organization's audit log: $(head -c 400 <<<"$AUDIT")"
+[[ $(json_get 'any(r["actor"]["token_type"] == "v1" for r in d["result"])' <<<"$AUDIT") == True ]] || fail "no request made with the personal access token is marked v1"
+[[ $(json_get 'len(d["result"]) > 5' <<<"$(plat GET "/platform/profile/audit?iso_timestamp_start=$FROM&iso_timestamp_end=$TO")") == True ]] || fail "the account's own audit log is empty"
+
+log "backups: Restore to new project creates a named project from a base backup"
+sql "create table public.clone_smoke (id int primary key, label text); insert into public.clone_smoke values (1, 'cloned')" >/dev/null || fail "seed the source"
+supavise backups create "$REF" || fail "backups create"
+BID=$(plat GET "/platform/database/$REF/clone" | json_get 'd["backups"][0]["id"]') || fail "the clone dialog lists no backup"
+CLONE_PW="Clone-$(head -c 9 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+ANS=$(plat POST "/platform/database/$REF/clone" -d "{\"cloneBackupId\":$BID,\"newProjectName\":\"smoke clone\",\"newDbPass\":\"$CLONE_PW\"}") || fail "clone"
+NEW=$(json_get 'd["target_project_ref"]' <<<"$ANS") || fail "clone answer: $ANS"
+[[ $NEW =~ ^[a-z]{20}$ ]] || fail "bad ref '$NEW'"
+st=""
+for ((i = 0; i < 120; i++)); do
+  st=$(plat GET "/platform/database/$REF/clone/status" | json_get 'd["clones"][0]["status"]')
+  [[ $st == COMPLETED || $st == FAILED ]] && break
+  sleep 3
+done
+[[ $st == COMPLETED ]] || { journalctl --no-pager -u supavise.service 2>/dev/null | grep 'clone failed' | tail -3 >&2; fail "the clone ended $st"; }
+[[ $(api GET "/v1/projects/$NEW" | json_get 'd["status"]') == ACTIVE_HEALTHY ]] || fail "the cloned project is not healthy"
+[[ $(api GET "/v1/projects/$NEW" | json_get 'd["name"]') == "smoke clone" ]] || fail "the cloned project has not the name asked for"
+NEWPORT=$(project_field "$NEW" 'd["ports"]["Postgres"]')
+[[ $(sudo -u "$SUPAVISE_USER" "$PSQL" "host=$SUPAVISE_STATE/projects/$NEW/postgres/sock port=$NEWPORT user=supabase_admin dbname=postgres" -Atc "select label from public.clone_smoke" </dev/null) == cloned ]] || fail "the cloned project lacks the source's data"
+must 200 DELETE "/v1/projects/$NEW"
 
 log "persistence: pause and resume keep every saved setting"
 must 200 POST "$CFG/pause"

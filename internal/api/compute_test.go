@@ -250,8 +250,9 @@ func TestChangingTheSizeIsRefusedWithAClearMessage(t *testing.T) {
 	if p := f.projectRow(t); sizeOf(p).Name != "micro" {
 		t.Fatalf("a refused change touched the project: %+v", p)
 	}
-	// Other add-ons are not sold: the call succeeds and changes nothing.
-	f.body(t, "POST", platAddons, map[string]any{"addon_type": "ipv4", "addon_variant": "ipv4_default"}, http.StatusCreated)
+	// Other add-ons are not sold: the call is refused with the reason instead of reporting a success that changed
+	// nothing (unsupported_test.go has the messages).
+	f.body(t, "POST", platAddons, map[string]any{"addon_type": "ipv4", "addon_variant": "ipv4_default"}, http.StatusBadRequest)
 	// A project that is not running cannot be resized.
 	_ = f.reg.SetProjectStatus(t.Context(), testRef, registry.StatusComingUp)
 	if rec := f.do("POST", platAddons, map[string]any{"addon_type": "compute_instance", "addon_variant": "ci_small"}); rec.Code != http.StatusConflict {

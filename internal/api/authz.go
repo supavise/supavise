@@ -197,6 +197,9 @@ var routeRules = []routeRule{
 	rule("W", "/platform/organizations/{slug}/members/**", nSelf),
 	rule("W", "/v2/organizations/{slug}/members/**", nSelf),
 	rule("R", "/platform/organizations/{slug}/members/**", chk(members.ActRead, O)),
+	// The organization's audit log: Studio's page checks read on notifications, which every role that
+	// belongs to the organization holds. The profile's own log is open to its owner (profile/**).
+	rule("R", "/platform/organizations/{slug}/audit", chk(members.ActRead, "notifications")),
 	rule("DELETE", "/platform/organizations/{slug}", chk(members.ActDelete, O)),
 	rule("W", "/platform/organizations/{slug}", chk(members.ActUpdate, O)),
 	rule("R", "/platform/organizations/{slug}/billing/**", chk(members.ActBillingRead, "stripe.subscriptions")),
@@ -239,6 +242,10 @@ var routeRules = []routeRule{
 	rule("R", "/platform/projects/{ref}/service-versions", chk(members.ActRead, P)),
 	// Restores overwrite production data: Owners and Administrators (the resources Studio checks
 	// before it offers the Restore button of a listed backup and the point-in-time form).
+	// Restore to a new project (clone.go): the dialog is offered to whoever may restore, and reads the
+	// physical backups like the Backups page does.
+	rule("POST", "/platform/database/{ref}/clone", chk(members.ActInfraExecute, "queue_job.restore.prepare")),
+	rule("R", "/platform/database/{ref}/clone/**", chk(members.ActRead, "physical_backups")),
 	rule("POST", "/platform/database/{ref}/backups/restore", chk(members.ActInfraExecute, "queue_job.restore.prepare")),
 	rule("POST", "/platform/database/{ref}/backups/restore-physical", chk(members.ActInfraExecute, "queue_job.restore.prepare")),
 	rule("POST", "/v1/projects/{ref}/database/backups/restore", chk(members.ActInfraExecute, "queue_job.restore.prepare")),

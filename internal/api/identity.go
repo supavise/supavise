@@ -17,14 +17,23 @@ import (
 // billing, and the hosted-only infrastructure and integrations supavise does not offer.
 // Keys are Studio's enabled-features keys (packages/common/enabled-features).
 var disabledFeatures = []string{
-	"billing:all", "database:replication", "database:restore_to_new_project", "database:network_restrictions",
+	"billing:all", "database:replication", featureRestoreToNewProject, "database:network_restrictions",
 	featureReadReplicas, "integrations:vercel", "integrations:aws_private_link", "integrations:partners",
-	"organization:show_sso_settings", "project_addons:dedicated_ipv4_address", "project_addons:show_compute_price",
+	"project_addons:dedicated_ipv4_address", "project_addons:show_compute_price",
 	"project_creation:show_high_availability", "project_settings:custom_domains", "project_settings:log_drains",
+	// Supabase Inc.'s own legal and compliance documents (DPA, SOC 2, ISO 27001, HIPAA), the request to
+	// delete an account with Supabase's support desk, and the transfer of a project to another
+	// organization (a project's branches, replicas, domains and roles would have to follow it).
+	"organization:show_legal_documents", "profile:show_account_deletion", "projects:transfer",
 	// Iceberg analytics buckets and vector buckets: Storage runs here without the catalog and vector
 	// services behind them (icebergCatalog and vectorBuckets stay off, internal/fleet/storage.go), so
 	// the pages would offer buckets that cannot work. Logs and Reports stay: they say what is missing.
 	"storage:analytics", "storage:vectors",
+	// Not listed, on purpose: organization:show_sso_settings. The organization's SSO page is shown. Its four
+	// calls match sso_routes.go and the page's source at the pinned commit, but no browser run has loaded
+	// it: Studio renders "unknown interface" for a page whose key is disabled, so only a run with the key
+	// enabled can settle it. If the crawl finds a dead end, put the key back here and in the hide list of
+	// unsupported_test.go.
 }
 
 // featureCustomDomains is the key that hides Settings > General > Custom domains, the page that claims,
@@ -37,6 +46,10 @@ const featureCustomDomains = "project_settings:custom_domains"
 // so the domains service refuses a claim there (internal/domains README, "Certificates"). Every other
 // mode serves the page, for projects and branches alike.
 func (s *Server) customDomainsOffered() bool { return s.cfg.TLS.Mode != "dns01" }
+
+// featureRestoreToNewProject is the key that hides Database > Backups > Restore to new project. It stays in
+// disabledFeatures on a node whose backup service cannot restore as a new project (profileOf).
+const featureRestoreToNewProject = "database:restore_to_new_project"
 
 // featureReadReplicas is the key that hides Studio's read replica screens (the Infrastructure
 // page, the database selector, the replica rows of the reports). It stays in disabledFeatures
@@ -99,6 +112,10 @@ func (s *Server) profileOf(ctx context.Context, u *User) *plat.ProfileResponseOu
 	}
 	if s.customDomainsOffered() {
 		disabled = slices.DeleteFunc(disabled, func(f string) bool { return f == featureCustomDomains })
+	}
+	// Restore to a new project needs the backup service (clone.go); a node without one hides the page.
+	if s.cloner() != nil {
+		disabled = slices.DeleteFunc(disabled, func(f string) bool { return f == featureRestoreToNewProject })
 	}
 	return &plat.ProfileResponseOutput{
 		Auth0Id: u.UserID, DisabledFeatures: &disabled, FirstName: opt(u.FirstName), LastName: opt(u.LastName),

@@ -56,6 +56,14 @@
       "required": false,
       "default": "http://localhost:8080/mcp",
       "doc": "Remote MCP endpoint shown in Connect > MCP, for example https://api.example.com/mcp."
+    },
+    {
+      "env": "NEXT_PUBLIC_CONFIGCAT_PROXY_URL",
+      "kind": "string",
+      "placeholder": "https://supavise-placeholder-configcat.invalid",
+      "required": false,
+      "default": "",
+      "doc": "Origin that serves Studio's ConfigCat flag document (/configuration-files/configcat-proxy/frontend-v2/config_v6.json), for example https://api.example.com. A node serves it from the Management API (internal/api/configcat.go); it is what shows the Include data switch of the Create branch dialog. Studio's CSP already allows the API origin, so no CSP entry is needed. Empty: Studio reads every flag as off."
     }
   ]
 }
