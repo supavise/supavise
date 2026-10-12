@@ -311,6 +311,90 @@ func TestRecoveryMarksRunsOfAGoneProcessDead(t *testing.T) {
 	}
 }
 
+// A run that code outside the package drives (StartRun: the production deployment of the GitHub
+// integration) is worked on by this process until its row is finished: a migration that takes an hour
+// logs nothing, and the sweep must not call the run interrupted meanwhile. A restart is another
+// matter: the new process holds nothing, and the pid and instance on the row let the sweep fail the
+// run at once.
+func TestAStartedRunStaysLiveInThisProcessAndIsRecoveredAfterARestart(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	h.reg.Now = h.clock // the registry stamps updated_at with the test clock
+	st := registry.BranchRunsOf(h.reg)
+	run, err := h.svc.StartRun(ctx, "deploy", parentRef, parentRef, parentRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Step(StepClone).Start()
+	run.Step(StepMigrate).Start() // a migration that logs nothing for hours
+	h.advance(3 * time.Hour)
+	if got := h.svc.recoverRuns(ctx, false); len(got) != 0 {
+		t.Fatalf("the sweep recovered %v, a run this process is working on", got)
+	}
+	if _, err := h.svc.Sweep(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := st.GetBranchRun(ctx, run.ID()); rec.Status != registry.RunRunning {
+		t.Fatalf("the run is %s (%q) after a sweep", rec.Status, rec.Failure)
+	}
+	// Studio's PATCH of a step is refused for a run that is in progress here.
+	if _, err := h.svc.SetRunSteps(ctx, parentRef, run.ID(), map[string]string{StepMigrate: registry.StepExited}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("PATCH of a live run: %v", err)
+	}
+	// It ends as it began: finishing the run releases it, and the end is what the row says.
+	run.Step(StepMigrate).Finish()
+	if got := run.Finish(nil); got != "" {
+		t.Fatalf("Finish = %q", got)
+	}
+	if h.svc.runLive(run.ID()) {
+		t.Fatal("a finished run is still held live")
+	}
+	if rec, _ := st.GetBranchRun(ctx, run.ID()); rec.Status != registry.RunSuccess {
+		t.Fatalf("the run is %s", rec.Status)
+	}
+	// Finishing twice does not turn a success into a failure (a deferred Finish after the real one).
+	run.Finish(errors.New("the deployment stopped unexpectedly"))
+	if rec, _ := st.GetBranchRun(ctx, run.ID()); rec.Status != registry.RunSuccess {
+		t.Fatalf("a second Finish changed the run to %s", rec.Status)
+	}
+
+	// A run that failed a step, or that is finished with an error, is released too.
+	failed, _ := h.svc.StartRun(ctx, "deploy", parentRef, parentRef, parentRef)
+	failed.Step(StepMigrate).Fail(errors.New("boom"))
+	if h.svc.runLive(failed.ID()) {
+		t.Fatal("a run whose step failed is still held live")
+	}
+	errored, _ := h.svc.StartRun(ctx, "deploy", parentRef, parentRef, parentRef)
+	errored.Finish(errors.New("boom"))
+	if h.svc.runLive(errored.ID()) {
+		t.Fatal("a run finished with an error is still held live")
+	}
+
+	// The daemon restarts in the middle of a run: the new service holds nothing live, and its sweep
+	// fails the run that the old one was driving, whatever the time.
+	orphan, _ := h.svc.StartRun(ctx, "deploy", parentRef, parentRef, parentRef)
+	orphan.Step(StepMigrate).Start()
+	sec, err := secrets.New(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(Deps{Cfg: h.cfg, Registry: h.reg, Secrets: sec, Engine: h.eng, DB: h.db, Now: h.clock, CreateWait: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { restarted.Drain(context.Background()) })
+	if restarted.runLive(orphan.ID()) {
+		t.Fatal("a new service holds a run of the old one live")
+	}
+	if got := restarted.recoverRuns(ctx, false); len(got) != 1 || got[0] != orphan.ID() {
+		t.Fatalf("the restarted service recovered %v, want the orphan", got)
+	}
+	rec, _ := st.GetBranchRun(ctx, orphan.ID())
+	if rec.Status != registry.RunFailed || !strings.Contains(rec.Failure, "interrupted by restart") {
+		t.Fatalf("the orphan = %s %q", rec.Status, rec.Failure)
+	}
+}
+
 func TestRunRecorderStateMachine(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
