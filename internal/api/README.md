@@ -236,6 +236,7 @@ Roles are hosted's four with hosted's ids (`internal/members/roles.go`): **Owner
 | Read the service_role key, the JWT secret, the S3 credentials; temporary keys | yes | yes | yes | |
 | Write SQL, apply migrations, change schema (Studio and pg-meta), Auth users, Storage buckets and objects, deploy and delete functions, preview branches (schema-only) | yes | yes | yes | |
 | Create a branch with data (`with_data: true`), or reset one that has data (both copy the parent's data) | yes | yes | | |
+| Connect a repository, change a connection, set the production branch (`git_branch` of the default branch), Resync production (`POST /v1/branches/{default}/push` with Deploy to production on) | yes | yes | | |
 | Read everything else: config, logs, advisors, users, buckets, functions, secrets (digests), `SELECT` SQL, types | yes | yes | yes | yes |
 | Saved SQL snippets: create; change or delete one's own (Owner and Administrator: anyone's shared ones) | yes | yes | yes | yes |
 | Saved reports: same, but Read-only may not create or change them | yes | yes | yes | |

@@ -70,7 +70,7 @@ In Studio, open the project's **Settings**, **Integrations**, **GitHub**.
 | Deploy to production | Apply the repository to the project when you push to the production branch. |
 | Production branch | The Git branch production follows (usually `main`). |
 
-Owners and Administrators connect, change and disconnect; every role that can see the project reads the connection. Disconnecting keeps the preview branches that exist: delete them from the Branches page. The picker lists only repositories you can push to; the App posts check runs and comments on them, so a read-only collaborator cannot connect a project. If a repository is renamed or transferred, its connection follows it (the next event from GitHub carries the new name).
+Owners and Administrators connect, change and disconnect; every role that can see the project reads the connection. Setting the production branch of the project's default branch (`git_branch` of `PATCH /v1/branches/{id}`, or of the create call with `is_default`) needs the same role, because a push to that Git branch changes production's schema, Edge Functions and settings; a Developer can set the Git branch of a preview branch, and a request that leaves the production branch as it is needs no more than before. Disconnecting keeps the preview branches that exist: delete them from the Branches page. The picker lists only repositories you can push to; the App posts check runs and comments on them, so a read-only collaborator cannot connect a project. If a repository is renamed or transferred, its connection follows it (the next event from GitHub carries the new name).
 
 ## What happens to a pull request
 
@@ -138,7 +138,7 @@ Everything else is named in the run's log as not applied, with the key, so nothi
 
 Set **Deploy to production** and the **production branch** in the connection form. A push to that Git branch (a merge, usually) runs the steps on the project: the migrations it lacks, the Edge Functions that changed and the buckets of `config.toml`; no seed. It is a run listed under the project, with a check named `Supabase Production` on the commit. The check shows the step table and a short failure message; the full log stays in the dashboard, because production's errors can quote its data and the check is visible to everyone who reads the repository.
 
-With Deploy to production on, Studio disables the dashboard's **Merge** button for the project: changes reach production through the repository. **Resync** on the production row of the Branches page deploys the head of the production branch again.
+With Deploy to production on, Studio disables the dashboard's **Merge** button for the project: changes reach production through the repository. **Resync** on the production row of the Branches page deploys the head of the production branch again; it needs the Owner or Administrator role, like changing the production branch.
 
 Deploying needs the project running; a paused project fails the run with that reason. Each migration is applied under the project's apply lock, the one a merge takes, so a merge from the CLI or the MCP server and a deployment do not interleave their DDL; they take turns.
 

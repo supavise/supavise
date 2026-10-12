@@ -673,6 +673,23 @@ func (s *Server) canReadSecrets(r *http.Request, p *registry.Project) (bool, err
 	return s.projectCan(r, p, members.ActRead, members.ResJWTSecret)
 }
 
+// requireProductionBranch refuses a caller who may not change the project's GitHub connection. The
+// Git branch production follows (the default branch's git_branch) is a field of that connection on
+// hosted, and a push to it applies the repository's migrations, Edge Functions and config.toml
+// [remotes] settings to production, which a Developer could otherwise do around branch protection
+// with a branch of their own. Setting it, and deploying it again (Resync), need the right to update
+// integrations.github_connections: the Owner or Administrator role.
+func (s *Server) requireProductionBranch(r *http.Request, p *registry.Project) error {
+	ok, err := s.projectCan(r, p, members.ActUpdate, resGitHubConnections)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errf(http.StatusForbidden, "Your role does not allow this action (changing the production branch or deploying it again needs the Owner or Administrator role)")
+	}
+	return nil
+}
+
 // requireBranchData is the second requirement of POST /v1/projects/{ref}/branches and of
 // POST /v1/branches/{id}/reset on a branch with data: such a branch copies the parent's data
 // (every user, every row), which a Developer, who may create schema-only branches and reset
