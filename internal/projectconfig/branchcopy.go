@@ -69,14 +69,19 @@ var smsProviders = []string{"messagebird", "textlocal", "twilio", "vonage"}
 //     port and user; the SMS provider choice and every sms_<provider>_* setting, identifiers
 //     included; the HTTP(S) hooks (uri and switch; a hook that runs a function in the branch's own
 //     database is kept); the switch of every external OAuth provider (the client id and the other
-//     provider settings stay); the captcha switch (the provider choice stays).
+//     provider settings stay); the captcha switch (the provider choice stays);
+//   - mailer_allow_unverified_email_sign_ins, when the parent gets its confirmation setting from
+//     having SMTP: with no mailer_autoconfirm saved, auto-confirm is on exactly while smtp_host is
+//     empty, and GoTrue refuses unverified sign-ins next to auto-confirm. The branch has no SMTP host,
+//     so it runs with auto-confirm on and the setting would mean nothing there.
 //
 // Names that validation ties together go together: GoTrue refuses an enabled provider without its
-// secret, a captcha without its secret and an HTTP hook without its secrets, and a refused patch
-// would lose the branch's whole Auth copy.
+// secret, a captcha without its secret, an HTTP hook without its secrets and unverified sign-ins
+// next to auto-confirm, and a refused patch would lose the branch's whole Auth copy.
 //
-// The names are those of the schema, whether the parent saved them or not; only the hooks look at
-// set, for the scheme of the hook's uri.
+// The names are those of the schema, whether the parent saved them or not; only the hooks and the
+// confirmation setting look at set: the hooks for the scheme of the hook's uri, the confirmation
+// setting for whether the parent saved mailer_autoconfirm and an SMTP host.
 func branchWithheld(svc Service, set Values) map[string]bool {
 	out := map[string]bool{}
 	sch, err := schemaOf(svc)
@@ -109,6 +114,9 @@ func branchWithheld(svc Service, set Values) map[string]bool {
 			out["hook_"+h+"_uri"], out["hook_"+h+"_enabled"] = true, true
 		}
 	}
+	if _, saved := set["mailer_autoconfirm"]; !saved && set.Str("smtp_host") != "" {
+		out["mailer_allow_unverified_email_sign_ins"] = true
+	}
 	return out
 }
 
@@ -126,10 +134,10 @@ func BranchWithheld(svc Service, set Values) []string {
 }
 
 // BranchWithheldNames returns every name of svc a branch can be denied, sorted: what BranchWithheld
-// gives for a parent that has saved all of them, every hook pointing at an HTTPS URL. The docs list
-// it, and a test keeps the list in step with the schema.
+// gives for a parent that has saved all of them, every hook pointing at an HTTPS URL and an SMTP host
+// with no mailer_autoconfirm. The docs list it, and a test keeps the list in step with the schema.
 func BranchWithheldNames(svc Service) []string {
-	every := Values{}
+	every := Values{"smtp_host": "smtp.example.com"}
 	for _, h := range authHooks {
 		every["hook_"+h+"_uri"] = "https://example.com/hook"
 	}

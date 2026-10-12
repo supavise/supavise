@@ -351,7 +351,7 @@ func TestBranchWithheldNamesCoverEverySecretAndProviderConnection(t *testing.T) 
 		"hook_custom_access_token_enabled", "hook_custom_access_token_uri", "hook_mfa_verification_attempt_enabled", "hook_mfa_verification_attempt_uri",
 		"hook_password_verification_attempt_enabled", "hook_password_verification_attempt_uri", "hook_send_email_enabled", "hook_send_email_uri",
 		"hook_send_sms_enabled", "hook_send_sms_uri",
-		"security_captcha_enabled", "smtp_host", "smtp_port", "smtp_user",
+		"mailer_allow_unverified_email_sign_ins", "security_captcha_enabled", "smtp_host", "smtp_port", "smtp_user",
 		"sms_messagebird_originator", "sms_provider", "sms_textlocal_sender", "sms_twilio_account_sid", "sms_twilio_content_sid", "sms_twilio_message_service_sid",
 		"sms_twilio_verify_account_sid", "sms_twilio_verify_message_service_sid", "sms_vonage_api_key", "sms_vonage_from",
 	}
@@ -368,6 +368,57 @@ func TestBranchWithheldNamesCoverEverySecretAndProviderConnection(t *testing.T) 
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("withheld names that are not secrets:\n got %v\nwant %v", got, want)
+	}
+}
+
+// A parent that never saved mailer_autoconfirm has confirmation on because it has SMTP, and
+// mailer_allow_unverified_email_sign_ins is valid there. The branch has no SMTP host, so it runs with
+// auto-confirm on, and GoTrue refuses the combination: the copy would be refused whole and the branch
+// would lose its disable_signup, MFA and expiry settings. The setting is withheld instead.
+func TestCopyForBranchWithholdsUnverifiedSignInsWhenTheParentGetsConfirmationFromSMTP(t *testing.T) {
+	m, _ := newManager(t)
+	ctx := context.Background()
+	patchRef(t, m, ref, Auth, map[string]any{
+		"smtp_host": "smtp.example.com", "smtp_admin_email": "ops@example.com",
+		"mailer_allow_unverified_email_sign_ins": true, "disable_signup": true, "jwt_exp": 1800, "mfa_max_enrolled_factors": 3,
+	})
+	if err := m.CheckSaved(ctx, ref, Auth, CrossContext{}); err != nil {
+		t.Fatalf("the parent's own settings are valid: %v", err)
+	}
+	res, err := m.CopyForBranch(ctx, ref, branchRef, BranchCopyOptions{Seeded: true})
+	if err != nil || len(res.Failed) != 0 {
+		t.Fatalf("copy: %+v, %v", res, err)
+	}
+	want := []string{"mailer_allow_unverified_email_sign_ins", "smtp_host"}
+	if !reflect.DeepEqual(res.Withheld[Auth], want) {
+		t.Errorf("withheld = %v, want %v", res.Withheld[Auth], want)
+	}
+	got, _ := m.Get(ctx, branchRef, Auth)
+	if got.Set["disable_signup"] != true || got.Set["jwt_exp"] != int64(1800) || got.Set["mfa_max_enrolled_factors"] != int64(3) || got.Set["smtp_admin_email"] != "ops@example.com" {
+		t.Errorf("the rest of the Auth copy did not arrive: %v", got.Set)
+	}
+	if _, ok := got.Set["mailer_allow_unverified_email_sign_ins"]; ok {
+		t.Error("unverified sign-ins were copied next to auto-confirm")
+	}
+	if !got.AuthAutoconfirm() {
+		t.Error("a branch with no SMTP host should run with auto-confirm on")
+	}
+	if err := m.CheckSaved(ctx, branchRef, Auth, CrossContext{}); err != nil {
+		t.Fatalf("the branch's settings do not pass the checks GoTrue's start needs: %v", err)
+	}
+
+	// A parent that saved mailer_autoconfirm = false has said what it wants; the branch gets exactly that.
+	const other = "cccccccccccccccccccc"
+	const parent2 = "dddddddddddddddddddd"
+	patchRef(t, m, parent2, Auth, map[string]any{
+		"smtp_host": "smtp.example.com", "smtp_admin_email": "ops@example.com", "mailer_autoconfirm": false, "mailer_allow_unverified_email_sign_ins": true,
+	})
+	res, err = m.CopyForBranch(ctx, parent2, other, BranchCopyOptions{Seeded: true})
+	if err != nil || len(res.Failed) != 0 {
+		t.Fatalf("copy: %+v, %v", res, err)
+	}
+	if got, _ := m.Get(ctx, other, Auth); got.Set["mailer_allow_unverified_email_sign_ins"] != true || got.Set["mailer_autoconfirm"] != false {
+		t.Errorf("an explicit confirmation setting was not copied: %v", got.Set)
 	}
 }
 
