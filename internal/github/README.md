@@ -36,7 +36,7 @@ res := svc.HandleWebhook(ctx, github.Delivery{Event: ..., ID: ..., Signature: ..
 - **A user sees what their own token sees.** Repositories are listed with the user's token (those the user can push to; the list answers the branch pickers for 30 seconds) and a connection checks the repository against that list.
 - **A repository's rename is followed, a redirect is never.** The HTTP client does not follow redirects, so a 3xx is an error; `connectionsFor` updates the stored name from the signed payload.
 - **The seed is recorded.** `github_branch_links.seeded_at` (migration 1541) is set when a run gets past the seed step; the seed is applied by the first such run, not by the call that creates the branch. A branch somebody else made is marked seeded.
-- **A paused branch is woken** (`branching.Service.WakeForDrive`) before a commit is driven onto it.
+- **A branch the node paused for idleness is woken** (`branching.Service.WakeForDrive`) before a commit is driven onto it. A branch its owner paused, one stopped as a quarantine (it still carries the parent's credentials) and one scheduled for deletion are not woken: the check fails with the reason, because a commit is not the owner's decision to run a branch again.
 - **A PR's `config.toml` cannot redirect a parent's secret.** On a branch, setting the SMTP host or an OAuth provider's `url` clears the inherited secret unless `config.toml` gives one (`dropInheritedSecrets`).
 - **One run reads at most 100 MiB** from the repository in all (`Snapshot.budget`), and migrations are applied under the project's apply lock (`ApplyOptions.Lock`).
 - **One comment per project and pull request.** The first line is `<!-- supavise-preview:<project ref> -->`; a comment of another App is not adopted.
