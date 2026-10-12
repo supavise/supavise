@@ -124,7 +124,7 @@ test('apply substitutes values, origins and CSP hosts', () => {
     assert.match(js, /K="abc-123"/)
     assert.match(js, /D="dashboard_auth:sign_up,/)
     assert.match(js, /M="https:\/\/api\.example\.com\/mcp"/)
-    assert.match(js, /C="https:\/\/api\.example\.com";/)
+    assert.match(js, /C="https:\/\/api\.example\.com",/)
     const manifest = JSON.parse(readFileSync(join(app, 'apps/studio/.next/routes-manifest.json'), 'utf8'))
     const csp = manifest.headers[0].value
     assert.ok(csp.includes("connect-src 'self' https://api.example.com https://api.example.com "))
