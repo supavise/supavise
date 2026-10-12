@@ -335,8 +335,9 @@ func (s *Service) driveBranch(ctx context.Context, conn registry.GitHubConnectio
 		oc.Headline, oc.Detail = "Supavise could not wait for the branch.", err.Error()
 		return oc
 	}
-	// A preview branch that paused while the pull request sat idle (or that somebody paused) runs again
-	// for this commit.
+	// A preview branch that the node paused while the pull request sat idle runs again for this commit. One
+	// its owner paused, one stopped as a quarantine and one scheduled for deletion do not: anyone who can push
+	// can make a commit, and starting such a branch is not their decision. The check says why.
 	if _, err := s.br.WakeForDrive(ctx, b.Ref); err != nil {
 		oc.Headline = "Supavise could not wake the paused preview branch."
 		oc.Detail = branchErrText(err)

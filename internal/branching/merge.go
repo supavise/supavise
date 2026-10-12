@@ -42,6 +42,9 @@ func (s *Service) Merge(ctx context.Context, idOrRef string, in ActionInput) (st
 	if err := s.checkIdle(ctx, b); err != nil {
 		return "", err
 	}
+	if b, err = s.wakeIfIdle(ctx, b, "merge"); err != nil {
+		return "", err
+	}
 	if err := s.activeBranch(ctx, b); err != nil {
 		return "", err
 	}

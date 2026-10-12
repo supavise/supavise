@@ -55,7 +55,7 @@ One file per operation, so that a change to one operation stays in one file:
 | `carry.go` | what is carried between a branch and its parent besides schema: Edge Functions (`FunctionCarrier`), their base digests and the create-body secrets |
 | `schemadiff/` | the schema engine: reads a database into a `Snapshot`, plans the DDL between two, merges and syncs snapshots |
 | `update.go` | `Update` (PATCH of a branch) |
-| `driven.go` | `Drive` (an operation on an existing branch whose work the caller does), `WakeForDrive` (resumes a paused branch, whoever paused it, and waits until it runs; `Wake` in `idle.go` is the request-driven one and leaves an owner's pause alone) and `Database` (what the service runs SQL with), all for the Git integration |
+| `driven.go` | `Drive` (an operation on an existing branch whose work the caller does), `WakeForDrive` (starts a branch the node paused for idleness and waits until it runs; a branch its owner paused, a quarantined one and one scheduled for deletion are refused with 409, like `Wake` in `idle.go`, the request-driven one, leaves them alone) and `Database` (what the service runs SQL with), all for the Git integration |
 | `delete.go` | `Delete` (and the scheduled delete that pauses), `Restore`, `DisableBranching` and `removeBranch` |
 | `idle.go`, `idlegate.go` | the idle pause (`IdleSweep`, `RunIdle`), `Wake`, and the listeners that wake a sleeping branch on a database connection |
 | `expiry.go`, `placement.go` | the warning before a branch with a hostname expires, and the refusal of a clone whose parent is on another server |
@@ -278,7 +278,7 @@ Hosted Supabase copies a project's Edge Functions and configuration into a branc
 - **The parent's credentials inside the data are replaced.** A cloned service key is a key to the parent that anyone with SQL in the branch can read, and a branch reaches the node's loopback. After the rotation `rewriteCredentials` (`credswap.go`) replaces, with the branch's value, every parent credential in Vault secrets, pg_cron job commands (paused or not) and database and role settings (`pg_db_role_setting`). A parent credential is an anon or service_role JWT that verifies against the parent's JWT secret, the `sb_publishable_` and `sb_secret_` keys, the JWT secret or one of the six database passwords. A value is rewritten when it contains one (`Bearer <key>`, a connection string); a credential under 20 characters must match whole. Replacements are recorded by name, never value (event `branch.credentials_rewritten`, table `supavise_branch.rewritten_credentials`). A failure stops the branch.
 - **Sessions of the parent's users are removed**, because a refresh token read in the branch is a session of a production user. In every `with_data` branch, with or without `--allow-egress`, `wipeAuthSessions` (`isolate_auth.go`) empties the session, refresh-token, MFA-challenge, one-time-token, flow-state, SAML/OAuth-state and WebAuthn-challenge tables of `auth`, and blanks the token columns of `auth.users` and the passkey challenge of `auth.mfa_factors`. Users and identities stay, so branch users sign in again with their passwords and get tokens of the branch. What stays is production data, not a session: password hashes, TOTP secrets, the argon2id hashes of MFA recovery codes, passkey public keys, OAuth and SSO configuration, SCIM provisioning (the provisioned users and the SHA-256 digests of the SCIM bearer tokens) and third-party client secrets (`auth.custom_oauth_providers`). The event records counts per table (`auth_rows_deleted`, `auth_rows_cleared`).
 - **Auth tables are classified.** The two lists in `isolate_auth.go` (wipe, blank) cover the GoTrue release pinned in `internal/versions/versions.yaml`. A table in neither list is named in the event (`auth_tables_not_reviewed`) and the integration test fails on it, so a GoTrue upgrade that adds a table gets classified.
-- **Subscriptions, cron jobs and pg_net are neutralized**, because a copy would attach to the parent's replication slot and run cron jobs and queued pg_net calls twice. Both with_data paths start the cluster first with `max_logical_replication_workers = 0`, `cron.launch_active_jobs = off` and `pg_net.database_name` pointing at a missing database (lines marked `# supavise-branch-quarantine` in `postgresql.auto.conf`). Then, in every database, subscriptions are disabled and detached from their slot (so the publisher's slot survives), `cron.job` rows are set inactive (unless `[branching] keep_cron_jobs = true`) and `net.http_request_queue` is emptied; the marked lines go, the cluster restarts and the credentials rotate. A failing step stops the branch (`MIGRATIONS_FAILED`).
+- **Subscriptions, cron jobs and pg_net are neutralized**, because a copy would attach to the parent's replication slot and run cron jobs and queued pg_net calls twice. Both with_data paths start the cluster first with `max_logical_replication_workers = 0`, `cron.launch_active_jobs = off` and `pg_net.database_name` pointing at a missing database (lines marked `# supavise-branch-quarantine` in `postgresql.auto.conf`). Then, in every database, subscriptions are disabled and detached from their slot (so the publisher's slot survives), `cron.job` rows are set inactive (unless `[branching] keep_cron_jobs = true`) and `net.http_request_queue` is emptied; the marked lines go, the cluster restarts and the credentials rotate. A failing step stops the branch (`MIGRATIONS_FAILED`) and records the stop as a quarantine (pause reason `quarantine`), which no request, connection, operation or commit starts again; the owner's Resume, a reset or a delete does ("Idle pause").
 - **Paused cron jobs** are recorded in `supavise_branch.paused_cron_jobs`; the owner opts in with `update cron.job set active = true where jobid in (select jobid from supavise_branch.paused_cron_jobs);`. Job `nodename` and `nodeport` point at the branch's own cluster, and a connection string written as a literal in a command is replaced by a disabled one (`supavise_branch.neutralized_cron_commands`; the original is not kept, it may hold a password).
 - **Every database but `template0`** is isolated, templates and `datallowconn = false` databases included. Such a database is opened with `ALTER DATABASE ... ALLOW_CONNECTIONS true` for the duration and closed again (`databases_opened`; if Supavise stops between the two statements the flag stays open and the unfinished branch ends up failed), so its owner cannot find its foreign servers and Vault secrets as the parent had them.
 - **Foreign servers are disabled** in every database of a branch without the egress opt-out (`neutralizeForeign`, `foreign.go`; safe to run twice), loopback or not, because a loopback server reaches another project on this node with its stored password. This covers `postgres_fdw`, `dblink_fdw` and any server with a libpq option (`host`, `hostaddr`, `port`, `dbname`, `service`): `host` becomes the nonexistent socket `/nonexistent/supavise-branch-disabled`, `hostaddr` and `service` are dropped, and user mappings lose a `password`, `sslpassword` or `passwd` option. A wrapper whose validator refuses the change is named in the event (`foreign_servers_not_neutralized`). `supavise_branch.paused_foreign_servers` records what was done, **but not the passwords** (the table is readable by whoever owns the branch). To turn a server back on, set its options and re-enter the password: `alter server s options (set host '...'); alter user mapping for ... server s options (add password '...');`. Foreign tables and functions that use the server fail until then.
@@ -451,7 +451,7 @@ to a list of migrations) when it cannot read or express something.
 
 * **`CreateInput.SchemaSource`** (types.go) builds a schema-only branch from something other than its parent. `Create` makes the branch's project as always (keys, ports, the parent's saved settings) and then calls `Schema` in place of the replay of the parent's migrations and seed, and `Functions` in the deploy step in place of the copy of the parent's Edge Functions. The branch gets no schema base (nothing it started from is the parent's), but it gets a function base: `doCreate` records the parent's Edge Function digests before it calls `Schema` (`recordParentFunctions`), the base a copy of them would have given, so that a push keeps a function the pull request changed and a merge deploys it without `force`. The run's `clone`, `configure`, `migrate` and `seed` steps are the source's to report, with `Run.Step`. It needs a schema-only branch.
 * **`Drive(ctx, idOrRef, op, fn)`** (driven.go) starts a run on an existing branch whose steps `fn` performs, with the checks of a push (the branch is idle and running) and the ending of one (`FUNCTIONS_DEPLOYED` or `MIGRATIONS_FAILED`/`FUNCTIONS_FAILED`, events, `notify_url`). A caller that is not a branch (production) uses `StartRun` and ends the run with `Run.Finish`.
-* **`WakeForDrive(ctx, idOrRef)`** (driven.go) resumes a branch whose project is paused (`INACTIVE`) and waits while it comes up; `Drive` refuses a branch that is not running, so the Git integration wakes first. **`ApplyOptions.Lock`** takes the project's apply lock (the one a merge holds) without `Atomic`'s single transaction.
+* **`WakeForDrive(ctx, idOrRef)`** (driven.go) starts a branch the node paused for idleness (`INACTIVE`, reason `idle`) and waits while it comes up; `Drive` refuses a branch that is not running or is scheduled for deletion, so the Git integration wakes first. Any other pause is refused (see "Idle pause"). **`ApplyOptions.Lock`** takes the project's apply lock (the one a merge holds) without `Atomic`'s single transaction.
 
 A branch made for a pull request is created with `TTL` below zero, so it has no `expires_at`: it lives until the pull request closes and the integration deletes it. A branch somebody made with `--git-branch` keeps the lifetime `[branching] default_ttl` gives it.
 
@@ -502,7 +502,11 @@ the branch holds no memory. The first HTTP request or database connection starts
 each branch homed on this server.
 
 What counts as use: the branch was seen running less than the period ago (a restart of the daemon, a create,
-a wake or a resume starts the clock again); an HTTP request to its API on any of its hosts in the period, or one
+a wake or a resume starts the clock again); an operation of the service on the branch (a diff, a merge, a push, a
+reset, or a commit the Git integration applies): `touchIdle` marks the branch used when the call starts and when
+the operation ends, so a run that lasted longer than the period does not leave the branch paused the moment it
+is free, and a branch with an operation that has not finished is never paused (`branchBusy`, which also counts a
+CLI's operation by the registry and marks the branch used at each sweep that sees it); an HTTP request to its API on any of its hosts in the period, or one
 still being served, a WebSocket included (`reqstats.Counter.Last` and `Active`); a Management API call that ran
 SQL on the branch in the period (Studio's SQL and table editors, MCP's `execute_sql` and `apply_migration`, a
 migration the CLI pushed): it opens a session and closes it before it answers, so `api.Server.running` marks the
@@ -517,9 +521,20 @@ client came in through the proxy, which counts it. A database that cannot be rea
 Never paused: persistent branches, branches scheduled for deletion, the default branch (the project itself),
 a branch with an operation in flight (in this process, in another, an unfinished action run, or a merge into its
 parent), and everything when the cluster has more than one server (below). Every pause is the node's own
-`PauseWith(registry.PauseIdle)`; `supavise.project_pause` (migration 1520) records its reason, so a branch the
-owner paused by hand (`supavise projects pause`, the dashboard, `supabase branches pause`) has none and **never
-wakes by itself**. A pause event `branch.idle_paused` and a wake `branch.idle_woken` are recorded.
+`PauseWith(registry.PauseIdle)`; `supavise.project_pause` (migration 1520) records its reason, and **only a pause
+whose reason is `idle` ever starts by itself**, whatever asks: a request, a database connection, a Management API
+call, a diff, a merge, a push, a reset, the Git integration's commit. A branch the owner paused by hand
+(`supavise projects pause`, the dashboard, `supabase branches pause`, a scheduled deletion) has an empty reason,
+and a pause with no record at all (made before migration 1520, or in a registry without the store) counts as the
+owner's. A branch the node **stopped as a quarantine** (`registry.PauseQuarantine`: a create or reset with data
+could not isolate the branch from the parent's integrations, rotate its credentials or replace the parent's keys in
+its data, so it still carries them) has the reason `quarantine`, which nothing starts by itself either; the owner's
+Resume, a reset and a delete are the ways out (`PauseReason` returns `idle`, `quarantine`, `owner` or empty). If the
+registry cannot record the reason, the stop is made as an owner's pause, which is as safe. A pause event
+`branch.idle_paused` and a wake `branch.idle_woken` (`by` is `http`, `db`, `cluster`, `git`, or the operation:
+`diff`, `merge`, `push`, `reset`) are recorded. A branch scheduled for deletion is never woken, even with an `idle`
+record (`wakeNow`, `WakeForDrive`, the join of a second server): `scheduleDelete` makes its pause the owner's, and the
+checks hold if that change did not go through.
 
 **Wake on a request.** The proxy holds a request that reaches a sleeping branch, after the keys have checked,
 while `Service.Wake` starts it (one start per branch, shared by everyone who waits), up to
@@ -531,6 +546,41 @@ for the host of a sleeping branch is allowed, because the wake comes after it.
 SQL and table editors, MCP's `execute_sql`) wakes it the same way before it runs (`api.Server.running`), so an agent that
 left a branch alone need not resume it first. A branch the owner paused answers 409 "Project is paused; restore it first"
 as before.
+
+**Wake on an operation.** `Diff`, `Merge`, `Push` and `Reset` (so Studio's Review changes page, MCP's `merge_branch`,
+`rebase_branch` and `reset_branch`, and the CLI's `branches merge`, `push` and `diff`) start an idle-paused branch
+before they check that it runs (`wakeIfIdle`, in the service, so the API and the CLI both get it), wait up to
+`idle_wake_timeout_seconds`, and read the branch again. A branch the owner paused, one stopped as a quarantine and one
+scheduled for deletion are not started: the operation answers 409 and says which it is and what to do ("Resume it
+first", "reset or delete it"). The parent is never started: the node pauses only branches, so a parent that does not run is not
+the node's doing, and the operation answers 409. A start that fails or times out answers 409 and the start goes on.
+
+**Wake for a commit.** The Git integration calls `WakeForDrive` before it applies a commit (a push to a tracked
+Git branch, a pull request event). It starts a branch the node paused for idleness and nothing else: a branch
+its owner paused, a quarantined one and one scheduled for deletion are refused with 409, which the pull request's
+check shows as "Supavise could not wake the paused preview branch" with the reason, because anyone who can push
+to the repository can make a commit, and that is not the owner's decision to run a branch again (a quarantined
+branch would start with the parent's credentials and integrations). `Drive` also refuses a branch scheduled for
+deletion; only Restore cancels the deletion.
+
+**Edge Functions after a wake.** The Edge Functions runtime takes the files of a project that is not running off
+the disk at its next reconcile, so a branch that starts again has none. Every start that is not the Management
+API's own resume (`woken`: a wake for a request, a connection, an operation or a commit, a Restore, a second
+server joining) tells the runtime to serve the branch's functions before it returns, so the proxy forwards the
+request that woke the branch only after the files exist (`FunctionCarrier.Applied`; nothing happens on a node
+without the runtime).
+
+**Who can wake a branch.** A branch's ref and its API URL are not secret (a pull request's comment links them),
+and a request to a sleeping branch needs a key only where the route does: GoTrue's verify, callback, authorize,
+SAML and JWKS routes and Edge Functions need none, because an emailed link or an OAuth redirect carries no key
+and a function checks its own token, and the public (anon) key is in every preview app. So **anyone who knows
+a preview branch's ref can wake it with a keyless request, and keep it awake while the requests continue**; with
+many refs that can use the node's memory budget, and a later create or resume is then refused with "node is full".
+That is the cost of waking on a request, and idle pause is not access control or a quota. A request that fails
+the key check on a route that requires one wakes nothing. If refs must not leak, keep the repository
+private, or make the preview branches persistent, or set `idle_pause_after = "off"`: the node then holds the memory of
+every branch whatever the requests. The loopback gates (`idlegate.go`) listen on 127.0.0.1, where a process of the
+node could reach the public URL as well, so they add nothing to this.
 
 **Wake on a database connection.** A sleeping branch's `127.0.0.1:<20000+3n>` port, where Postgres listened and
 where the pooler and every other client dial, is held by a **wake gate** (`idlegate.go`). The first connection

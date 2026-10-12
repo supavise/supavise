@@ -32,10 +32,16 @@ import (
 //     statement ended less than the period ago (the pooler's clients, a psql session that is still open).
 //     A session that opened and closed between two sweeps leaves nothing to find. The services that
 //     only act for an API request (GoTrue, PostgREST, Storage) and pg_cron are not clients, because
-//     their work already shows as an API request or is the branch's own.
+//     their work already shows as an API request or is the branch's own;
+//   - an operation of the service on the branch: a diff, a merge, a push, a reset or a commit applied by
+//     the Git integration marks the branch used when it starts and again when it ends (touchIdle), and a
+//     branch with an operation that has not finished is never paused (branchBusy). A wake counts too.
 //
-// Only the owner's pause is never undone by the node: a branch the owner paused by hand has no
-// "idle" record (registry.LifecycleStore) and stays paused until Resume. Persistent branches, branches
+// Only a pause the node made for idleness is ever undone by the node, whether the trigger is a request, a
+// database connection, a Management API call, an operation above or a commit of the repository. A branch
+// the owner paused by hand has no "idle" record (registry.LifecycleStore) and stays paused until Resume,
+// and so does one the node stopped because it still carries its parent's credentials
+// (registry.PauseQuarantine). Persistent branches, branches
 // scheduled for deletion, branches with an operation in flight (here or in another process, or a merge
 // into their parent) and the default branch are never paused. A cluster of more than one server pauses
 // nothing: a request that reaches another server's proxy could not wake the branch (see the README).
@@ -70,13 +76,16 @@ type idleState struct {
 	// since is when the sweep first saw a branch running (or running again): the clock of its
 	// idleness cannot start before it.
 	since map[string]time.Time
+	// used is when the service last worked on a branch itself (an operation began or ended on it, a
+	// wake): activity that no request and no open database session shows (touchIdle).
+	used map[string]time.Time
 	// gates are the listeners that wake a paused branch on a database connection (idlegate.go).
 	gates map[string]*gate
 	kick  chan struct{}
 }
 
 func newIdleState() idleState {
-	return idleState{since: map[string]time.Time{}, gates: map[string]*gate{}, kick: make(chan struct{}, 1)}
+	return idleState{since: map[string]time.Time{}, used: map[string]time.Time{}, gates: map[string]*gate{}, kick: make(chan struct{}, 1)}
 }
 
 // IdleResult lists what an idle sweep did.
@@ -124,7 +133,7 @@ func (s *Service) IdleSweep(ctx context.Context) (*IdleResult, error) {
 		if multi {
 			// A second server cannot wake a branch from its own proxy, so a branch that sleeps when it
 			// joins is started again; this server pauses no more of them.
-			if pz, ok := pauses[p.Ref]; ok && pz.Reason == registry.PauseIdle && p.Status == registry.StatusInactive {
+			if pz, ok := pauses[p.Ref]; ok && pz.Reason == registry.PauseIdle && p.Status == registry.StatusInactive && p.Branch.DeletionScheduledAt == nil {
 				if err := s.eng.Resume(ctx, p.Ref); err != nil {
 					// RunIdle drops the result, so the log is the only place an operator learns that the
 					// branch stays asleep (not enough memory on the node, say).
@@ -132,6 +141,7 @@ func (s *Service) IdleSweep(ctx context.Context) (*IdleResult, error) {
 					res.Failed[p.Ref] = err.Error()
 					continue
 				}
+				s.woken(ctx, p.Ref)
 				s.event(ctx, p.Ref, "branch.idle_woken", map[string]any{"by": "cluster"})
 				res.Resumed = append(res.Resumed, p.Ref)
 			}
@@ -143,11 +153,21 @@ func (s *Service) IdleSweep(ctx context.Context) (*IdleResult, error) {
 		running[p.Ref] = true
 		since := s.idleSince(p.Ref, now)
 		b := branchOf(p)
-		if b.Persistent || b.DeletionScheduledAt != nil || s.branchBusy(ctx, b) {
+		if b.Persistent || b.DeletionScheduledAt != nil {
+			continue
+		}
+		if s.branchBusy(ctx, b) {
+			// An operation at work is use, and so is the moment it ends: an operation of another process
+			// (the CLI's merge) leaves no trace here but the registry showing it, so the clock restarts at
+			// the last sweep that saw it.
+			s.touchIdle(p.Ref)
 			continue
 		}
 		last := since
 		if t, ok := s.activity.Last(p.Ref); ok && t.After(last) {
+			last = t
+		}
+		if t, ok := s.idleUsed(p.Ref); ok && t.After(last) {
 			last = t
 		}
 		if s.activity.Active(p.Ref) > 0 || now.Sub(last) < idleAfter {
@@ -182,6 +202,11 @@ func (s *Service) IdleSweep(ctx context.Context) (*IdleResult, error) {
 			res.Failed[p.Ref] = err.Error()
 			continue
 		}
+		// Its clocks start again when it runs again, whoever starts it and however soon.
+		s.idle.mu.Lock()
+		delete(s.idle.since, p.Ref)
+		delete(s.idle.used, p.Ref)
+		s.idle.mu.Unlock()
 		s.log.Info("paused an idle branch", "ref", p.Ref, "name", b.Name, "idle", now.Sub(last).Round(time.Second).String())
 		s.event(ctx, p.Ref, "branch.idle_paused", map[string]any{"idle_seconds": int64(now.Sub(last).Seconds()), "after": idleAfter.String()})
 		res.Paused = append(res.Paused, p.Ref)
@@ -203,6 +228,26 @@ func (s *Service) idleSince(ref string, now time.Time) time.Time {
 	return t
 }
 
+// touchIdle marks ref used now: the service worked on the branch itself (a diff, a merge, a push, a reset or a
+// commit of the Git integration began or ended on it, or it was woken), which no request to its API and no
+// session in its database shows. It does nothing without idle pause.
+func (s *Service) touchIdle(ref string) {
+	if s.activity == nil {
+		return
+	}
+	s.idle.mu.Lock()
+	defer s.idle.mu.Unlock()
+	s.idle.used[ref] = s.now()
+}
+
+// idleUsed returns when touchIdle last marked ref used.
+func (s *Service) idleUsed(ref string) (time.Time, bool) {
+	s.idle.mu.Lock()
+	defer s.idle.mu.Unlock()
+	t, ok := s.idle.used[ref]
+	return t, ok
+}
+
 // forgetIdle drops the clocks of branches that were not running at this sweep: they start again when
 // they are seen running.
 func (s *Service) forgetIdle(running map[string]bool) {
@@ -211,6 +256,11 @@ func (s *Service) forgetIdle(running map[string]bool) {
 	for ref := range s.idle.since {
 		if !running[ref] {
 			delete(s.idle.since, ref)
+		}
+	}
+	for ref := range s.idle.used {
+		if !running[ref] {
+			delete(s.idle.used, ref)
 		}
 	}
 }
@@ -351,19 +401,37 @@ func (s *Service) idleEvery() time.Duration {
 	return every
 }
 
-// PauseReason says who paused a branch: "idle" when the node did, "owner" when a person or a client did
-// (the dashboard's Pause, the CLI, a scheduled deletion), and "" when the branch is not paused.
+// PauseReason says who paused a branch: "idle" when the node did because nothing used it, "quarantine"
+// when the node stopped it because it still carries its parent's credentials, "owner" when a person or a
+// client did (the dashboard's Pause, the CLI, a scheduled deletion, and any pause that has no record), and
+// "" when the branch is not paused.
 func (s *Service) PauseReason(ctx context.Context, ref string) string {
 	p, err := s.reg.GetProject(ctx, ref)
 	if err != nil || p.Status != registry.StatusInactive {
 		return ""
 	}
-	if st := registry.BranchLifecycleOf(s.reg); st != nil {
-		if pz, err := st.GetPause(ctx, ref); err == nil && pz.Reason == registry.PauseIdle {
-			return registry.PauseIdle
-		}
+	switch s.pauseRecord(ctx, ref) {
+	case registry.PauseIdle:
+		return registry.PauseIdle
+	case registry.PauseQuarantine:
+		return registry.PauseQuarantine
 	}
 	return "owner"
+}
+
+// pauseRecord is the reason the lifecycle store holds for ref: registry.PauseIdle, registry.PauseQuarantine
+// or "" for the owner's pause. A registry with no store, a project with no record and a record that cannot
+// be read all give "": nothing is woken on a guess.
+func (s *Service) pauseRecord(ctx context.Context, ref string) string {
+	st := registry.BranchLifecycleOf(s.reg)
+	if st == nil {
+		return ""
+	}
+	pz, err := st.GetPause(ctx, ref)
+	if err != nil {
+		return ""
+	}
+	return pz.Reason
 }
 
 // ---- waking ------------------------------------------------------------------------------------
@@ -391,6 +459,15 @@ func (s *Service) wake(ctx context.Context, ref, by string) error {
 	}
 }
 
+// woken is what a branch needs once it runs again after a pause: its idle clock starts again, and the Edge
+// Functions runtime serves its functions now. The runtime's reconcile removes the files of a project that is
+// not running, and without this the first call to a function of a woken branch finds none (a 404) until the
+// next reconcile puts them back.
+func (s *Service) woken(ctx context.Context, ref string) {
+	s.touchIdle(ref)
+	s.serveFunctionsAgain(ctx, ref)
+}
+
 func (s *Service) wakeNow(ctx context.Context, ref, by string) error {
 	p, err := s.reg.GetProject(ctx, ref)
 	if err != nil {
@@ -398,6 +475,11 @@ func (s *Service) wakeNow(ctx context.Context, ref, by string) error {
 	}
 	if p.Status.Running() {
 		return nil
+	}
+	// A branch scheduled for deletion waits to go: scheduleDelete makes its pause the owner's, and this
+	// holds if that change did not go through.
+	if p.Branch != nil && p.Branch.DeletionScheduledAt != nil {
+		return ErrNotIdle
 	}
 	st := registry.BranchLifecycleOf(s.reg)
 	if st == nil {
@@ -409,7 +491,7 @@ func (s *Service) wakeNow(ctx context.Context, ref, by string) error {
 		return ErrNotIdle
 	case err != nil:
 		return err
-	case pause.Reason != registry.PauseIdle:
+	case !registry.WakesByItself(pause.Reason):
 		return ErrNotIdle
 	}
 	switch p.Status {
@@ -418,10 +500,12 @@ func (s *Service) wakeNow(ctx context.Context, ref, by string) error {
 		if err := s.eng.Resume(ctx, ref); err != nil {
 			// Another process may have started it between the read and the call.
 			if cur, gerr := s.reg.GetProject(ctx, ref); gerr == nil && cur.Status.Running() {
+				s.woken(ctx, ref)
 				return nil
 			}
 			return err
 		}
+		s.woken(ctx, ref)
 		s.log.Info("woke an idle branch", "ref", ref, "by", by, "ms", s.now().Sub(start).Milliseconds())
 		s.event(ctx, ref, "branch.idle_woken", map[string]any{"by": by, "ms": s.now().Sub(start).Milliseconds()})
 		return nil
@@ -442,6 +526,7 @@ func (s *Service) wakeNow(ctx context.Context, ref, by string) error {
 			}
 			switch {
 			case cur.Status.Running():
+				s.woken(ctx, ref)
 				return nil
 			case cur.Status == registry.StatusInactive:
 				return s.wakeNow(ctx, ref, by)
@@ -449,4 +534,36 @@ func (s *Service) wakeNow(ctx context.Context, ref, by string) error {
 		}
 	}
 	return conflict("%s is %s and cannot be woken", ref, p.Status)
+}
+
+// wakeIfIdle returns b ready for an operation that needs its database: a branch the node paused for idleness
+// is started and waited for (up to [branching] idle_wake_timeout_seconds), as the edge proxy does for a request
+// and the Management API does for a call that runs SQL, and the returned branch is read again. Any branch
+// is marked used (touchIdle), because the operation is use.
+//
+// A branch paused by its owner, one stopped as a quarantine, one scheduled for deletion and one in a state
+// that is not a pause come back as they are, and the operation's own check (activeBranch) refuses them
+// with the reason. A start that fails or does not finish in time is a conflict that says so.
+func (s *Service) wakeIfIdle(ctx context.Context, b *Branch, op string) (*Branch, error) {
+	s.touchIdle(b.Ref)
+	switch b.ProjectStatus {
+	case registry.StatusInactive, registry.StatusComingUp:
+	default:
+		return b, nil
+	}
+	if b.DeletionScheduledAt != nil {
+		return b, nil
+	}
+	if b.ProjectStatus == registry.StatusInactive && !registry.WakesByItself(s.pauseRecord(ctx, b.Ref)) {
+		return b, nil
+	}
+	wctx, cancel := context.WithTimeout(ctx, s.cfg.Branching.IdleWakeTimeout())
+	defer cancel()
+	if err := s.wake(wctx, b.Ref, op); err != nil {
+		if errors.Is(err, ErrNotIdle) {
+			return b, nil
+		}
+		return nil, conflict("branch %s could not be woken for the %s: %v", b.Name, op, err)
+	}
+	return s.resolveBranch(ctx, b.Ref, op)
 }
