@@ -12,9 +12,10 @@
 //   probe pass   probes.mjs: user flows on throwaway projects and branches, judged by the state of the server and not by
 //                a toast.
 //
-// The run fails (exit 1) on a stub answer that tests/linux/crawl/allowlist.json does not list, any 5xx, a 4xx the list does
-// not give a reason for, a page error, a console error outside noise.json, a failed probe, a page with a parameter and
-// no fixture, and an allow-list entry (reach "crawl") that the run never saw, so the list only shrinks. Output in
+// The run fails (exit 1) on a stub answer that tests/linux/crawl/allowlist.json does not list, a 5xx or a 4xx the list does
+// not give a reason for, a page error, a console error outside noise.json, a call the mutation guard aborted while a page
+// loaded (a read the guard does not know), a failed probe, a page with a parameter and no fixture, and an allow-list entry
+// (reach "crawl") that the run never saw, so the list only shrinks. Output in
 // <out>: crawl-report.json, summary.md (also appended to $GITHUB_STEP_SUMMARY), calls.jsonl, screenshots/.
 //
 // Config fields: domain, proxy {host, port}, owner {email, password}, owner_pat, org, org2, out, routes_manifest,
@@ -94,11 +95,13 @@ async function visit(page, v, { anonymousVisit = false } = {}) {
     for (const e of expectations(v)) {
       if (!(await waitText(page, e.text, 15_000))) tracker.add({ kind: 'expect', allowed: false, detail: `the page does not show "${e.text}": ${e.why}` })
     }
+    rec.phase = 'click' // from here a call the guard aborts may be the change that a click started
     res.clicks = await safeClicks(page, rec)
     await settle(page, { quiet: 800, max: 6_000 })
     text = `${text}\n${await pageText(page)}`
     for (const f of domFindings(v.page, text, allow)) tracker.add(f)
     res.screenshot = await shot(page, join(OUT, 'screenshots'), `${String(++seq).padStart(3, '0')}-${v.url}`)
+    tracker.finish()
   } catch (e) {
     tracker.add({ kind: 'navigation', allowed: false, detail: String(e?.message ?? e).split('\n')[0].slice(0, 300) })
     res.screenshot = await shot(page, join(OUT, 'screenshots'), `${String(++seq).padStart(3, '0')}-failed-${v.url}`)
@@ -132,6 +135,7 @@ try {
       const page = await newPage(ctx, tracker)
       const rec = tracker.begin(`sign-in ${k || 'account'}`)
       await signIn(page, cfg)
+      tracker.finish()
       results.push({ url: `(sign-in for ${k || 'the account pages'})`, page: '(sign-in)', project: null, informational: null, findings: rec.findings, links: [], calls: rec.calls, stubs: rec.stubs, n4xx: rec.n4xx, n5xx: rec.n5xx, pageErrors: rec.pageErrors, noise: rec.noise, ms: 0 })
       for (const v of groups.get(k)) await visit(page, v)
     } catch (e) {
@@ -173,11 +177,15 @@ try {
     skipped: plan.skipped,
     noFixture,
     unavailable: fx.unavailable ?? {},
-    externalHosts: [...tracker.externals].sort(),
+    externalHosts: [...tracker.externals.keys()].sort(),
+    externals: [...tracker.externals.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([host, pages]) => ({
+      host, pages: [...pages].slice(0, 25), documented: (noise.externalHosts ?? []).find((x) => x.host === host)?.reason ?? null,
+    })),
     mutationAttempts: tracker.mutationAttempts,
     allowlist: { unseen: allow.unseen(), seenStatic: allow.seenStatic() },
   }
   report.crashed = crashed
+  tracker.finish()
   report.failures = failures(report)
 } finally {
   await browser.close().catch(() => {})
