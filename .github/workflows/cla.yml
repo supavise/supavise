@@ -1,0 +1,35 @@
+name: CLA
+
+# Asks each first-time contributor to sign CLA.md in a pull request comment and stores the signatures
+# in signatures/cla.json on the cla-signatures branch (the branch must exist; it has no CI triggers
+# and is not protected). The workflow runs from the base branch and never checks out pull request code.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    steps:
+      - name: CLA Assistant
+        if: >-
+          github.event_name == 'pull_request_target' ||
+          github.event.comment.body == 'recheck' ||
+          github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'
+        # v2.6.1, pinned by commit: the upstream repository is archived.
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: https://github.com/supavise/supavise/blob/main/CLA.md
+          path-to-signatures: signatures/cla.json
+          branch: cla-signatures
+          allowlist: jsmillerdev,*[bot]

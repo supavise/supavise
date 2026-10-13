@@ -98,6 +98,6 @@ One Go program installs Supabase's open-source services and adds what self-hosti
 
 ## <picture><source media="(prefers-color-scheme: dark)" srcset="brand/readme/glyph-dark.svg"><img alt="" src="brand/readme/glyph-light.svg" height="22"></picture>License
 
-[Apache-2.0](LICENSE). Supavise is not affiliated with or endorsed by Supabase Inc. It runs Supabase's open-source services.
+[Apache-2.0](LICENSE). Contributors sign a one-time [CLA](CLA.md); see [CONTRIBUTING](CONTRIBUTING.md). Supavise is not affiliated with or endorsed by Supabase Inc. It runs Supabase's open-source services.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="brand/readme/footer-dark.svg"><img alt="Supavise: Supabase orgs and projects, self-hosted. Not affiliated with Supabase Inc." src="brand/readme/footer-light.svg" width="100%"></picture>
