@@ -36,8 +36,8 @@ Versions of the Project that the Maintainer has already released with your Contr
 
 ## 7. General
 
-This agreement is the whole agreement about your Contributions. It is governed by the laws of the State of [STATE], and courts in [COUNTY, STATE] decide any dispute about it. If a part of it cannot be enforced, the rest still applies.
+This agreement is the whole agreement about your Contributions. It is governed by the laws of the State of Arizona, and courts in Maricopa County, Arizona decide any dispute about it. If a part of it cannot be enforced, the rest still applies.
 
 ---
 
-This agreement is adapted from the structure of the Apache Software Foundation's Individual Contributor License Agreement. Have a lawyer review it before relying on it, and replace the bracketed governing-law placeholders.
+This agreement is adapted from the structure of the Apache Software Foundation's Individual Contributor License Agreement. Have a lawyer review it before relying on it.
