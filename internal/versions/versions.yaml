@@ -10,7 +10,7 @@ artifacts:
   storage: storage-v1.81.0-r0
   pgmeta: pgmeta-v0.100.0-r0
   imgproxy: imgproxy-v3.26.0-r0
-  edge-runtime: edge-runtime-v1.77.4-r0
+  edge-runtime: edge-runtime-v1.77.8-r0
 studio:
   # Upstream Studio git ref we build in platform mode (studio/build.sh). The slim
   # studio artifact of the same upstream version is studio-2026.10.05-sha-94b8b06-r0.
