@@ -45,6 +45,16 @@ var entitlementKeys = []string{
 	"audit_log_drains", "branching_limit", "branching_persistent",
 }
 
+// setEntitlements carry the members Studio tests one by one: an Auth hook is locked unless its HOOK_ key
+// is in the set of auth.hooks, and an Observability chart unless its group is in the other.
+var setEntitlements = map[string][]string{
+	"auth.hooks": {
+		"HOOK_SEND_SMS", "HOOK_SEND_EMAIL", "HOOK_CUSTOM_ACCESS_TOKEN", "HOOK_MFA_VERIFICATION_ATTEMPT",
+		"HOOK_PASSWORD_VERIFICATION_ATTEMPT", "HOOK_BEFORE_USER_CREATED",
+	},
+	"observability.dashboard_advanced_metrics": {"auth", "database", "edge_functions", "realtime"},
+}
+
 // numericEntitlement reports keys that carry a number rather than a flag.
 func numericEntitlement(key string) bool {
 	return strings.Contains(key, ".max_") || strings.HasSuffix(key, "_days") || strings.HasSuffix(key, "_limit") ||
@@ -55,7 +65,10 @@ func (s *server) entitlements() []map[string]any {
 	out := make([]map[string]any, 0, len(entitlementKeys))
 	for _, k := range entitlementKeys {
 		e := map[string]any{"feature": map[string]any{"key": k}, "hasAccess": true}
-		if numericEntitlement(k) {
+		if set, ok := setEntitlements[k]; ok {
+			e["type"] = "set"
+			e["config"] = map[string]any{"enabled": true, "set": set}
+		} else if numericEntitlement(k) {
 			e["type"] = "numeric"
 			e["config"] = map[string]any{"enabled": true, "unit": "count", "unlimited": true, "value": 0}
 		} else {

@@ -249,3 +249,36 @@ func TestStudioEnablesAddReadReplicaOnlyWhereTheAPIAcceptsIt(t *testing.T) {
 		t.Fatalf("hosted's shape: %d %v", major, ok)
 	}
 }
+
+// Studio lists an Auth hook as "Team or Enterprise Plan required" unless the HOOK_ key of the hook
+// is a member of the set of the auth.hooks entitlement (AddHookDropdown.tsx, CreateCommands.utils.tsx),
+// and hides an Observability chart unless its group is a member of the set of
+// observability.dashboard_advanced_metrics (ReportChartV2.tsx, observability/database.tsx).
+func TestEntitlementSetsHoldTheMembersStudioTests(t *testing.T) {
+	f := newFixture(t)
+	rec := f.do("GET", "/platform/organizations/default/entitlements", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET entitlements: %d %s", rec.Code, rec.Body)
+	}
+	sets := map[string][]any{}
+	for _, e := range decodeBody(t, rec).(map[string]any)["entitlements"].([]any) {
+		e := e.(map[string]any)
+		if e["type"] == "set" {
+			sets[e["feature"].(map[string]any)["key"].(string)], _ = e["config"].(map[string]any)["set"].([]any)
+		}
+	}
+	for key, want := range entitlementSets {
+		got := map[any]bool{}
+		for _, m := range sets[key] {
+			got[m] = true
+		}
+		for _, m := range want {
+			if !got[m] {
+				t.Errorf("%s is a set without %q: Studio locks what it names", key, m)
+			}
+		}
+	}
+	if len(sets["auth.hooks"]) != 6 {
+		t.Errorf("auth.hooks holds %d hooks, Studio defines 6", len(sets["auth.hooks"]))
+	}
+}

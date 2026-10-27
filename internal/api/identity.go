@@ -398,13 +398,25 @@ func (s *Server) platformUpdateOrg(w http.ResponseWriter, r *http.Request) error
 // has which kind, so the kind follows the key's name.
 func entitlementKind(key string) string {
 	switch {
-	case strings.Contains(key, "available_"):
+	case strings.Contains(key, "available_"), key == "auth.hooks", key == "observability.dashboard_advanced_metrics":
 		return "set"
 	case strings.Contains(key, "max_") && !strings.HasSuffix(key, ".configurable"),
 		strings.HasSuffix(key, "_days"), strings.HasSuffix(key, "_limit"), strings.HasSuffix(key, "_mb"):
 		return "numeric"
 	}
 	return "boolean"
+}
+
+// entitlementSets are the members of the set entitlements whose members Studio tests one by one:
+// the Auth hooks page lists a hook as "Team or Enterprise Plan required" unless its HOOK_ key is in
+// the set of auth.hooks, and the Observability charts read their group name from the set of
+// observability.dashboard_advanced_metrics. An empty set locks every one of them.
+var entitlementSets = map[string][]string{
+	"auth.hooks": {
+		"HOOK_SEND_SMS", "HOOK_SEND_EMAIL", "HOOK_CUSTOM_ACCESS_TOKEN", "HOOK_MFA_VERIFICATION_ATTEMPT",
+		"HOOK_PASSWORD_VERIFICATION_ATTEMPT", "HOOK_BEFORE_USER_CREATED",
+	},
+	"observability.dashboard_advanced_metrics": {"auth", "database", "edge_functions", "realtime"},
 }
 
 // entitlements grants every feature of the spec's key enum: supavise has no plans.
@@ -420,7 +432,11 @@ func (s *Server) entitlements(key string) handlerFunc {
 		case "numeric":
 			e["config"] = map[string]any{"enabled": true, "value": 0, "unlimited": true, "unit": "count"}
 		case "set":
-			e["config"] = map[string]any{"enabled": true, "set": []string{}}
+			members := entitlementSets[name]
+			if members == nil {
+				members = []string{}
+			}
+			e["config"] = map[string]any{"enabled": true, "set": members}
 		default:
 			e["config"] = map[string]any{"enabled": true}
 		}
